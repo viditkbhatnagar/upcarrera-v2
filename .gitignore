@@ -22,6 +22,10 @@ packages/db/generated/
 # turbo
 .turbo/
 
+# graphify generated knowledge graph (tool artifact)
+graphify-out/
+**/graphify-out/
+
 # logs / os
 *.log
 .DS_Store
