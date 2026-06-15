@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, ApiError } from "@/lib/api";
 import type { Paginated } from "@/lib/types";
 import PageHeader from "@/components/PageHeader";
+import Button from "@/components/Button";
 import DataTable, { type Column } from "@/components/DataTable";
 import { type User, STATUS_ACTIVE } from "./columns";
 
@@ -23,7 +25,12 @@ const columns: Column<User>[] = [
     key: "name",
     label: "Name",
     render: (user) => (
-      <span className="font-medium text-ink">{user.name || "—"}</span>
+      <Link
+        href={`/users/${user.id}`}
+        className="font-medium text-ink hover:text-accent-600 hover:underline"
+      >
+        {user.name || "—"}
+      </Link>
     ),
   },
   { key: "username", label: "Username" },
@@ -60,6 +67,19 @@ const columns: Column<User>[] = [
         </span>
       );
     },
+  },
+  {
+    key: "actions",
+    label: "",
+    align: "right",
+    render: (user) => (
+      <Link
+        href={`/users/${user.id}`}
+        className="text-sm font-medium text-accent-600 hover:underline"
+      >
+        View
+      </Link>
+    ),
   },
 ];
 
@@ -101,6 +121,11 @@ export default function UsersPage() {
       <PageHeader
         title="Users"
         description="Staff and student identities registered in the platform."
+        actions={
+          <Link href="/users/new">
+            <Button>New User</Button>
+          </Link>
+        }
       />
 
       {error && (

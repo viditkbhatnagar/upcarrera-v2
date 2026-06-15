@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, ApiError } from "@/lib/api";
 import type { Paginated } from "@/lib/types";
 import PageHeader from "@/components/PageHeader";
+import Button from "@/components/Button";
 import DataTable, { type Column } from "@/components/DataTable";
 
 const PAGE_LIMIT = 20;
@@ -33,7 +35,12 @@ const columns: Column<Course>[] = [
     key: "title",
     label: "Title",
     render: (course) => (
-      <span className="font-medium text-ink">{course.title || "—"}</span>
+      <Link
+        href={`/courses/${course.id}`}
+        className="font-medium text-ink hover:text-accent-600 hover:underline"
+      >
+        {course.title || "—"}
+      </Link>
     ),
   },
   { key: "short_name", label: "Short Name" },
@@ -51,6 +58,19 @@ const columns: Column<Course>[] = [
       ) : (
         <span className="text-ink-400">—</span>
       ),
+  },
+  {
+    key: "actions",
+    label: "",
+    align: "right",
+    render: (course) => (
+      <Link
+        href={`/courses/${course.id}`}
+        className="text-sm font-medium text-accent-600 hover:underline"
+      >
+        View
+      </Link>
+    ),
   },
 ];
 
@@ -92,6 +112,11 @@ export default function CoursesPage() {
       <PageHeader
         title="Courses"
         description="Programmes offered across universities in the catalogue."
+        actions={
+          <Link href="/courses/new">
+            <Button>New Course</Button>
+          </Link>
+        }
       />
 
       {error && (

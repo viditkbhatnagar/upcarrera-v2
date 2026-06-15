@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, ApiError } from "@/lib/api";
 import type { Paginated, Student } from "@/lib/types";
 import PageHeader from "@/components/PageHeader";
+import Button from "@/components/Button";
 import DataTable, { type Column } from "@/components/DataTable";
 
 const PAGE_LIMIT = 20;
@@ -27,7 +29,12 @@ const columns: Column<Student>[] = [
     key: "student_id",
     label: "Student",
     render: (s) => (
-      <span className="font-medium text-ink tabular-nums">{s.student_id}</span>
+      <Link
+        href={`/students/${s.id}`}
+        className="font-medium text-ink tabular-nums hover:text-accent-600 hover:underline"
+      >
+        {s.student_id}
+      </Link>
     ),
   },
   {
@@ -52,6 +59,19 @@ const columns: Column<Student>[] = [
       ) : (
         <span className="text-ink-400">—</span>
       ),
+  },
+  {
+    key: "actions",
+    label: "",
+    align: "right",
+    render: (s) => (
+      <Link
+        href={`/students/${s.id}`}
+        className="text-sm font-medium text-accent-600 hover:underline"
+      >
+        View
+      </Link>
+    ),
   },
 ];
 
@@ -93,6 +113,11 @@ export default function StudentsPage() {
       <PageHeader
         title="Students"
         description="Enrolled student records across all courses."
+        actions={
+          <Link href="/students/new">
+            <Button>New Student</Button>
+          </Link>
+        }
       />
 
       {error && (
