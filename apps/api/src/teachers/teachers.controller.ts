@@ -15,7 +15,10 @@ import { UpdateTeacherDto } from './dto/update-teacher.dto';
 import { CreateScheduleDto } from './dto/create-schedule.dto';
 import { CreateSubjectDto } from './dto/create-subject.dto';
 import { TeacherListDto, TeacherIdListDto, UserIdListDto } from './dto/list.dto';
+import { ComputeSalaryDto } from './dto/compute-salary.dto';
+import { CreateSalaryPaymentDto } from './dto/create-salary-payment.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 /**
  * Staff-facing teacher management. Protected by the global JwtAuthGuard.
@@ -37,6 +40,20 @@ export class TeachersController {
   @ResponseMessage('Teacher fetched successfully!')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.teachers.findOne(id);
+  }
+
+  /**
+   * Compute a teacher's payable salary over an inclusive date range.
+   * GET /teachers/:id/salary?from=YYYY-MM-DD&to=YYYY-MM-DD
+   * Returns { bands, demo, total } — zeros when the teacher has no rate or sessions.
+   */
+  @Get(':id/salary')
+  @ResponseMessage('Teacher salary computed successfully!')
+  computeSalary(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() q: ComputeSalaryDto,
+  ) {
+    return this.teachers.computeSalary(id, q.from, q.to);
   }
 
   @Post()
@@ -115,5 +132,23 @@ export class TeacherChangeRequestsController {
   @ResponseMessage('Teacher change requests fetched successfully!')
   findAll(@Query() q: TeacherIdListDto) {
     return this.teachers.findChangeRequests(q.page, q.limit, q.teacher_id);
+  }
+}
+
+/**
+ * Salary payout records (port of Teacher_salary::make_payment).
+ * POST /salary-payments — paid_by is the authenticated user, not the body.
+ */
+@Controller('salary-payments')
+export class SalaryPaymentsController {
+  constructor(private readonly teachers: TeachersService) {}
+
+  @Post()
+  @ResponseMessage('Salary payment recorded successfully!')
+  create(
+    @Body() dto: CreateSalaryPaymentDto,
+    @CurrentUser('id') paidBy: number,
+  ) {
+    return this.teachers.createSalaryPayment(dto, paidBy);
   }
 }

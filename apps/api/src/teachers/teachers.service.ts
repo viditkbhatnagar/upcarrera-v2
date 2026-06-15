@@ -9,12 +9,37 @@ import { CreateTeacherDto } from './dto/create-teacher.dto';
 import { UpdateTeacherDto } from './dto/update-teacher.dto';
 import { CreateScheduleDto } from './dto/create-schedule.dto';
 import { CreateSubjectDto } from './dto/create-subject.dto';
+import { CreateSalaryPaymentDto } from './dto/create-salary-payment.dto';
 
 /** Legacy role id for teachers/instructors (login_helper.php). */
 const TEACHER_ROLE_ID = 3;
 const BCRYPT_ROUNDS = 10;
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
+
+/**
+ * Salary computation rule (the legacy Sessions_model::get_total_and_completed_sessions
+ * referenced by Teacher_salary.php was MISSING from the source, so this defines a
+ * sane rule faithful to the surrounding legacy intent):
+ *
+ *   - A teacher's payable sessions live in `demo_sessions` (the only table carrying
+ *     teacher_id + scheduled_date + from_time/to_time + teacher_status/lead_status).
+ *     The bare `sessions` table in this schema has no teacher/duration/status columns.
+ *   - "Completed" = teacher_status = true (DB comment: 0=pending, 1=completed).
+ *   - Duration band is derived from (to_time - from_time) in minutes, bucketed to the
+ *     nearest of {30, 45, 60}. Anything <= ~37min -> 30, <= ~52min -> 45, else -> 60.
+ *     Rows with no usable time pair fall back to the 60-min band.
+ *   - Each completed session is paid at the teacher's per-band rate from `teacher_salary`
+ *     (salary_30 / salary_45 / salary_1).
+ *   - A "confirmed demo" = a completed session where BOTH teacher_status AND lead_status
+ *     are true; each such session additionally earns `salary_confirmed_demo`. This mirrors
+ *     the legacy total = salary_30 + salary_45 + salary_1 + confirmed_demo_salary.
+ *   - Date range filters inclusively on scheduled_date (legacy: >= from, <= to).
+ *   - Missing rate row or no sessions -> all zeros, never throws.
+ */
+const BAND_30_MAX_MINUTES = 37; // <= 37min counts as a 30-min slot
+const BAND_45_MAX_MINUTES = 52; // <= 52min counts as a 45-min slot, else 60-min
+const MS_PER_MINUTE = 60_000;
 
 /**
  * Port of CI4 App\Controllers\App\{Teachers, Teacher_schedules, Teacher_salary}.
@@ -272,16 +297,151 @@ export class TeachersService {
     return { items, total, page: pg.page, limit: pg.limit };
   }
 
-  // --- Phase-3 sagas (not implemented this phase) ---------------------------
+  // --- Salary computation & payments ----------------------------------------
+
+  /** Bucket a session's wall-clock length to one of the rate bands. */
+  private durationBand(
+    fromTime: Date | null,
+    toTime: Date | null,
+  ): 30 | 45 | 60 {
+    if (!fromTime || !toTime) {
+      return 60; // no usable time pair -> default to the 1-hour band
+    }
+    const minutes = (toTime.getTime() - fromTime.getTime()) / MS_PER_MINUTE;
+    if (minutes <= 0) {
+      return 60; // malformed / inverted range -> default band
+    }
+    if (minutes <= BAND_30_MAX_MINUTES) return 30;
+    if (minutes <= BAND_45_MAX_MINUTES) return 45;
+    return 60;
+  }
 
   /**
-   * TODO(phase-3): port Teacher_salary::compute — aggregate salary_payment +
-   * teacher_salary rates against teachers_schedules / completed sessions to
-   * derive payable amounts. Multi-table read + write, out of scope for CRUD phase.
+   * Compute a teacher's payable salary for completed demo_sessions whose
+   * scheduled_date falls inclusively within [from, to]. Returns a breakdown of
+   * per-band counts/rates/subtotals, the confirmed-demo bonus, and the grand total.
+   *
+   * Never throws on "no data": a missing rate row or zero sessions yields zeros.
+   * See the rule documented at the top of this file.
    */
-  computeSalary(_teacherId: number, _month: string, _year: string): never {
-    throw new NotImplementedException('Salary computation — phase 3');
+  async computeSalary(teacherId: number, from: string, to: string) {
+    // Normalise the inclusive day range. `to` is pushed to end-of-day so a
+    // session scheduled on the `to` date is included.
+    const fromDate = new Date(`${from}T00:00:00.000Z`);
+    const toDate = new Date(`${to}T23:59:59.999Z`);
+
+    const [rate, sessions] = await Promise.all([
+      this.prisma.teacher_salary.findFirst({
+        where: { teacher_id: teacherId, deleted_at: null },
+        orderBy: { id: 'desc' },
+      }),
+      this.prisma.demo_sessions.findMany({
+        where: {
+          teacher_id: teacherId,
+          deleted_at: null,
+          teacher_status: true, // completed (DB comment: 1 = completed)
+          scheduled_date: { gte: fromDate, lte: toDate },
+        },
+        select: {
+          from_time: true,
+          to_time: true,
+          lead_status: true,
+        },
+      }),
+    ]);
+
+    const rate30 = rate?.salary_30 ?? 0;
+    const rate45 = rate?.salary_45 ?? 0;
+    const rate60 = rate?.salary_1 ?? 0;
+    const demoRate = rate?.salary_confirmed_demo ?? 0;
+
+    const counts: Record<30 | 45 | 60, number> = { 30: 0, 45: 0, 60: 0 };
+    let demoCount = 0;
+
+    for (const s of sessions) {
+      const band = this.durationBand(s.from_time, s.to_time);
+      counts[band] += 1;
+      // A "confirmed demo" is a completed session the lead also confirmed.
+      if (s.lead_status === true) {
+        demoCount += 1;
+      }
+    }
+
+    const bands = [
+      { duration: 30, count: counts[30], rate: rate30, subtotal: counts[30] * rate30 },
+      { duration: 45, count: counts[45], rate: rate45, subtotal: counts[45] * rate45 },
+      { duration: 60, count: counts[60], rate: rate60, subtotal: counts[60] * rate60 },
+    ];
+
+    const demo = {
+      count: demoCount,
+      rate: demoRate,
+      subtotal: demoCount * demoRate,
+    };
+
+    const total =
+      bands.reduce((sum, b) => sum + b.subtotal, 0) + demo.subtotal;
+
+    return {
+      teacher_id: teacherId,
+      from,
+      to,
+      has_rate: !!rate,
+      completed_sessions: sessions.length,
+      bands,
+      demo,
+      total,
+    };
   }
+
+  /**
+   * Record a salary payout for a teacher (port of Teacher_salary::make_payment).
+   * `period` ("YYYY-MM") is split into the legacy month (zero-padded) / year columns.
+   * Wrapped in a transaction: the teacher is re-validated and the row inserted atomically.
+   */
+  async createSalaryPayment(dto: CreateSalaryPaymentDto, paidBy: number) {
+    const now = new Date();
+
+    // Split "YYYY-MM" -> month (zero-padded "01".."12") / year, matching legacy columns.
+    const [yearPart, monthPart] = dto.period.split('-');
+    const month = (monthPart ?? '').padStart(2, '0');
+    const year = yearPart ?? '';
+
+    const paymentDate = dto.payment_date ? new Date(dto.payment_date) : now;
+
+    return this.prisma.$transaction(async (tx) => {
+      const teacher = await tx.users.findFirst({
+        where: {
+          id: dto.teacher_id,
+          deleted_at: null,
+          role_id: TEACHER_ROLE_ID,
+        },
+        select: { id: true },
+      });
+      if (!teacher) {
+        throw new NotFoundException('Teacher not found!');
+      }
+
+      return tx.salary_payment.create({
+        data: {
+          teacher_id: dto.teacher_id,
+          paid_amount: dto.paid_amount,
+          month,
+          year,
+          payment_date: paymentDate,
+          payment_type: dto.payment_type ?? null,
+          reference_no: dto.reference_no ?? null,
+          remark: dto.remark ?? null,
+          created_at: now,
+          created_by: paidBy,
+          updated_at: now,
+          updated_by: paidBy,
+        },
+      });
+    });
+  }
+
+  // --- Phase-3 sagas (not implemented this phase) ---------------------------
 
   /**
    * TODO(phase-3): port Teachers::add Zoom provisioning — call ZoomService to

@@ -6,6 +6,7 @@ import {
   TeacherSubjectsController,
   TeacherSalaryRatesController,
   TeacherChangeRequestsController,
+  SalaryPaymentsController,
 } from './teachers.controller';
 
 @Module({
@@ -15,6 +16,7 @@ import {
     TeacherSubjectsController,
     TeacherSalaryRatesController,
     TeacherChangeRequestsController,
+    SalaryPaymentsController,
   ],
   providers: [TeachersService],
   exports: [TeachersService],
