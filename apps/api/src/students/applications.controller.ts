@@ -1,7 +1,15 @@
-import { Controller, Get, Param, ParseIntPipe, Query } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { StudentsService } from './students.service';
 import { ListApplicationsDto } from './dto/list-applications.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 /**
  * Staff-only admission applications endpoints (protected by the global JwtAuthGuard).
@@ -21,5 +29,14 @@ export class ApplicationsController {
   @ResponseMessage('Application fetched')
   get(@Param('id', ParseIntPipe) id: number) {
     return this.students.getApplication(id);
+  }
+
+  @Post(':id/convert')
+  @ResponseMessage('Application converted to student')
+  convert(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.students.convertApplication(id, userId);
   }
 }

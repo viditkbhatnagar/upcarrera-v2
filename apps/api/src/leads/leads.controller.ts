@@ -71,4 +71,13 @@ export class LeadsController {
   ) {
     return this.leads.updateStatus(id, dto, userId);
   }
+
+  @Post(':id/convert')
+  @ResponseMessage('Lead converted to student')
+  convert(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.leads.convertToStudent(id, userId);
+  }
 }
