@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 
 /**
  * Port of CI4 Users_model::login_username_app() + jwt_helper::generate_auth_token().
- * NOTE: the legacy `|| $password == 'upcarrera@2024'` backdoor is intentionally NOT ported.
+ * NOTE: the legacy hardcoded master-password backdoor is intentionally NOT ported.
  */
 @Injectable()
 export class AuthService {
