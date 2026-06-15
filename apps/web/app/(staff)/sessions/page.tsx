@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, ApiError } from "@/lib/api";
 import type { Paginated } from "@/lib/types";
 import PageHeader from "@/components/PageHeader";
+import Button from "@/components/Button";
 import DataTable, { type Column } from "@/components/DataTable";
 
 const PAGE_LIMIT = 20;
@@ -50,7 +52,12 @@ const columns: Column<Session>[] = [
     key: "session_title",
     label: "Title",
     render: (s) => (
-      <span className="font-medium text-ink">{s.session_title || "—"}</span>
+      <Link
+        href={`/sessions/${s.session_id}`}
+        className="font-medium text-ink hover:text-accent-600 hover:underline"
+      >
+        {s.session_title || "—"}
+      </Link>
     ),
   },
   {
@@ -67,6 +74,19 @@ const columns: Column<Session>[] = [
     align: "right",
     render: (s) => (
       <span className="text-ink-400">{formatDate(s.updated_at)}</span>
+    ),
+  },
+  {
+    key: "actions",
+    label: "",
+    align: "right",
+    render: (s) => (
+      <Link
+        href={`/sessions/${s.session_id}`}
+        className="text-sm font-medium text-accent-600 hover:underline"
+      >
+        View
+      </Link>
     ),
   },
 ];
@@ -109,6 +129,11 @@ export default function SessionsPage() {
       <PageHeader
         title="Sessions"
         description="Live class sessions scheduled across all courses."
+        actions={
+          <Link href="/sessions/new">
+            <Button>New Session</Button>
+          </Link>
+        }
       />
 
       {error && (

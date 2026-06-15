@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, ApiError } from "@/lib/api";
 import type { Paginated } from "@/lib/types";
 import PageHeader from "@/components/PageHeader";
+import Button from "@/components/Button";
 import DataTable, { type Column } from "@/components/DataTable";
 
 const PAGE_LIMIT = 20;
@@ -37,7 +39,12 @@ const columns: Column<University>[] = [
     key: "title",
     label: "Name",
     render: (university) => (
-      <span className="font-medium text-ink">{university.title || "—"}</span>
+      <Link
+        href={`/universities/${university.id}`}
+        className="font-medium text-ink hover:text-accent-600 hover:underline"
+      >
+        {university.title || "—"}
+      </Link>
     ),
   },
   { key: "country_id", label: "Country" },
@@ -61,6 +68,19 @@ const columns: Column<University>[] = [
     align: "right",
     render: (university) => (
       <span className="text-ink-400">{formatDate(university.created_at)}</span>
+    ),
+  },
+  {
+    key: "actions",
+    label: "",
+    align: "right",
+    render: (university) => (
+      <Link
+        href={`/universities/${university.id}`}
+        className="text-sm font-medium text-accent-600 hover:underline"
+      >
+        View
+      </Link>
     ),
   },
 ];
@@ -103,6 +123,11 @@ export default function UniversitiesPage() {
       <PageHeader
         title="Universities"
         description="Partner institutions in the academic catalog."
+        actions={
+          <Link href="/universities/new">
+            <Button>New University</Button>
+          </Link>
+        }
       />
 
       {error && (

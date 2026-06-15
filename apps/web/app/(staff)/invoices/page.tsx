@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, ApiError } from "@/lib/api";
 import type { Paginated } from "@/lib/types";
 import PageHeader from "@/components/PageHeader";
+import Button from "@/components/Button";
 import DataTable, { type Column } from "@/components/DataTable";
 
 const PAGE_LIMIT = 20;
@@ -49,7 +51,12 @@ const columns: Column<Invoice>[] = [
     key: "id",
     label: "Invoice",
     render: (invoice) => (
-      <span className="font-medium text-ink">#{invoice.id}</span>
+      <Link
+        href={`/invoices/${invoice.id}`}
+        className="font-medium text-ink hover:text-accent-600 hover:underline"
+      >
+        #{invoice.id}
+      </Link>
     ),
   },
   {
@@ -107,6 +114,19 @@ const columns: Column<Invoice>[] = [
       <span className="text-ink-400">{formatDate(invoice.date)}</span>
     ),
   },
+  {
+    key: "actions",
+    label: "",
+    align: "right",
+    render: (invoice) => (
+      <Link
+        href={`/invoices/${invoice.id}`}
+        className="text-sm font-medium text-accent-600 hover:underline"
+      >
+        View
+      </Link>
+    ),
+  },
 ];
 
 export default function InvoicesPage() {
@@ -147,6 +167,11 @@ export default function InvoicesPage() {
       <PageHeader
         title="Invoices"
         description="Student fee invoices and their payment status."
+        actions={
+          <Link href="/invoices/new">
+            <Button>New Invoice</Button>
+          </Link>
+        }
       />
 
       {error && (
