@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, ApiError } from "@/lib/api";
 import type { Lead, Paginated } from "@/lib/types";
 import PageHeader from "@/components/PageHeader";
+import Button from "@/components/Button";
 import DataTable, { type Column } from "@/components/DataTable";
 
 const PAGE_LIMIT = 20;
@@ -26,7 +28,12 @@ const columns: Column<Lead>[] = [
     key: "title",
     label: "Name",
     render: (lead) => (
-      <span className="font-medium text-ink">{lead.title || "—"}</span>
+      <Link
+        href={`/leads/${lead.id}`}
+        className="font-medium text-ink hover:text-accent-600 hover:underline"
+      >
+        {lead.title || "—"}
+      </Link>
     ),
   },
   { key: "phone", label: "Phone" },
@@ -50,6 +57,19 @@ const columns: Column<Lead>[] = [
     align: "right",
     render: (lead) => (
       <span className="text-ink-400">{formatDate(lead.created_at)}</span>
+    ),
+  },
+  {
+    key: "actions",
+    label: "",
+    align: "right",
+    render: (lead) => (
+      <Link
+        href={`/leads/${lead.id}`}
+        className="text-sm font-medium text-accent-600 hover:underline"
+      >
+        View
+      </Link>
     ),
   },
 ];
@@ -92,6 +112,11 @@ export default function LeadsPage() {
       <PageHeader
         title="Leads"
         description="Prospects in the CRM funnel that haven't converted yet."
+        actions={
+          <Link href="/leads/new">
+            <Button>New Lead</Button>
+          </Link>
+        }
       />
 
       {error && (
