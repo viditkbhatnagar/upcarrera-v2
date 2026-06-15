@@ -10,7 +10,8 @@
     "db:pull": "prisma db pull",
     "db:generate": "prisma generate",
     "lint": "eslint \"src/**/*.ts\"",
-    "test": "jest"
+    "test": "jest",
+    "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
@@ -32,11 +33,17 @@
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",
+    "@nestjs/testing": "^10.4.22",
     "@types/bcryptjs": "^2.4.6",
     "@types/express": "^4.17.21",
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.10.2",
     "@types/passport-jwt": "^4.0.1",
+    "@types/supertest": "^7.2.0",
+    "jest": "^30.4.2",
     "prisma": "^6.1.0",
+    "supertest": "^7.2.2",
+    "ts-jest": "^29.4.11",
     "typescript": "^5.7.2"
   }
 }

@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "types": ["node", "jest"],
+    "esModuleInterop": false,
+    "allowSyntheticDefaultImports": true,
+    "noEmit": true
+  },
+  "include": ["./**/*.ts", "../src/**/*"]
+}
