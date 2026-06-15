@@ -12,6 +12,8 @@ import { TeachersModule } from './teachers/teachers.module';
 import { FinanceModule } from './finance/finance.module';
 import { SessionsModule } from './sessions/sessions.module';
 import { PlatformModule } from './platform/platform.module';
+import { FilesModule } from './files/files.module';
+import { PermissionsGuard } from './common/guards/permissions.guard';
 
 @Module({
   imports: [
@@ -25,6 +27,7 @@ import { PlatformModule } from './platform/platform.module';
     FinanceModule,
     SessionsModule,
     PlatformModule,
+    FilesModule,
   ],
   providers: [
     // Global JWT guard — every route is protected unless marked @Public().
@@ -32,6 +35,10 @@ import { PlatformModule } from './platform/platform.module';
     // Global role guard — enforces @Roles() at the controller layer
     // (CI4 only gated permissions in views; we move it server-side).
     { provide: APP_GUARD, useClass: RolesGuard },
+    // Global permission guard — enforces @RequirePermission() slugs.
+    // Registered LAST so it runs after JwtAuthGuard populates request.user
+    // (reads roleId) and after RolesGuard. Ports permission_helper.php.
+    { provide: APP_GUARD, useClass: PermissionsGuard },
   ],
 })
 export class AppModule {}

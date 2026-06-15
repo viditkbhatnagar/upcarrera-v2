@@ -8,6 +8,9 @@ dist/
 out/
 *.tsbuildinfo
 
+# runtime file storage (local StorageService; real files go to S3 later)
+apps/api/uploads/
+
 # env / secrets
 .env
 .env.*
