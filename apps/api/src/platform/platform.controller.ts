@@ -14,6 +14,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
 
 /** Parse a numeric query param, returning undefined for missing/blank/NaN. */
 function toNumber(value?: string): number | undefined {
@@ -52,18 +53,21 @@ export class PlatformController {
   }
 
   @Post('users')
+  @RequirePermission('consultants/create')
   @ResponseMessage('User created')
   createUser(@Body() dto: CreateUserDto) {
     return this.platform.createUser(dto);
   }
 
   @Patch('users/:id')
+  @RequirePermission('consultants/edit')
   @ResponseMessage('User updated')
   updateUser(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateUserDto) {
     return this.platform.updateUser(id, dto);
   }
 
   @Delete('users/:id')
+  @RequirePermission('consultants/delete')
   @ResponseMessage('User deleted')
   removeUser(@Param('id', ParseIntPipe) id: number) {
     return this.platform.removeUser(id);
@@ -72,6 +76,7 @@ export class PlatformController {
   // ----- Roles -----
 
   @Get('roles')
+  @RequirePermission('roles/index')
   @ResponseMessage('Roles fetched')
   findRoles() {
     return this.platform.findRoles();
@@ -80,6 +85,7 @@ export class PlatformController {
   // ----- Permissions -----
 
   @Get('permissions')
+  @RequirePermission('permissions/index')
   @ResponseMessage('Permissions fetched')
   findPermissions() {
     return this.platform.findPermissions();
@@ -88,6 +94,7 @@ export class PlatformController {
   // ----- Role-permissions -----
 
   @Get('role-permissions')
+  @RequirePermission('roles-permissions/index')
   @ResponseMessage('Role permissions fetched')
   findRolePermissions(@Query('role_id') roleId?: string) {
     return this.platform.findRolePermissions(toNumber(roleId));
