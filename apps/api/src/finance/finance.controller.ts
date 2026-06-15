@@ -8,8 +8,11 @@ import {
   Patch,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { FinanceService } from './finance.service';
+import { PdfService } from './pdf.service';
 import { CreateInvoiceDto, UpdateInvoiceDto } from './dto/invoice.dto';
 import { CreatePaymentDto } from './dto/payment.dto';
 import { CreateFeeTypeDto } from './dto/fee-type.dto';
@@ -33,7 +36,44 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
  */
 @Controller()
 export class FinanceController {
-  constructor(private readonly finance: FinanceService) {}
+  constructor(
+    private readonly finance: FinanceService,
+    private readonly pdf: PdfService,
+  ) {}
+
+  // ---- pdf -----------------------------------------------------------------
+  // These stream a binary PDF directly to the response. They use
+  // @Res({ passthrough: false }) so Nest does NOT try to serialise/wrap the
+  // return value — the PdfService pipes the document and calls doc.end().
+  // ResponseInterceptor + AllExceptionsFilter both bail on headersSent, so the
+  // streaming download is left untouched. NOTE: a NotFound thrown BEFORE any
+  // bytes are written still renders the normal JSON error envelope.
+
+  @Get('invoices/:id/pdf')
+  async invoicePdf(
+    @Param('id', ParseIntPipe) id: number,
+    @Res({ passthrough: false }) res: Response,
+  ): Promise<void> {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="invoice-${id}.pdf"`,
+    );
+    await this.pdf.streamInvoice(id, res);
+  }
+
+  @Get('payments/receipt/:id/pdf')
+  async paymentReceiptPdf(
+    @Param('id', ParseIntPipe) id: number,
+    @Res({ passthrough: false }) res: Response,
+  ): Promise<void> {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="receipt-${id}.pdf"`,
+    );
+    await this.pdf.streamReceipt(id, res);
+  }
 
   // ---- invoices ------------------------------------------------------------
 
