@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import * as XLSX from 'xlsx';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
@@ -397,21 +397,47 @@ export class LeadsService {
     }
 
     // --- 2. parse the workbook (first sheet) --------------------------------
+    // Build header-keyed row objects (header text -> cell value) so the
+    // downstream `cell()` alias mapping behaves exactly as it did with the
+    // legacy `sheet_to_json` output: row 1 is the header, data starts at row 2,
+    // missing cells default to '' so keys never shift between rows.
     let rows: Record<string, unknown>[];
     try {
-      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
-      const firstSheetName = workbook.SheetNames[0];
-      const sheet = firstSheetName
-        ? workbook.Sheets[firstSheetName]
-        : undefined;
+      const workbook = new ExcelJS.Workbook();
+      // exceljs's load() is typed against an older @types/node where `Buffer`
+      // was non-generic; under @types/node v22 `Buffer<ArrayBufferLike>` is no
+      // longer structurally assignable to that declaration (the [Symbol.toStringTag]
+      // discriminant differs). The value IS a Node Buffer at runtime, so cast at
+      // this single interop seam to bridge the purely-nominal typing gap.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await workbook.xlsx.load(fileBuffer as any);
+      const sheet = workbook.worksheets[0];
       if (!sheet) {
-        throw new BadRequestException(
-          'The uploaded workbook has no sheets.',
-        );
+        throw new BadRequestException('The uploaded workbook has no sheets.');
       }
-      // defval:'' keeps a stable shape so missing cells don't shift keys.
-      rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-        defval: '',
+
+      let headers: string[] = [];
+      rows = [];
+
+      sheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) {
+          // Header row: capture header text per column index.
+          headers = [];
+          row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+            headers[colNumber] = this.cellText(cell.value);
+          });
+          return;
+        }
+
+        // Data row: map each configured header column to its cell value,
+        // defaulting absent cells to '' for a stable object shape.
+        const record: Record<string, unknown> = {};
+        for (let colNumber = 1; colNumber < headers.length; colNumber += 1) {
+          const header = headers[colNumber];
+          if (header === undefined || header === '') continue;
+          record[header] = this.cellText(row.getCell(colNumber).value);
+        }
+        rows.push(record);
       });
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
@@ -574,6 +600,37 @@ export class LeadsService {
       }
     }
     return '';
+  }
+
+  /**
+   * Normalise an exceljs cell value to a plain string. ExcelJS represents some
+   * cells as rich objects (hyperlinks, formula results, rich text, dates,
+   * errors) rather than primitives, so flatten those to the same text a simple
+   * spreadsheet reader would yield. The downstream `cell()` helper trims and
+   * lowercases as needed, so we only need a faithful raw string here.
+   */
+  private cellText(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'object') {
+      const obj = value as Record<string, unknown>;
+      // Hyperlink cell: { text, hyperlink }
+      if (typeof obj.text === 'string') return obj.text;
+      // Formula cell: { formula, result }
+      if ('result' in obj) return this.cellText(obj.result);
+      // Rich-text cell: { richText: [{ text }, ...] }
+      if (Array.isArray(obj.richText)) {
+        return obj.richText
+          .map((part) => this.cellText((part as { text?: unknown })?.text))
+          .join('');
+      }
+      // Shared-formula / error cells: nothing useful to extract.
+    }
+    return String(value);
   }
 
   /** Coerce an optional numeric-string metadata field to Int|null. */
