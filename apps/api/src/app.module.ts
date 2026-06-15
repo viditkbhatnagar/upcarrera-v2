@@ -13,6 +13,8 @@ import { FinanceModule } from './finance/finance.module';
 import { SessionsModule } from './sessions/sessions.module';
 import { PlatformModule } from './platform/platform.module';
 import { FilesModule } from './files/files.module';
+import { IntegrationsModule } from './integrations/integrations.module';
+import { ReportsModule } from './reports/reports.module';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 
 @Module({
@@ -28,6 +30,8 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
     SessionsModule,
     PlatformModule,
     FilesModule,
+    IntegrationsModule,
+    ReportsModule,
   ],
   providers: [
     // Global JWT guard — every route is protected unless marked @Public().

@@ -27,6 +27,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.logger.error(exception.message, exception.stack);
     }
 
+    // If the response has already been sent (e.g. a controller wrote a file
+    // download directly), writing again throws ERR_HTTP_HEADERS_SENT and would
+    // escape the filter, crashing the process. Bail out instead.
+    if (response.headersSent) {
+      return;
+    }
+
     response.status(status).json({ status: false, message, data: null });
   }
 }
