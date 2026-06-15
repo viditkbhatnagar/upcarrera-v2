@@ -1,0 +1,1196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model applications {
+  application_id        Int       @id @default(autoincrement())
+  name                  String?   @db.VarChar(255)
+  dob                   DateTime? @db.Date
+  gender                String?   @db.VarChar(10)
+  nationality           Int?      @default(0)
+  email                 String?   @db.VarChar(255)
+  code                  Int?
+  phone                 String?   @db.VarChar(20)
+  second_code           Int?
+  second_phone          String?   @db.VarChar(20)
+  whatsapp_no           String?   @db.VarChar(20)
+  country_id            Int?      @default(0)
+  state                 String?   @db.VarChar(100)
+  district              String?   @db.VarChar(100)
+  address               String?   @db.Text
+  status                Boolean?  @default(true)
+  cropped_image         String?   @db.Text
+  enrollment_date       DateTime? @db.Date
+  university_id         Int?
+  course_id             Int?
+  specialisation_id     Int?
+  session_id            Int?
+  adm_pipeline          String?   @db.VarChar(100)
+  pipeline_user         Int?
+  source                String?   @db.VarChar(255)
+  admission_status      Boolean?  @default(false)
+  custom_application_id String?   @db.VarChar(100)
+  abc_id                String?   @db.VarChar(100)
+  enrollment_id         String?   @db.VarChar(100)
+  amount                Int?
+  paid_date             DateTime? @db.Date
+  payment_mode          String?   @db.VarChar(100)
+  payment_to            String?   @db.VarChar(100)
+  fee_receipt           String?   @db.VarChar(255)
+  is_archived           Boolean   @default(false)
+  is_converted          Int?
+  converted_by          Int?
+  converted_at          DateTime? @db.DateTime(0)
+  created_by            Int?
+  created_at            DateTime? @db.DateTime(0)
+  updated_by            Int?
+  updated_at            DateTime? @db.DateTime(0)
+  deleted_at            DateTime? @db.DateTime(0)
+  deleted_by            Int?
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model assessment {
+  id              Int       @id @default(autoincrement())
+  title           String?   @db.VarChar(260)
+  description     String?   @db.Text
+  due_date        DateTime? @db.Date
+  student_id      Int?
+  teacher_id      Int?
+  course_id       Int?
+  subject_id      Int?
+  answer_file     String?   @db.LongText
+  answer          String?   @db.Text
+  student_status  Int?      @default(0)
+  teacher_status  Int?      @default(0)
+  mark            String?   @db.VarChar(260)
+  teacher_remarks String?   @db.Text
+  created_at      DateTime? @db.DateTime(0)
+  updated_at      DateTime? @db.DateTime(0)
+  deleted_at      DateTime? @db.DateTime(0)
+  created_by      Int?
+  updated_by      Int?
+  deleted_by      Int?
+
+  @@index([course_id], map: "course_id")
+  @@index([student_id], map: "student_id")
+  @@index([teacher_id], map: "teacher_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model clients {
+  client_id         Int       @id @default(autoincrement())
+  user_id           Int?
+  business_name     String?   @db.VarChar(100)
+  consultant_type   String?   @db.VarChar(60)
+  business_category String?   @db.VarChar(50)
+  languages         String?   @db.VarChar(100)
+  whatsapp          Int?
+  website           String?   @db.VarChar(50)
+  city              String?   @db.VarChar(100)
+  state             String?   @db.VarChar(100)
+  address           String    @db.Text
+  agreement         String?   @db.VarChar(100)
+  commission_model  String?   @db.VarChar(100)
+  university        String?   @db.LongText
+  course            String?   @db.LongText
+  start_date        DateTime? @db.Date
+  end_date          DateTime? @db.Date
+  created_at        DateTime? @db.DateTime(0)
+  created_by        Int?
+  updated_at        DateTime? @db.DateTime(0)
+  updated_by        Int?
+  deleted_at        DateTime? @db.DateTime(0)
+  deleted_by        Int?
+}
+
+model college {
+  id         Int       @id @default(autoincrement())
+  title      String?   @db.VarChar(160)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+  updated_at DateTime? @db.DateTime(0)
+  created_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+}
+
+model commission_plan {
+  id                         Int       @id @default(autoincrement())
+  student_id                 Int?
+  expected_commission_amount String?   @db.VarChar(288)
+  expected_date              DateTime? @db.Date
+  amount_received            String?   @db.VarChar(288)
+  amount_received_date       DateTime? @db.Date
+  created_at                 DateTime? @db.DateTime(0)
+  updated_at                 DateTime? @db.DateTime(0)
+  deleted_at                 DateTime? @db.DateTime(0)
+  created_by                 Int?
+  updated_by                 Int?
+  deleted_by                 Int?
+
+  @@index([student_id], map: "student_id")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model consultant_target {
+  consultant_target_id Int       @id @default(autoincrement())
+  type                 Int?
+  from_date            DateTime? @db.Date
+  to_date              DateTime? @db.Date
+  value                Int?
+  consultant_id        Int?
+  created_by           Int?
+  created_at           DateTime? @db.DateTime(0)
+  updated_at           DateTime? @db.DateTime(0)
+  updated_by           Int?
+  deleted_by           Int?
+  deleted_at           DateTime? @db.DateTime(0)
+}
+
+model consultant_universities {
+  id            Int       @id @default(autoincrement())
+  user_id       Int?
+  university_id Int?
+  created_at    DateTime? @db.DateTime(0)
+  updated_at    DateTime? @db.DateTime(0)
+  deleted_at    DateTime? @db.DateTime(0)
+  created_by    Int?
+  updated_by    Int?
+  deleted_by    Int?
+
+  @@index([university_id], map: "course_id")
+  @@index([user_id], map: "user_id")
+}
+
+model countries {
+  country_id Int       @id @default(autoincrement())
+  country    String    @db.VarChar(80)
+  short_code String?   @db.Char(3)
+  phonecode  Int
+  created_at DateTime  @default(now()) @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  created_by Int?      @default(1)
+  updated_by Int?
+  deleted_by Int?
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model course {
+  id                   Int       @id @default(autoincrement())
+  title                String?   @db.VarChar(160)
+  short_name           String    @db.VarChar(255)
+  photo                String?   @db.Text
+  stream               String    @db.VarChar(255)
+  level                String?   @db.VarChar(255)
+  duration             String?   @db.VarChar(50)
+  total_duration       String    @db.VarChar(255)
+  specialisations      String?   @db.Text
+  eligibility_criteria String?   @db.Text
+  subjects             String?   @db.Text
+  assessment_methods   String?   @db.Text
+  payment_mode         String?   @db.VarChar(255)
+  emi_facility         Boolean?  @default(false)
+  point                String?   @db.Text
+  total_amount         Int       @default(0)
+  fee_structure        String?   @db.LongText
+  study_mode           String    @db.VarChar(25)
+  is_lms_course        Int       @default(0)
+  added_at             DateTime? @db.DateTime(0)
+  university_id        Int?
+  status               Int?
+  created_by           Int?
+  updated_by           Int?
+  deleted_by           Int?
+  updated_at           DateTime? @db.DateTime(0)
+  created_at           DateTime? @db.DateTime(0)
+  deleted_at           DateTime? @db.DateTime(0)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model create_order {
+  id               Int       @id @default(autoincrement())
+  invoice_id       Int?
+  order_id         String?   @db.VarChar(50)
+  payment_id       Int?
+  payment_id_raz   Int?
+  amount           Float?
+  student_id       Int?
+  payment_captured Int?
+  order_status     String?   @db.VarChar(20)
+  datetime         DateTime? @db.DateTime(0)
+  created_by       Int?
+  updated_by       Int?
+  deleted_by       Int?
+  created_at       DateTime? @db.DateTime(0)
+  updated_at       DateTime? @db.DateTime(0)
+  deleted_at       DateTime? @db.DateTime(0)
+
+  @@index([invoice_id], map: "invoice_id")
+  @@index([student_id], map: "student_id")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model demo_sessions {
+  id              Int       @id @default(autoincrement())
+  session_no      String?   @db.VarChar(160)
+  session_title   String?   @db.VarChar(260)
+  lead_id         Int?
+  course_id       Int?
+  subject_id      Int?
+  teacher_id      Int?
+  schedule_id     Int?
+  scheduled_date  DateTime? @db.Date
+  from_time       DateTime? @db.Time(0)
+  to_time         DateTime? @db.Time(0)
+  teacher_status  Boolean?  @default(false)
+  lead_status     Boolean?  @default(false)
+  teacher_remarks String?   @db.VarChar(260)
+  lead_remarks    String?   @db.VarChar(260)
+  created_at      DateTime? @db.DateTime(0)
+  updated_at      DateTime? @db.DateTime(0)
+  deleted_at      DateTime? @db.DateTime(0)
+  created_by      Int?
+  updated_by      Int?
+  deleted_by      Int?
+
+  @@index([course_id], map: "course_id")
+  @@index([lead_id], map: "lead_id")
+  @@index([subject_id], map: "subject_id")
+  @@index([teacher_id], map: "teacher_id")
+}
+
+model document_type {
+  id         Int       @id @default(autoincrement())
+  title      String?   @db.VarChar(160)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+  updated_at DateTime? @db.DateTime(0)
+  created_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+}
+
+model enrol {
+  id            Int       @id @default(autoincrement())
+  user_id       Int?
+  teacher_id    Int?
+  course_id     Int?
+  university_id Int?
+  subject_id    Int?
+  created_at    DateTime? @db.DateTime(0)
+  updated_at    DateTime? @db.DateTime(0)
+  deleted_at    DateTime? @db.DateTime(0)
+  created_by    Int?
+  updated_by    Int?
+  deleted_by    Int?
+
+  @@index([course_id], map: "course_id")
+  @@index([user_id], map: "student_id")
+  @@index([subject_id], map: "subject_id")
+  @@index([teacher_id], map: "teacher_id")
+}
+
+model fee_type {
+  id         Int       @id @default(autoincrement())
+  title      String?   @db.VarChar(160)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+  updated_at DateTime? @db.DateTime(0)
+  created_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+}
+
+model finance {
+  id                  Int       @id @default(autoincrement())
+  student_id          Int
+  tuitionFees         Int?
+  examFees            Int?
+  miscFees            Int?
+  scholarship_details String?   @db.Text
+  payment_status      String?   @db.VarChar(20)
+  created_by          Int?
+  updated_by          Int?
+  created_at          DateTime? @db.DateTime(0)
+  updated_at          DateTime? @db.DateTime(0)
+  deleted_at          DateTime? @db.DateTime(0)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model group_courses {
+  id          Int       @id @default(autoincrement()) @db.UnsignedInt
+  group_name  String    @db.VarChar(255)
+  description String?   @db.Text
+  course_ids  String    @db.LongText
+  created_by  Int?      @db.UnsignedInt
+  updated_by  Int?      @db.UnsignedInt
+  deleted_by  Int?      @db.UnsignedInt
+  created_at  DateTime? @db.DateTime(0)
+  updated_at  DateTime? @db.DateTime(0)
+  deleted_at  DateTime? @db.DateTime(0)
+
+  @@index([created_by], map: "idx_created_by")
+  @@index([deleted_at], map: "idx_deleted_at")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model homework {
+  id              Int       @id @default(autoincrement())
+  title           String?   @db.VarChar(260)
+  description     String?   @db.Text
+  due_date        DateTime? @db.Date
+  student_id      Int?
+  course_id       Int?
+  subject_id      Int?
+  teacher_id      Int?
+  answer_file     String?   @db.LongText
+  answer          String?   @db.Text
+  student_status  Int       @default(0)
+  teacher_status  Int       @default(0)
+  mark            String?   @db.VarChar(260)
+  teacher_remarks String?   @db.VarChar(260)
+  created_at      DateTime? @db.DateTime(0)
+  updated_at      DateTime? @db.DateTime(0)
+  deleted_at      DateTime? @db.DateTime(0)
+  created_by      Int?
+  updated_by      Int?
+  deleted_by      Int?
+
+  @@index([course_id], map: "course_id")
+  @@index([student_id], map: "student_id")
+  @@index([subject_id], map: "subject_id")
+  @@index([teacher_id], map: "teacher_id")
+}
+
+model installments {
+  id                 Int       @id @default(autoincrement())
+  student_id         Int?
+  course_id          Int?
+  installment_amount Int?
+  due_date           DateTime? @db.Date
+  remark             String?   @db.Text
+  created_at         DateTime? @db.DateTime(0)
+  created_by         Int?
+  updated_by         Int?
+  updated_at         DateTime? @db.DateTime(0)
+  deleted_at         DateTime? @db.DateTime(0)
+  deleted_by         Int?
+}
+
+model invoice {
+  id                                 Int                    @id @default(autoincrement())
+  university_id                      Int?
+  semester_id                        Int?
+  student_id                         Int?
+  course_id                          Int?
+  payment_status                     invoice_payment_status @default(pending)
+  total_amount                       Float?
+  discount_amount                    Float?
+  payable_amount                     Float?
+  date                               DateTime?              @db.Date
+  due_date                           DateTime?              @db.Date
+  collected_commission_of_university Decimal?               @db.Decimal(10, 0)
+  remarks                            String?                @db.Text
+  created_at                         DateTime?              @db.DateTime(0)
+  updated_at                         DateTime?              @db.DateTime(0)
+  deleted_at                         DateTime?              @db.DateTime(0)
+  created_by                         Int?
+  updated_by                         Int?
+  deleted_by                         Int?
+
+  @@index([student_id], map: "student_id")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model invoice_crone_job {
+  id         Int                     @id @default(autoincrement())
+  invoice_id Int?
+  due_date   DateTime?               @db.Date
+  type       invoice_crone_job_type?
+  created_at DateTime?               @db.DateTime(0)
+  created_by Int?
+  updated_at DateTime?               @db.DateTime(0)
+  updated_by Int?
+  deleted_at DateTime?               @db.DateTime(0)
+  deleted_by Int?
+}
+
+model lead_activity {
+  id             Int       @id @default(autoincrement())
+  lead_id        Int?
+  lead_status_id Int?
+  remarks        String?   @db.VarChar(400)
+  followup_date  DateTime? @db.Date
+  action_by      Int?
+  created_by     Int?
+  updated_by     Int?
+  created_at     DateTime? @db.DateTime(0)
+  updated_at     DateTime? @db.DateTime(0)
+  deleted_at     DateTime? @db.DateTime(0)
+  deleted_by     Int?
+}
+
+model lead_category {
+  id         Int       @id @default(autoincrement())
+  title      String?   @db.VarChar(50)
+  created_by Int?
+  updated_by Int?
+  created_on DateTime? @db.DateTime(0)
+  updated_on DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  deleted_by Int?
+}
+
+model lead_source {
+  id         Int       @id @default(autoincrement())
+  title      String?   @db.VarChar(100)
+  created_by Int?
+  updated_by Int?
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  deleted_by Int?
+}
+
+model lead_status {
+  id         Int       @id @default(autoincrement())
+  title      String?   @db.VarChar(100)
+  created_by Int?
+  updated_by Int?
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  deleted_by Int?
+}
+
+model lead_upload {
+  id             Int       @id @default(autoincrement())
+  title          String?   @db.VarChar(100)
+  lead_source_id Int?
+  file           String?   @db.VarChar(100)
+  created_at     DateTime? @db.DateTime(0)
+  updated_at     DateTime? @db.DateTime(0)
+  deleted_at     DateTime? @db.DateTime(0)
+  created_by     Int?
+  updated_by     Int?
+  deleted_by     Int?
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model leads {
+  id                  Int       @id @default(autoincrement())
+  title               String?   @db.Text
+  gender              String?   @db.VarChar(60)
+  age                 Int?
+  code                String?   @db.VarChar(60)
+  phone               String?   @db.VarChar(60)
+  whatsapp_code       String?   @db.VarChar(60)
+  whatsapp            String?   @db.VarChar(60)
+  email               String?   @db.VarChar(160)
+  qualification       String?   @db.VarChar(160)
+  country_id          Int?
+  interest_status     Int?
+  lead_status_id      Int?
+  is_verified         Int       @default(0)
+  verified_by         Int?
+  verified_at         DateTime? @db.DateTime(0)
+  is_converted        Int       @default(0)
+  converted_by        Int?
+  coverted_at         DateTime? @db.DateTime(0)
+  candidate_status_id Int?
+  excel_file_id       Int?
+  remarks             String?   @db.VarChar(400)
+  lead_source_id      String?   @db.VarChar(100)
+  followup_date       DateTime? @db.Date
+  address             String?   @db.VarChar(200)
+  telecaller_id       Int?
+  class               String?   @db.VarChar(60)
+  syllabus            String?   @db.VarChar(60)
+  university_id       Int?
+  institution_id      Int?
+  course_id           Int?
+  subject_id          String?   @db.LongText
+  place               String?   @db.VarChar(160)
+  created_at          DateTime? @db.DateTime(0)
+  created_by          Int?
+  updated_at          DateTime? @db.DateTime(0)
+  updated_by          Int?
+  deleted_at          DateTime? @db.DateTime(0)
+  deleted_by          Int?
+
+  @@index([country_id], map: "country_id")
+  @@index([course_id], map: "course_id")
+  @@index([telecaller_id], map: "education_manager_id")
+  @@index([lead_source_id], map: "lead_source_id")
+  @@index([lead_status_id], map: "lead_status_id")
+}
+
+model live_settings {
+  id                Int       @id @default(autoincrement())
+  meeting_name      String?   @db.VarChar(100)
+  meeting_id        String?   @db.VarChar(50)
+  meeting_password  String?   @db.VarChar(50)
+  api_client_id     String?   @db.VarChar(50)
+  api_client_secret String?   @db.VarChar(50)
+  created_at        DateTime? @db.DateTime(0)
+  updated_at        DateTime? @db.DateTime(0)
+  deleted_at        DateTime? @db.DateTime(0)
+  created_by        Int?
+  updated_by        Int?
+  deleted_by        Int?
+}
+
+model notifications {
+  id          Int       @id @default(autoincrement())
+  title       String?   @db.Text
+  description String?   @db.Text
+  role_id     Int?
+  user_id     Int?      @default(0)
+  created_at  DateTime? @db.DateTime(0)
+  updated_at  DateTime? @db.DateTime(0)
+  deleted_at  DateTime? @db.DateTime(0)
+  created_by  Int?
+  updated_by  Int?
+  deleted_by  Int?
+}
+
+model payment {
+  id                             Int                   @id @default(autoincrement())
+  user_id                        Int?
+  invoice_id                     Int?
+  payment_type                   payment_payment_type?
+  paid_amount                    Float?
+  payment_date                   DateTime?             @db.Date
+  reference_no                   String?               @db.Text
+  remark                         String?               @db.VarChar(250)
+  refferal_commision_individual  Decimal?              @db.Decimal(10, 0)
+  refferal_commision_institution Decimal?              @db.Decimal(10, 0)
+  university_commision_amount    Decimal?              @db.Decimal(10, 0)
+  created_by                     Int?
+  updated_by                     Int?
+  created_on                     DateTime?             @db.DateTime(0)
+  updated_on                     DateTime?             @db.DateTime(0)
+  deleted_at                     DateTime?             @db.Date
+  deleted_by                     Int?
+
+  @@index([invoice_id], map: "invoice_id")
+  @@index([user_id], map: "user_id")
+}
+
+model permissions {
+  id         Int       @id @default(autoincrement())
+  title      String?   @db.VarChar(50)
+  slug       String?   @db.VarChar(50)
+  created_by Int?
+  updated_by Int?
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  deleted_by Int?
+}
+
+model qualification {
+  qualification_id Int       @id @default(autoincrement())
+  student_id       Int
+  application_id   Int?
+  qualification    String?   @db.VarChar(50)
+  board            String?   @db.VarChar(100)
+  percentage       Int?
+  certificate      String?   @db.VarChar(100)
+  marksheet        String?   @db.VarChar(100)
+  created_at       DateTime? @db.DateTime(0)
+  created_by       Int?
+  updated_at       DateTime? @db.DateTime(0)
+  updated_by       Int?
+  deleted_at       Int?
+}
+
+model resource_category {
+  resource_category_id   Int       @id @default(autoincrement())
+  resource_category_name String    @db.VarChar(50)
+  description            String?   @db.Text
+  created_by             Int?
+  updated_by             Int?
+  created_at             DateTime? @db.DateTime(0)
+  updated_at             DateTime? @db.DateTime(0)
+  deleted_at             DateTime? @db.DateTime(0)
+}
+
+model resources {
+  resource_id          Int              @id @default(autoincrement())
+  title                String           @db.VarChar(255)
+  type                 resources_type
+  resource_category_id Int?
+  upload_date          DateTime         @default(now()) @db.DateTime(0)
+  status               resources_status
+  file_path            String           @db.VarChar(500)
+  created_by           Int?
+  updated_by           Int?
+  created_at           DateTime?        @db.DateTime(0)
+  updated_at           DateTime?        @db.DateTime(0)
+  deleted_at           DateTime?        @db.DateTime(0)
+}
+
+model role_lead_status {
+  id             Int       @id @default(autoincrement())
+  role_id        Int?
+  lead_status_id Int?
+  created_by     Int?
+  updated_by     Int?
+  created_on     DateTime? @db.DateTime(0)
+  updated_on     DateTime? @db.DateTime(0)
+  deleted_at     DateTime? @db.DateTime(0)
+  deleted_by     Int?
+}
+
+model role_permissions {
+  id            Int       @id @default(autoincrement())
+  role_id       Int?
+  permission_id Int?
+  created_by    Int?
+  updated_by    Int?
+  created_on    DateTime? @db.DateTime(0)
+  updated_on    DateTime? @db.DateTime(0)
+  deleted_at    DateTime? @db.DateTime(0)
+  deleted_by    Int?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model salary_payment {
+  id           Int                          @id @default(autoincrement())
+  teacher_id   Int?
+  month        String?                      @db.VarChar(60)
+  year         String?                      @db.VarChar(60)
+  payment_type salary_payment_payment_type?
+  paid_amount  Float?
+  payment_date DateTime?                    @db.Date
+  reference_no String?                      @db.Text
+  remark       String?                      @db.VarChar(260)
+  created_at   DateTime?                    @db.DateTime(0)
+  created_by   Int?
+  updated_at   DateTime?                    @db.DateTime(0)
+  updated_by   Int?
+  deleted_at   DateTime?                    @db.DateTime(0)
+  deleted_by   Int?
+
+  @@index([teacher_id], map: "teacher_id")
+}
+
+model salary_settings {
+  id           Int       @id @default(autoincrement())
+  time_slab_id Int?
+  salary       Float?
+  created_at   DateTime? @db.DateTime(0)
+  updated_at   DateTime? @db.DateTime(0)
+  deleted_at   DateTime? @db.DateTime(0)
+  created_by   Int?
+  updated_by   Int?
+  deleted_by   Int?
+
+  @@index([time_slab_id], map: "time_slab_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model sales_team {
+  id            Int       @id @default(autoincrement())
+  name          String?   @db.VarChar(160)
+  leader        String?   @db.VarChar(10)
+  members       String?   @db.LongText
+  university_id String?   @db.VarChar(10)
+  course_id     String?   @db.VarChar(10)
+  status        Int?
+  created_by    Int?
+  updated_by    Int?
+  deleted_by    Int?
+  updated_at    DateTime? @db.DateTime(0)
+  created_at    DateTime? @db.DateTime(0)
+  deleted_at    DateTime? @db.DateTime(0)
+}
+
+model semester {
+  id            Int       @id @default(autoincrement())
+  university_id Int?
+  course_id     Int?
+  title         String?   @db.VarChar(100)
+  semester_fee  Int?
+  created_at    DateTime? @db.DateTime(0)
+  created_by    Int?
+  updated_at    DateTime? @db.DateTime(0)
+  updated_by    Int?
+  deleted_by    Int?
+  deleted_at    DateTime? @db.DateTime(0)
+}
+
+model session_attendance {
+  id         Int       @id @default(autoincrement())
+  student_id Int?
+  session_id Int?
+  date       DateTime? @db.Date
+  start_time DateTime? @db.Time(0)
+  end_time   DateTime? @db.Time(0)
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+
+  @@index([session_id], map: "session_id")
+  @@index([student_id], map: "student_id")
+}
+
+model session_attendance_teacher {
+  id         Int       @id @default(autoincrement())
+  teacher_id Int?
+  session_id Int?
+  date       DateTime? @db.Date
+  start_time DateTime? @db.Time(0)
+  end_time   DateTime? @db.Time(0)
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+}
+
+model session_feedback {
+  id                         Int       @id @default(autoincrement())
+  teacher_id                 Int?
+  session_id                 Int?
+  session_status             String?   @db.VarChar(260)
+  problem_faced              String?   @db.VarChar(260)
+  details_spoke_with_parents String?   @db.Text
+  created_at                 DateTime? @db.DateTime(0)
+  created_by                 Int?
+  updated_at                 DateTime? @db.DateTime(0)
+  updated_by                 Int?
+  deleted_at                 DateTime? @db.DateTime(0)
+  deleted_by                 Int?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model session_requests {
+  id         Int       @id @default(autoincrement())
+  student_id Int?
+  course_id  Int?
+  subject_id Int?
+  status     Int?      @default(0)
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+
+  @@index([course_id], map: "course_id")
+  @@index([student_id], map: "student_id")
+  @@index([subject_id], map: "subject_id")
+}
+
+model sessions {
+  session_id    Int       @id @default(autoincrement())
+  session_title String?   @db.VarChar(260)
+  created_at    DateTime? @db.DateTime(0)
+  updated_at    DateTime? @db.DateTime(0)
+  deleted_at    DateTime? @db.DateTime(0)
+  created_by    Int?
+  updated_by    Int?
+  deleted_by    Int?
+}
+
+model settings {
+  id         Int       @id @default(autoincrement())
+  item       String?   @db.VarChar(50)
+  value      String?   @db.VarChar(200)
+  updated_on DateTime? @db.DateTime(0)
+}
+
+model specialisations {
+  id            Int       @id @default(autoincrement())
+  course_id     Int?
+  title         String?   @db.VarChar(160)
+  description   String?   @db.Text
+  point         String?   @db.Text
+  fee_structure String?   @db.Text
+  total_amount  Int?
+  created_by    Int?
+  updated_by    Int?
+  deleted_by    Int?
+  updated_at    DateTime? @db.DateTime(0)
+  created_at    DateTime? @db.DateTime(0)
+  deleted_at    DateTime? @db.DateTime(0)
+}
+
+model states {
+  id         Int       @id @default(autoincrement())
+  country    String    @db.VarChar(100)
+  state_name String    @db.VarChar(100)
+  created_at DateTime? @default(now()) @db.Timestamp(0)
+  created_by Int?
+  updated_at DateTime? @db.DateTime(0)
+  updated_by Int?
+  deleted_at DateTime? @db.DateTime(0)
+  deleted_by Int?
+}
+
+model student_activity {
+  id                Int       @id @default(autoincrement())
+  student_id        Int?
+  student_status_id Int?
+  remarks           String?   @db.VarChar(400)
+  action_by         Int?
+  created_by        Int?
+  updated_by        Int?
+  created_at        DateTime? @db.DateTime(0)
+  updated_at        DateTime? @db.DateTime(0)
+  deleted_at        DateTime? @db.DateTime(0)
+  deleted_by        Int?
+}
+
+model student_document {
+  student_document_id Int       @id @default(autoincrement())
+  label               String?   @db.VarChar(50)
+  file                String?   @db.Text
+  student_id          Int?
+  application_id      Int?
+  created_by          Int?
+  created_at          DateTime? @db.DateTime(0)
+  updated_by          Int?
+  updated_at          DateTime? @db.DateTime(0)
+  deleted_by          Int?
+  deleted_at          DateTime? @db.DateTime(0)
+}
+
+model student_payments {
+  student_payment_id  Int       @id @default(autoincrement())
+  student_id          Int
+  installment_details String?   @db.VarChar(200)
+  amount              Int?
+  due_date            DateTime? @db.Date
+  paid_date           DateTime? @db.Date
+  payment_mode        String?   @db.VarChar(20)
+  payment_to          String?   @db.VarChar(50)
+  status              String?   @db.VarChar(10)
+  created_at          DateTime? @db.DateTime(0)
+  created_by          Int?
+  updated_at          DateTime? @db.DateTime(0)
+  updated_by          Int?
+  deleted_at          DateTime? @db.DateTime(0)
+  deleted_by          Int?
+}
+
+model student_special_fees {
+  id                Int       @id @default(autoincrement())
+  student_id        Int
+  specialisation_id Int
+  special_fee       Decimal   @db.Decimal(10, 2)
+  reason            String?   @db.Text
+  created_by        Int?
+  updated_by        Int?
+  created_at        DateTime? @db.DateTime(0)
+  updated_at        DateTime? @db.DateTime(0)
+  deleted_by        Int?
+  deleted_at        DateTime? @db.DateTime(0)
+
+  @@unique([student_id, specialisation_id], map: "unique_student_specialisation")
+}
+
+model student_status {
+  id         Int       @id @default(autoincrement())
+  title      String?   @db.VarChar(100)
+  created_by Int?
+  updated_by Int?
+  created_on DateTime? @db.DateTime(0)
+  updated_on DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  deleted_by Int?
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model students {
+  id                   Int       @id @default(autoincrement())
+  student_id           Int
+  enrollment_id        String?   @db.VarChar(50)
+  application_id       String?   @db.VarChar(50)
+  dob                  DateTime? @db.Date
+  age                  Int?
+  address              String    @db.Text
+  second_code          String?   @db.VarChar(11)
+  second_phone         String?   @db.VarChar(20)
+  district             String?   @db.VarChar(100)
+  state                String?   @db.VarChar(60)
+  nationality          Int?
+  consultant_id        Int
+  whatsapp_no          String?   @db.VarChar(25)
+  enrollment_date      DateTime? @db.Date
+  admission_status     Int?
+  course_id            Int?
+  specialisation_id    Int?
+  mode                 String?   @db.VarChar(50)
+  session_id           Int?
+  source               String?   @db.VarChar(50)
+  courses              String?   @db.LongText
+  course_status        String?   @db.LongText
+  attendance           String?   @db.LongText
+  midtermGrades        String?   @db.LongText
+  finalGrades          String?   @db.LongText
+  paymentStatus        String?   @db.LongText
+  creditHours          Int?
+  semester_details     String?   @db.Text
+  gpa                  String?   @db.VarChar(50)
+  abc_id               String?   @db.VarChar(200)
+  upcarrera_commission Int?
+  tuitionFees          Int?
+  examFees             Int?
+  miscFees             Int?
+  scholarshipDetails   String?   @db.Text
+  adm_pipeline         String?   @db.VarChar(255)
+  pipeline_user        Int?
+  ref_student          Int?
+  referred_by          Int?
+  created_by           Int?
+  updated_by           Int?
+  created_at           DateTime? @db.DateTime(0)
+  updated_at           DateTime? @db.DateTime(0)
+  deleted_at           DateTime? @db.DateTime(0)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model subjects {
+  id             Int       @id @default(autoincrement())
+  title          String?   @db.VarChar(160)
+  session_amount Float?
+  course_id      Int?
+  created_at     DateTime? @db.DateTime(0)
+  updated_at     DateTime? @db.DateTime(0)
+  deleted_at     DateTime? @db.DateTime(0)
+  created_by     Int?
+  updated_by     Int?
+  deleted_by     Int?
+
+  @@index([course_id], map: "course_id")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model teacher_change_request {
+  id         Int       @id @default(autoincrement())
+  student_id Int?
+  session_id Int?
+  teacher_id Int?
+  status     Int?      @default(0)
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+
+  @@index([session_id], map: "session_id")
+  @@index([student_id], map: "student_id")
+  @@index([teacher_id], map: "teacher_id")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model teacher_salary {
+  id                    Int       @id @default(autoincrement())
+  teacher_id            Int?
+  salary_30             Float?
+  salary_45             Float?
+  salary_1              Float?
+  salary_confirmed_demo Float?
+  created_at            DateTime? @db.DateTime(0)
+  created_by            Int?
+  updated_at            DateTime? @db.DateTime(0)
+  updated_by            Int?
+  deleted_at            DateTime? @db.DateTime(0)
+  deleted_by            Int?
+
+  @@index([teacher_id], map: "teacher_id")
+}
+
+model teachers_schedules {
+  id         Int       @id @default(autoincrement())
+  teacher_id Int?
+  date       DateTime? @db.Date
+  start_time DateTime? @db.Time(0)
+  end_time   DateTime? @db.Time(0)
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+}
+
+model teachers_subjects {
+  id         Int       @id @default(autoincrement())
+  user_id    Int?
+  course_id  Int?
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+
+  @@index([course_id], map: "course_id")
+  @@index([user_id], map: "user_id")
+}
+
+model time_slab {
+  id         Int       @id @default(autoincrement())
+  duration   DateTime? @db.Time(0)
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+}
+
+model university {
+  id               Int       @id @default(autoincrement())
+  title            String?   @db.VarChar(160)
+  country_id       String    @db.Text
+  accreditation    String?   @db.Text
+  website          String    @db.VarChar(60)
+  phone            String    @db.VarChar(15)
+  email            String    @db.VarChar(30)
+  category         String?   @db.VarChar(255)
+  year_established Int?      @db.Year
+  affiliations     String?   @db.Text
+  ranking          String?   @db.Text
+  intakes          String?   @db.Text
+  address          String?   @db.Text
+  state            String?   @db.VarChar(255)
+  photo            String?   @db.VarChar(255)
+  status           String?   @db.VarChar(1)
+  created_by       Int?
+  updated_by       Int?
+  deleted_by       Int?
+  updated_at       DateTime? @db.DateTime(0)
+  created_at       DateTime? @db.DateTime(0)
+  deleted_at       DateTime? @db.DateTime(0)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model user_logs {
+  id         Int       @id @default(autoincrement())
+  user_id    Int?
+  role_id    Int?
+  ip         String?   @db.VarChar(260)
+  date       DateTime? @db.Date
+  time       DateTime? @db.Time(0)
+  status     Int?
+  created_at DateTime? @db.DateTime(0)
+  created_by Int?
+  updated_at DateTime? @db.DateTime(0)
+  updated_by Int?
+  deleted_at DateTime? @db.DateTime(0)
+  deleted_by Int?
+}
+
+model user_role {
+  id         Int       @id @default(autoincrement())
+  title      String?   @db.VarChar(50)
+  created_by Int?
+  updated_by Int?
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+  deleted_by Int?
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model users {
+  id                    Int       @id @default(autoincrement())
+  lead_id               Int?
+  name                  String?   @db.VarChar(100)
+  code                  Int?
+  phone                 String?   @db.VarChar(30)
+  email                 String?   @db.VarChar(50)
+  gender                String?   @db.VarChar(50)
+  syllabus              String?   @db.VarChar(60)
+  class                 String?   @db.VarChar(60)
+  username              String?   @db.Text
+  register_number       String?   @db.Text
+  password              String?   @db.VarChar(100)
+  prev_password         String?   @db.VarChar(100)
+  profile_picture       String?   @db.Text
+  role_id               Int?
+  telecaller_id         Int?      @default(0)
+  university_id         Int?
+  institution_id        Int?
+  otp                   String?   @db.VarChar(10)
+  zoom_id               String?   @db.VarChar(260)
+  zoom_email            String?   @db.Text
+  zoom_password         String?   @db.VarChar(260)
+  meeting_link          String?   @db.Text
+  assigned_universities String?   @db.LongText
+  region                String?   @db.VarChar(50)
+  dob                   DateTime? @db.Date
+  doj                   DateTime? @db.Date
+  highest_qualification String?   @db.VarChar(50)
+  languages_spoken      String?   @db.VarChar(100)
+  client_type           String?   @db.VarChar(10)
+  country_id            Int?
+  partnership_status    String?   @db.VarChar(20)
+  status                Int?      @default(1)
+  drop_out_at           DateTime? @db.DateTime(0)
+  created_by            Int?
+  updated_by            Int?
+  deleted_by            Int?
+  created_at            DateTime? @db.DateTime(0)
+  updated_at            DateTime? @db.DateTime(0)
+  deleted_at            DateTime? @db.DateTime(0)
+
+  @@index([role_id], map: "role_id")
+}
+
+enum resources_type {
+  Poster
+  PDF
+  Video
+  Presentation
+  eBook
+}
+
+enum invoice_crone_job_type {
+  reminder
+  due
+}
+
+enum payment_payment_type {
+  cash
+  cheque
+  bank
+}
+
+enum salary_payment_payment_type {
+  cash
+  cheque
+  bank
+}
+
+enum invoice_payment_status {
+  pending
+  paid
+}
+
+enum resources_status {
+  Active
+  Archived
+}
