@@ -14,12 +14,17 @@ import { CreateInvoiceDto, UpdateInvoiceDto } from './dto/invoice.dto';
 import { CreatePaymentDto } from './dto/payment.dto';
 import { CreateFeeTypeDto } from './dto/fee-type.dto';
 import {
+  CreateRazorpayOrderDto,
+  VerifyRazorpayPaymentDto,
+} from './dto/razorpay.dto';
+import {
   ListInvoicesDto,
   ListPaymentsDto,
   ListFeeTypesDto,
   ListCommissionPlansDto,
 } from './dto/list.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 /**
  * Staff finance endpoints — invoices, payments, fee types, commission plans.
@@ -65,6 +70,13 @@ export class FinanceController {
     return this.finance.deleteInvoice(id);
   }
 
+  // Lists all payments recorded against a single invoice.
+  @Get('invoices/:id/payments')
+  @ResponseMessage('Invoice payments fetched')
+  listInvoicePayments(@Param('id', ParseIntPipe) id: number) {
+    return this.finance.listInvoicePayments(id);
+  }
+
   // ---- payments ------------------------------------------------------------
 
   @Get('payments')
@@ -84,6 +96,25 @@ export class FinanceController {
   @ResponseMessage('Payment recorded')
   createPayment(@Body() dto: CreatePaymentDto) {
     return this.finance.createPayment(dto);
+  }
+
+  // ---- razorpay ------------------------------------------------------------
+  // These require RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET; without them the
+  // provider returns a 503 'Razorpay not configured' (expected locally).
+
+  @Post('payments/razorpay/order')
+  @ResponseMessage('Razorpay order created')
+  razorpayOrder(
+    @Body() dto: CreateRazorpayOrderDto,
+    @CurrentUser('userId') userId: number,
+  ) {
+    return this.finance.razorpayCreateOrder(dto, userId);
+  }
+
+  @Post('payments/razorpay/verify')
+  @ResponseMessage('Razorpay payment verified')
+  razorpayVerify(@Body() dto: VerifyRazorpayPaymentDto) {
+    return this.finance.razorpayVerifyPayment(dto);
   }
 
   // ---- fee types -----------------------------------------------------------
