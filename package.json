@@ -1,0 +1,24 @@
+{
+  "name": "upcarrera-v2",
+  "version": "0.1.0",
+  "private": true,
+  "description": "upcarrera LMS/CRM — TypeScript rewrite (NestJS API + Next.js web + Prisma over MySQL)",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "db:pull": "pnpm --filter @upcarrera/db run db:pull",
+    "db:generate": "pnpm --filter @upcarrera/db run db:generate",
+    "api:dev": "pnpm --filter @upcarrera/api run start:dev"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2",
+    "prettier": "^3.4.2"
+  }
+}
