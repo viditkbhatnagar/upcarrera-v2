@@ -8,14 +8,19 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { LeadsService } from './leads.service';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { ListLeadsDto } from './dto/list-leads.dto';
 import { UpdateLeadStatusDto } from './dto/update-lead-status.dto';
+import { BulkImportLeadsDto } from './dto/bulk-import-leads.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { UploadedFileType } from '../files/uploaded-file.type';
 
 /**
  * Staff CRM endpoints. Protected by the global JwtAuthGuard (no @Public).
@@ -79,5 +84,22 @@ export class LeadsController {
     @CurrentUser('id') userId: number,
   ) {
     return this.leads.convertToStudent(id, userId);
+  }
+
+  /**
+   * Bulk-import leads from an uploaded .xlsx file. Port of
+   * Leads::bulk_upload_add. The file arrives via FileInterceptor (multer memory
+   * storage ships with @nestjs/platform-express — no install needed); optional
+   * batch metadata (title, lead_source_id, course_id) rides along in the body.
+   */
+  @Post('bulk-import')
+  @ResponseMessage('Leads imported')
+  @UseInterceptors(FileInterceptor('file'))
+  bulkImport(
+    @UploadedFile() file: UploadedFileType,
+    @Body() dto: BulkImportLeadsDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.leads.bulkImport(file?.buffer, userId, dto);
   }
 }

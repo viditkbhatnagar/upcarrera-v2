@@ -1,16 +1,18 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
-  NotImplementedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
+import * as XLSX from 'xlsx';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { ListLeadsDto } from './dto/list-leads.dto';
 import { UpdateLeadStatusDto } from './dto/update-lead-status.dto';
 import { CreateLeadSourceDto } from './dto/create-lead-source.dto';
+import { BulkImportLeadsDto } from './dto/bulk-import-leads.dto';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -357,11 +359,227 @@ export class LeadsService {
     });
   }
 
-  // ---- phase-3 stubs -------------------------------------------------------
+  // ---- bulk Excel import ---------------------------------------------------
 
-  // TODO(phase-3): port Leads::bulk_upload_add — parse an uploaded Excel file
-  // (lead_upload) and bulk-insert leads.
-  bulkImport(): never {
-    throw new NotImplementedException('Bulk lead import — phase 3');
+  /**
+   * Port of Leads::bulk_upload_add (App/Controllers/App/Leads.php) +
+   * Lead_upload_model.
+   *
+   * Flow, mirroring the legacy controller:
+   *   1. create a lead_upload row to represent the batch (filename/title +
+   *      created_by/updated_by + timestamps).
+   *   2. parse the workbook from the in-memory buffer, take the FIRST sheet, and
+   *      turn it into rows.
+   *   3. fetch role_id=2 (telecaller) user ids ONCE; round-robin them across the
+   *      imported leads exactly like the legacy $telecallerIndex loop.
+   *   4. for each row: map columns leniently (legacy fixed order was
+   *      Student name / Country code / Phone / Place / Remarks), skip rows with
+   *      no phone, skip phones that already exist as a lead or a user (the
+   *      legacy duplicate guard), and build a lead insert with lead_status_id=1
+   *      (Pending), is_converted=0, excel_file_id = the batch id,
+   *      created_by/updated_by = actor, timestamps.
+   *   5. insert all surviving rows inside one $transaction.
+   *
+   * Returns { imported, batch_id, skipped } where `skipped` lists the rows that
+   * were dropped and why (missing phone / duplicate).
+   *
+   * @param fileBuffer  raw .xlsx bytes (from FileInterceptor memory storage)
+   * @param actorUserId the acting staff user (created_by/updated_by/uploaded_by)
+   * @param meta        optional batch metadata (title, lead_source_id, course_id)
+   */
+  async bulkImport(
+    fileBuffer: Buffer,
+    actorUserId: number,
+    meta: BulkImportLeadsDto = {},
+  ) {
+    if (!fileBuffer || fileBuffer.length === 0) {
+      throw new BadRequestException('No file uploaded.');
+    }
+
+    // --- 2. parse the workbook (first sheet) --------------------------------
+    let rows: Record<string, unknown>[];
+    try {
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      const firstSheetName = workbook.SheetNames[0];
+      const sheet = firstSheetName
+        ? workbook.Sheets[firstSheetName]
+        : undefined;
+      if (!sheet) {
+        throw new BadRequestException(
+          'The uploaded workbook has no sheets.',
+        );
+      }
+      // defval:'' keeps a stable shape so missing cells don't shift keys.
+      rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: '',
+      });
+    } catch (err) {
+      if (err instanceof BadRequestException) throw err;
+      throw new BadRequestException(
+        'Could not parse the uploaded file. Please upload a valid .xlsx file.',
+      );
+    }
+
+    if (rows.length === 0) {
+      throw new BadRequestException(
+        'No data found in the uploaded sheet. Please add rows below the header.',
+      );
+    }
+
+    const now = new Date();
+
+    // --- 1. create the lead_upload batch row --------------------------------
+    const batch = await this.prisma.lead_upload.create({
+      data: {
+        title: meta.title ?? null,
+        lead_source_id: this.toNullableInt(meta.lead_source_id),
+        file: null, // memory upload: no on-disk path to record
+        created_by: actorUserId,
+        updated_by: actorUserId,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+
+    // --- 3. fetch role-2 (telecaller) ids once, for round-robin assignment ---
+    const telecallers = await this.prisma.users.findMany({
+      where: { role_id: 2, deleted_at: null },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+    });
+    const telecallerIds = telecallers.map((t) => t.id);
+    let telecallerIndex = 0;
+
+    // --- 4. map + validate each row -----------------------------------------
+    const skipped: Array<{ row: number; reason: string }> = [];
+    const toInsert: Array<{
+      title: string | null;
+      code: string | null;
+      phone: string;
+      place: string | null;
+      remarks: string | null;
+      telecaller_id: number | null;
+    }> = [];
+
+    rows.forEach((raw, index) => {
+      // +2: header row is row 1, data starts at row 2 (matches legacy logging).
+      const rowNumber = index + 2;
+
+      const phone = this.cell(raw, ['phone', 'phone number', 'mobile']);
+      if (phone === '') {
+        // Legacy: blank phone rows are silently `continue`d (not an error).
+        skipped.push({ row: rowNumber, reason: 'Missing phone' });
+        return;
+      }
+
+      const code = this.cell(raw, [
+        'country code',
+        'code',
+        'country_code',
+        'countrycode',
+      ]);
+
+      toInsert.push({
+        title:
+          this.cell(raw, ['student name', 'name', 'title', 'full name']) ||
+          null,
+        code: code || null,
+        phone,
+        place: this.cell(raw, ['place', 'location', 'city']) || null,
+        remarks: this.cell(raw, ['remarks', 'remark', 'notes']) || null,
+        // round-robin telecaller assignment (no-op when none configured).
+        telecaller_id:
+          telecallerIds.length > 0
+            ? telecallerIds[telecallerIndex++ % telecallerIds.length]
+            : null,
+      });
+    });
+
+    // --- duplicate guard: skip phones that already exist as a lead OR user ---
+    const candidatePhones = [...new Set(toInsert.map((r) => r.phone))];
+
+    const [existingLeads, existingUsers] = await Promise.all([
+      this.prisma.leads.findMany({
+        where: { phone: { in: candidatePhones }, deleted_at: null },
+        select: { phone: true },
+      }),
+      this.prisma.users.findMany({
+        where: { phone: { in: candidatePhones }, deleted_at: null },
+        select: { phone: true },
+      }),
+    ]);
+
+    const existingPhones = new Set<string>([
+      ...existingLeads.map((l) => l.phone).filter((p): p is string => !!p),
+      ...existingUsers.map((u) => u.phone).filter((p): p is string => !!p),
+    ]);
+
+    // De-dupe against the DB and against earlier rows in this same file.
+    const seenInFile = new Set<string>();
+    const leadSourceId = meta.lead_source_id ?? null;
+    const courseId = meta.course_id ?? null;
+
+    const rowsToCreate = toInsert.filter((r, i) => {
+      const rowNumber = i + 2;
+      if (existingPhones.has(r.phone) || seenInFile.has(r.phone)) {
+        skipped.push({ row: rowNumber, reason: 'Duplicate phone' });
+        return false;
+      }
+      seenInFile.add(r.phone);
+      return true;
+    });
+
+    const data = rowsToCreate.map((r) => ({
+      title: r.title,
+      code: r.code,
+      phone: r.phone,
+      place: r.place,
+      remarks: r.remarks,
+      telecaller_id: r.telecaller_id,
+      lead_status_id: 1, // Pending
+      is_converted: 0,
+      excel_file_id: batch.id,
+      lead_source_id: leadSourceId,
+      course_id: courseId,
+      created_by: actorUserId,
+      updated_by: actorUserId,
+      created_at: now,
+      updated_at: now,
+    }));
+
+    // --- 5. insert all surviving rows atomically ----------------------------
+    // createMany issues a single multi-row INSERT, so it is already atomic — no
+    // explicit $transaction wrapper is needed for the bulk insert itself.
+    let imported = 0;
+    if (data.length > 0) {
+      const result = await this.prisma.leads.createMany({ data });
+      imported = result.count;
+    }
+
+    return { imported, batch_id: batch.id, skipped };
+  }
+
+  /**
+   * Read a cell from a header-keyed row, matching any of `aliases`
+   * case-insensitively (sheet_to_json keys off the header text, which varies
+   * across uploaded templates). Returns a trimmed string, '' when absent.
+   */
+  private cell(row: Record<string, unknown>, aliases: string[]): string {
+    const wanted = aliases.map((a) => a.toLowerCase());
+    for (const key of Object.keys(row)) {
+      if (wanted.includes(key.trim().toLowerCase())) {
+        const value = row[key];
+        if (value === null || value === undefined) return '';
+        return String(value).trim();
+      }
+    }
+    return '';
+  }
+
+  /** Coerce an optional numeric-string metadata field to Int|null. */
+  private toNullableInt(value: string | undefined): number | null {
+    if (value === undefined || value === null || value === '') return null;
+    const n = Number(value);
+    return Number.isNaN(n) ? null : n;
   }
 }
