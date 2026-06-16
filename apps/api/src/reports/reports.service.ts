@@ -6,6 +6,7 @@ import {
   ReportQueryDto,
 } from './dto/report-query.dto';
 import { EnrollmentReportQueryDto } from './dto/enrollment-report-query.dto';
+import { TeacherSalaryReportQueryDto } from './dto/teacher-salary-report-query.dto';
 import { CsvRow } from './reports.csv';
 
 /**
@@ -53,6 +54,18 @@ const ADMISSION_STATUS_META: ReadonlyArray<{ code: number; label: string }> = [
 
 /** Role id of student users (legacy `users.role_id => 4`). */
 const STUDENT_ROLE_ID = 4;
+
+/** Role id of teacher/instructor users (legacy `users.role_id => 3`). */
+const TEACHER_ROLE_ID = 3;
+
+/**
+ * Duration-band thresholds for the teacher-salary report — identical rule to
+ * TeachersService.computeSalary (kept local so the reports module has no
+ * cross-module dependency on TeachersService).
+ */
+const BAND_30_MAX_MINUTES = 37;
+const BAND_45_MAX_MINUTES = 52;
+const MS_PER_MINUTE = 60_000;
 
 /** Flat status tally shared by the enrollment PDFs (matches legacy $stats). */
 export interface EnrollmentStatusCounts {
@@ -1003,5 +1016,190 @@ export class ReportsService {
     });
 
     return { counts: this.toStatusCounts(countsByStatus), rows };
+  }
+
+  // ---- teacher salary report -----------------------------------------------
+
+  /** Inclusive UTC [start,end] window for a `YYYY-MM` month string. */
+  private monthWindow(month: string): { start: Date; end: Date } {
+    const [yearStr, monthStr] = month.split('-');
+    const year = Number(yearStr);
+    const monthIdx = Number(monthStr) - 1;
+    const start = new Date(Date.UTC(year, monthIdx, 1, 0, 0, 0, 0));
+    const end = new Date(Date.UTC(year, monthIdx + 1, 0, 23, 59, 59, 999));
+    return { start, end };
+  }
+
+  /** Bucket a demo-session wall-clock length to a {30,45,60} rate band. */
+  private durationBand(
+    fromTime: Date | null,
+    toTime: Date | null,
+  ): 30 | 45 | 60 {
+    if (!fromTime || !toTime) {
+      return 60;
+    }
+    const minutes = (toTime.getTime() - fromTime.getTime()) / MS_PER_MINUTE;
+    if (minutes <= 0) return 60;
+    if (minutes <= BAND_30_MAX_MINUTES) return 30;
+    if (minutes <= BAND_45_MAX_MINUTES) return 45;
+    return 60;
+  }
+
+  /**
+   * Per-teacher salary report for a calendar month (port of
+   * Teacher_salary_report::index). For every role_id=3 user it computes the
+   * band x rate breakdown of completed demo_sessions in the month, the
+   * confirmed-demo bonus, the month's recorded payments, and the resulting
+   * balance. `month` defaults to the current month when omitted.
+   */
+  async teacherSalary(
+    query: TeacherSalaryReportQueryDto,
+  ): Promise<ReportResult<{
+    month: string;
+    rows: Array<{
+      teacher_id: number;
+      teacher_name: string | null;
+      completed_sessions: number;
+      total_salary: number;
+      total_paid: number;
+      balance: number;
+    }>;
+    totals: { total_salary: number; total_paid: number; balance: number };
+  }>> {
+    const month = query.month ?? new Date().toISOString().slice(0, 7);
+    const { start, end } = this.monthWindow(month);
+
+    const teachers = await this.prisma.users.findMany({
+      where: { role_id: TEACHER_ROLE_ID, deleted_at: null },
+      select: { id: true, name: true },
+      orderBy: { id: 'asc' },
+    });
+
+    if (teachers.length === 0) {
+      return {
+        data: {
+          month,
+          rows: [],
+          totals: { total_salary: 0, total_paid: 0, balance: 0 },
+        },
+        csv: {
+          rows: [],
+          headers: [
+            'teacher_id',
+            'teacher_name',
+            'completed_sessions',
+            'total_salary',
+            'total_paid',
+            'balance',
+          ],
+        },
+      };
+    }
+
+    const teacherIds = teachers.map((t) => t.id);
+
+    // Load all rate rows, completed sessions, and payments for the month in
+    // three queries, then fold per teacher (avoids an N+1 per teacher).
+    const [rates, sessions, payments] = await Promise.all([
+      this.prisma.teacher_salary.findMany({
+        where: { teacher_id: { in: teacherIds }, deleted_at: null },
+        orderBy: { id: 'desc' },
+      }),
+      this.prisma.demo_sessions.findMany({
+        where: {
+          teacher_id: { in: teacherIds },
+          deleted_at: null,
+          teacher_status: true,
+          scheduled_date: { gte: start, lte: end },
+        },
+        select: {
+          teacher_id: true,
+          from_time: true,
+          to_time: true,
+          lead_status: true,
+        },
+      }),
+      this.prisma.salary_payment.findMany({
+        where: {
+          teacher_id: { in: teacherIds },
+          deleted_at: null,
+          payment_date: { gte: start, lte: end },
+        },
+        select: { teacher_id: true, paid_amount: true },
+      }),
+    ]);
+
+    // Latest rate row wins (findMany above is ordered id desc, so the first seen
+    // per teacher is the newest).
+    const rateByTeacher = new Map<number, (typeof rates)[number]>();
+    for (const r of rates) {
+      if (r.teacher_id != null && !rateByTeacher.has(r.teacher_id)) {
+        rateByTeacher.set(r.teacher_id, r);
+      }
+    }
+
+    const paidByTeacher = new Map<number, number>();
+    for (const p of payments) {
+      if (p.teacher_id != null) {
+        paidByTeacher.set(
+          p.teacher_id,
+          (paidByTeacher.get(p.teacher_id) ?? 0) + (p.paid_amount ?? 0),
+        );
+      }
+    }
+
+    const rows = teachers.map((t) => {
+      const rate = rateByTeacher.get(t.id);
+      const rate30 = rate?.salary_30 ?? 0;
+      const rate45 = rate?.salary_45 ?? 0;
+      const rate60 = rate?.salary_1 ?? 0;
+      const demoRate = rate?.salary_confirmed_demo ?? 0;
+
+      const own = sessions.filter((s) => s.teacher_id === t.id);
+      let salary = 0;
+      let demoCount = 0;
+      for (const s of own) {
+        const band = this.durationBand(s.from_time, s.to_time);
+        salary += band === 30 ? rate30 : band === 45 ? rate45 : rate60;
+        if (s.lead_status === true) {
+          demoCount += 1;
+        }
+      }
+      const totalSalary = salary + demoCount * demoRate;
+      const totalPaid = paidByTeacher.get(t.id) ?? 0;
+
+      return {
+        teacher_id: t.id,
+        teacher_name: t.name,
+        completed_sessions: own.length,
+        total_salary: totalSalary,
+        total_paid: totalPaid,
+        balance: totalSalary - totalPaid,
+      };
+    });
+
+    const totals = rows.reduce(
+      (acc, r) => ({
+        total_salary: acc.total_salary + r.total_salary,
+        total_paid: acc.total_paid + r.total_paid,
+        balance: acc.balance + r.balance,
+      }),
+      { total_salary: 0, total_paid: 0, balance: 0 },
+    );
+
+    return {
+      data: { month, rows, totals },
+      csv: {
+        rows: rows.map((r) => ({ ...r, teacher_name: r.teacher_name ?? '' })),
+        headers: [
+          'teacher_id',
+          'teacher_name',
+          'completed_sessions',
+          'total_salary',
+          'total_paid',
+          'balance',
+        ],
+      },
+    };
   }
 }

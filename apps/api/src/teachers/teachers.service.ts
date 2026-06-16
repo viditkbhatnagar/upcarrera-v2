@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
   NotImplementedException,
@@ -10,6 +12,16 @@ import { UpdateTeacherDto } from './dto/update-teacher.dto';
 import { CreateScheduleDto } from './dto/create-schedule.dto';
 import { CreateSubjectDto } from './dto/create-subject.dto';
 import { CreateSalaryPaymentDto } from './dto/create-salary-payment.dto';
+import {
+  AssignStudentDto,
+  EnrolCourseDto,
+  ResetPasswordDto,
+  UpdateZoomEmailDto,
+} from './dto/reset-password.dto';
+import {
+  CreateSalaryRateDto,
+  UpdateSalaryRateDto,
+} from './dto/salary-rate.dto';
 
 /** Legacy role id for teachers/instructors (login_helper.php). */
 const TEACHER_ROLE_ID = 3;
@@ -59,13 +71,53 @@ export class TeachersService {
 
   // --- Teachers (users where role_id=3) -------------------------------------
 
-  async findAll(page?: number, limit?: number, searchKey?: string) {
+  async findAll(
+    page?: number,
+    limit?: number,
+    searchKey?: string,
+    courseId?: number,
+    subjectId?: number,
+  ) {
     const pg = this.normalizePagination(page, limit);
+
+    // ?course_id / ?subject_id narrow to teachers assigned to that course via
+    // teachers_subjects (port of Teachers::get_teacher_by_course). A subject
+    // resolves to its course (subjects.course_id) first; an unknown subject or a
+    // course with no assigned teachers yields an empty, well-formed page.
+    let courseFilterIds: number[] | undefined;
+    let effectiveCourseId = courseId;
+    if (subjectId !== undefined && effectiveCourseId === undefined) {
+      const subject = await this.prisma.subjects.findFirst({
+        where: { id: subjectId, deleted_at: null },
+        select: { course_id: true },
+      });
+      // Unknown subject (or one with no course) -> impossible course id so the
+      // result is an empty page rather than every teacher.
+      effectiveCourseId = subject?.course_id ?? -1;
+    }
+    if (effectiveCourseId !== undefined) {
+      const links = await this.prisma.teachers_subjects.findMany({
+        where: { course_id: effectiveCourseId, deleted_at: null },
+        select: { user_id: true },
+      });
+      courseFilterIds = [
+        ...new Set(
+          links
+            .map((l) => l.user_id)
+            .filter((id): id is number => id !== null),
+        ),
+      ];
+      if (courseFilterIds.length === 0) {
+        // No teacher assigned to this course -> empty, still well-formed.
+        return { items: [], total: 0, page: pg.page, limit: pg.limit };
+      }
+    }
 
     // Mirrors the legacy index() search across name/phone/email.
     const where = {
       deleted_at: null,
       role_id: TEACHER_ROLE_ID,
+      ...(courseFilterIds ? { id: { in: courseFilterIds } } : {}),
       ...(searchKey
         ? {
             OR: [
@@ -439,6 +491,570 @@ export class TeachersService {
         },
       });
     });
+  }
+
+  // --- Teacher relations: students & schedules (calendar) -------------------
+
+  /**
+   * Students taught by a teacher. The teacher's assigned courses come from
+   * teachers_subjects.course_id; enrolments for those courses (plus any enrol
+   * row directly keyed to the teacher) resolve to the student users.
+   *
+   * Ports the intent of Enrol_model::get_students_by_teacher — note the v2
+   * `enrol` table keys students on `user_id` (the legacy `student_id` column was
+   * renamed; its index map is still "student_id"). Returns the student rows plus
+   * active/discontinued tallies (users.status: 1 = active, else discontinued).
+   */
+  async findStudents(teacherId: number) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+
+    const subjectLinks = await this.prisma.teachers_subjects.findMany({
+      where: { user_id: teacherId, deleted_at: null },
+      select: { course_id: true },
+    });
+    const courseIds = [
+      ...new Set(
+        subjectLinks
+          .map((l) => l.course_id)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
+
+    // Enrolments matching either the teacher directly or one of their courses.
+    const enrolWhere = {
+      deleted_at: null,
+      OR: [
+        { teacher_id: teacherId },
+        ...(courseIds.length ? [{ course_id: { in: courseIds } }] : []),
+      ],
+    };
+
+    const enrolments = await this.prisma.enrol.findMany({
+      where: enrolWhere,
+      select: { user_id: true },
+    });
+    const studentIds = [
+      ...new Set(
+        enrolments
+          .map((e) => e.user_id)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
+
+    if (studentIds.length === 0) {
+      return {
+        items: [],
+        total_students: 0,
+        active_students_count: 0,
+        discontinued_students_count: 0,
+      };
+    }
+
+    const students = await this.prisma.users.findMany({
+      where: { id: { in: studentIds }, deleted_at: null },
+      orderBy: { id: 'desc' },
+    });
+
+    const items = students.map((s) => this.stripSecrets(s));
+    const active = students.filter((s) => s.status === 1).length;
+
+    return {
+      items,
+      total_students: students.length,
+      active_students_count: active,
+      discontinued_students_count: students.length - active,
+    };
+  }
+
+  /**
+   * A teacher's schedule rows shaped as FullCalendar-style events
+   * {id,title,start,end}. `start`/`end` combine teachers_schedules.date with the
+   * stored from/to time-of-day (Prisma surfaces `@db.Time` as a 1970-epoch Date).
+   * Rows with no date are skipped (an all-day event has no usable start).
+   */
+  async findScheduleEvents(teacherId: number) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+
+    const rows = await this.prisma.teachers_schedules.findMany({
+      where: { teacher_id: teacherId, deleted_at: null },
+      orderBy: { date: 'asc' },
+    });
+
+    const events = rows
+      .filter((r) => r.date !== null)
+      .map((r) => ({
+        id: r.id,
+        title: 'Schedule',
+        start: this.combineDateTime(r.date, r.start_time),
+        end: this.combineDateTime(r.date, r.end_time),
+      }));
+
+    return { items: events, total: events.length };
+  }
+
+  /** Merge a Date-only day with a Time-only (1970-epoch) value into one ISO. */
+  private combineDateTime(day: Date | null, time: Date | null): string | null {
+    if (!day) {
+      return null;
+    }
+    const result = new Date(day.getTime());
+    if (time) {
+      result.setUTCHours(
+        time.getUTCHours(),
+        time.getUTCMinutes(),
+        time.getUTCSeconds(),
+        0,
+      );
+    }
+    return result.toISOString();
+  }
+
+  // --- Credentials: password / zoom-email / device --------------------------
+
+  /**
+   * Update a teacher's username + password (port of Teachers::reset_password).
+   * The current hash is preserved in users.prev_password; the username must not
+   * already belong to a different user. Backs both PATCH /:id/password and
+   * PATCH /:id/reset-password.
+   */
+  async resetPassword(id: number, dto: ResetPasswordDto) {
+    const teacher = await this.prisma.users.findFirst({
+      where: { id, deleted_at: null, role_id: TEACHER_ROLE_ID },
+      select: { id: true, password: true },
+    });
+    if (!teacher) {
+      throw new NotFoundException('Teacher not found!');
+    }
+
+    // Legacy uniqueness guard: reject a username owned by another user.
+    const clash = await this.prisma.users.findFirst({
+      where: { username: dto.username, id: { not: id }, deleted_at: null },
+      select: { id: true },
+    });
+    if (clash) {
+      throw new ConflictException('Username Already Exists');
+    }
+
+    const now = new Date();
+    const updated = await this.prisma.users.update({
+      where: { id },
+      data: {
+        username: dto.username,
+        prev_password: teacher.password ?? null,
+        password: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
+        updated_at: now,
+      },
+    });
+    return this.stripSecrets(updated);
+  }
+
+  /** Set users.zoom_email for a teacher (PATCH /:id/zoom-email). */
+  async updateZoomEmail(id: number, dto: UpdateZoomEmailDto) {
+    await this.findOne(id); // 404 if missing / not a teacher
+    const now = new Date();
+    const updated = await this.prisma.users.update({
+      where: { id },
+      data: { zoom_email: dto.zoom_email, updated_at: now },
+    });
+    return this.stripSecrets(updated);
+  }
+
+  /**
+   * Clear the teacher's device binding (port of Instructor::change_device).
+   *
+   * NOTE: the v2 `users` model has NO `device_id` column, so there is nothing to
+   * clear. We still 404 on an unknown teacher and bump updated_at, returning a
+   * `cleared:false` flag so callers can see the no-op. If the column is later
+   * added to the schema, set `device_id: null` here.
+   */
+  async clearDevice(id: number) {
+    await this.findOne(id); // 404 if missing / not a teacher
+    const now = new Date();
+    await this.prisma.users.update({
+      where: { id },
+      data: { updated_at: now },
+    });
+    return {
+      id,
+      cleared: false,
+      note: 'users.device_id column is absent in this schema; nothing to clear.',
+    };
+  }
+
+  // --- teachers_subjects deletion -------------------------------------------
+
+  /**
+   * Remove a teacher-subject (course link) row. teachers_subjects carries a
+   * deleted_at column, so this is a soft delete (stamp deleted_at), matching the
+   * rest of the module. 404 if the row is missing or already deleted.
+   */
+  async removeSubject(id: number) {
+    const row = await this.prisma.teachers_subjects.findFirst({
+      where: { id, deleted_at: null },
+      select: { id: true },
+    });
+    if (!row) {
+      throw new NotFoundException('Teacher subject not found!');
+    }
+    const now = new Date();
+    await this.prisma.teachers_subjects.update({
+      where: { id },
+      data: { deleted_at: now, updated_at: now },
+    });
+    return { id };
+  }
+
+  // --- instructor_enrol -> enrol (table absent in v2; see NOTE) -------------
+  //
+  // The legacy `instructor_enrol` / `instructor_student` tables do NOT exist in
+  // this schema. The closest analogue is `enrol` (user_id=student, teacher_id,
+  // course_id). Enrolled-courses are therefore the DISTINCT course_ids on a
+  // teacher's enrol rows; assigning a course writes an enrol row for the teacher.
+
+  /** Distinct courses a teacher is enrolled to teach (via enrol.teacher_id). */
+  async findEnrolledCourses(teacherId: number) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+
+    const rows = await this.prisma.enrol.findMany({
+      where: { teacher_id: teacherId, deleted_at: null },
+      orderBy: { id: 'desc' },
+    });
+
+    const courseIds = [
+      ...new Set(
+        rows
+          .map((r) => r.course_id)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
+    const courses = courseIds.length
+      ? await this.prisma.course.findMany({
+          where: { id: { in: courseIds }, deleted_at: null },
+          select: { id: true, title: true, short_name: true },
+        })
+      : [];
+    const courseById = new Map(courses.map((c) => [c.id, c]));
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      course_id: r.course_id,
+      course_title:
+        r.course_id !== null ? courseById.get(r.course_id)?.title ?? null : null,
+      created_at: r.created_at,
+    }));
+
+    return { items, total: items.length };
+  }
+
+  /**
+   * Assign a course to a teacher (port of Instructor::enrol_course) by writing
+   * an `enrol` row. Idempotent: a non-deleted enrol row for the same
+   * teacher+course is rejected as a duplicate.
+   */
+  async addEnrolledCourse(
+    teacherId: number,
+    dto: EnrolCourseDto,
+    actorId: number,
+  ) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+    const courseId = Number(dto.course_id);
+    if (!Number.isInteger(courseId) || courseId <= 0) {
+      throw new BadRequestException('course_id is required');
+    }
+
+    const existing = await this.prisma.enrol.findFirst({
+      where: { teacher_id: teacherId, course_id: courseId, deleted_at: null },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new ConflictException('Already Enrolled to this course');
+    }
+
+    const now = new Date();
+    return this.prisma.enrol.create({
+      data: {
+        teacher_id: teacherId,
+        course_id: courseId,
+        created_at: now,
+        created_by: actorId,
+        updated_at: now,
+        updated_by: actorId,
+      },
+    });
+  }
+
+  /**
+   * Un-assign a course from a teacher (port of Instructor::enrol_delete). Soft
+   * deletes the matching enrol row (enrol carries deleted_at). 404 if no such
+   * active enrolment exists for this teacher+course.
+   */
+  async removeEnrolledCourse(
+    teacherId: number,
+    courseId: number,
+    actorId: number,
+  ) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+    const row = await this.prisma.enrol.findFirst({
+      where: { teacher_id: teacherId, course_id: courseId, deleted_at: null },
+      select: { id: true },
+    });
+    if (!row) {
+      throw new NotFoundException('Enrolled course not found!');
+    }
+    const now = new Date();
+    await this.prisma.enrol.update({
+      where: { id: row.id },
+      data: { deleted_at: now, updated_at: now, deleted_by: actorId },
+    });
+    return { id: row.id };
+  }
+
+  // --- assigned-students (instructor_student absent -> enrol; see NOTE) ------
+
+  /**
+   * Students assigned to a teacher (port of Instructor::students). The legacy
+   * `instructor_student` table is ABSENT in v2, so assignments live on the
+   * `enrol` table as rows with both teacher_id and user_id set. Returns the
+   * enrolment id (the "assignment id" used for deletion) joined to student/course.
+   */
+  async findAssignedStudents(teacherId: number) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+
+    const rows = await this.prisma.enrol.findMany({
+      where: { teacher_id: teacherId, deleted_at: null, user_id: { not: null } },
+      orderBy: { id: 'desc' },
+    });
+
+    const studentIds = [
+      ...new Set(
+        rows.map((r) => r.user_id).filter((id): id is number => id !== null),
+      ),
+    ];
+    const courseIds = [
+      ...new Set(
+        rows.map((r) => r.course_id).filter((id): id is number => id !== null),
+      ),
+    ];
+    const [students, courses] = await Promise.all([
+      studentIds.length
+        ? this.prisma.users.findMany({
+            where: { id: { in: studentIds } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+      courseIds.length
+        ? this.prisma.course.findMany({
+            where: { id: { in: courseIds } },
+            select: { id: true, title: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    const studentById = new Map(students.map((s) => [s.id, s]));
+    const courseById = new Map(courses.map((c) => [c.id, c]));
+
+    const items = rows.map((r) => ({
+      assignment_id: r.id,
+      student_id: r.user_id,
+      student_name:
+        r.user_id !== null ? studentById.get(r.user_id)?.name ?? null : null,
+      course_id: r.course_id,
+      course_title:
+        r.course_id !== null ? courseById.get(r.course_id)?.title ?? null : null,
+      created_at: r.created_at,
+    }));
+
+    return { items, total: items.length };
+  }
+
+  /**
+   * Assign a student to a teacher (port of Instructor::assign_student). Writes
+   * an `enrol` row carrying teacher_id + user_id (+ optional course_id). Mirrors
+   * the legacy add (no duplicate guard on the legacy side, so none here).
+   */
+  async assignStudent(teacherId: number, dto: AssignStudentDto, actorId: number) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+    const studentId = Number(dto.student_id);
+    if (!Number.isInteger(studentId) || studentId <= 0) {
+      throw new BadRequestException('student_id is required');
+    }
+    const courseId =
+      dto.course_id !== undefined ? Number(dto.course_id) : undefined;
+
+    const now = new Date();
+    const row = await this.prisma.enrol.create({
+      data: {
+        teacher_id: teacherId,
+        user_id: studentId,
+        course_id: courseId,
+        created_at: now,
+        created_by: actorId,
+        updated_at: now,
+        updated_by: actorId,
+      },
+    });
+    return { assignment_id: row.id, ...row };
+  }
+
+  /**
+   * Un-assign a student (port of Instructor::assign_delete). Soft deletes the
+   * enrol row by its id (the assignment id), scoped to this teacher. 404 if it
+   * is missing, already deleted, or belongs to another teacher.
+   */
+  async removeAssignedStudent(
+    teacherId: number,
+    assignmentId: number,
+    actorId: number,
+  ) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+    const row = await this.prisma.enrol.findFirst({
+      where: { id: assignmentId, teacher_id: teacherId, deleted_at: null },
+      select: { id: true },
+    });
+    if (!row) {
+      throw new NotFoundException('Assigned student not found!');
+    }
+    const now = new Date();
+    await this.prisma.enrol.update({
+      where: { id: assignmentId },
+      data: { deleted_at: now, updated_at: now, deleted_by: actorId },
+    });
+    return { id: assignmentId };
+  }
+
+  // --- Salary rates: create / update ----------------------------------------
+
+  /** Create a teacher_salary rate row (POST /teacher-salary-rates). */
+  async createSalaryRate(dto: CreateSalaryRateDto, actorId: number) {
+    // Validate the teacher exists (and is a teacher) before creating a rate.
+    const teacher = await this.prisma.users.findFirst({
+      where: { id: dto.teacher_id, deleted_at: null, role_id: TEACHER_ROLE_ID },
+      select: { id: true },
+    });
+    if (!teacher) {
+      throw new NotFoundException('Teacher not found!');
+    }
+
+    const now = new Date();
+    return this.prisma.teacher_salary.create({
+      data: {
+        teacher_id: dto.teacher_id,
+        salary_30: dto.salary_30 ?? null,
+        salary_45: dto.salary_45 ?? null,
+        salary_1: dto.salary_1 ?? null,
+        salary_confirmed_demo: dto.salary_confirmed_demo ?? null,
+        created_at: now,
+        created_by: actorId,
+        updated_at: now,
+        updated_by: actorId,
+      },
+    });
+  }
+
+  /** Partial update of a teacher_salary rate row (PATCH /teacher-salary-rates/:id). */
+  async updateSalaryRate(id: number, dto: UpdateSalaryRateDto, actorId: number) {
+    const row = await this.prisma.teacher_salary.findFirst({
+      where: { id, deleted_at: null },
+      select: { id: true },
+    });
+    if (!row) {
+      throw new NotFoundException('Salary rate not found!');
+    }
+
+    const now = new Date();
+    const data: Record<string, unknown> = { updated_at: now, updated_by: actorId };
+    const assignable: (keyof UpdateSalaryRateDto)[] = [
+      'salary_30',
+      'salary_45',
+      'salary_1',
+      'salary_confirmed_demo',
+    ];
+    for (const key of assignable) {
+      if (dto[key] !== undefined) {
+        data[key] = dto[key];
+      }
+    }
+    return this.prisma.teacher_salary.update({ where: { id }, data });
+  }
+
+  // --- Salary payments listing & summary ------------------------------------
+
+  /** Inclusive [start,end] Date window for a `YYYY-MM` month string. */
+  private monthWindow(month: string): { start: Date; end: Date } {
+    const [yearStr, monthStr] = month.split('-');
+    const year = Number(yearStr);
+    const monthIdx = Number(monthStr) - 1; // 0-based
+    const start = new Date(Date.UTC(year, monthIdx, 1, 0, 0, 0, 0));
+    // Day 0 of the next month = last day of this month.
+    const end = new Date(Date.UTC(year, monthIdx + 1, 0, 23, 59, 59, 999));
+    return { start, end };
+  }
+
+  /**
+   * Salary payouts recorded for a teacher, newest first. `?month=YYYY-MM`
+   * filters on payment_date within that calendar month (legacy report window).
+   */
+  async findSalaryPayments(teacherId: number, month?: string) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+
+    const where: Record<string, unknown> = {
+      teacher_id: teacherId,
+      deleted_at: null,
+    };
+    if (month) {
+      const { start, end } = this.monthWindow(month);
+      where.payment_date = { gte: start, lte: end };
+    }
+
+    const items = await this.prisma.salary_payment.findMany({
+      where,
+      orderBy: { id: 'desc' },
+    });
+    const total_paid = items.reduce((sum, p) => sum + (p.paid_amount ?? 0), 0);
+
+    return { items, total: items.length, total_paid, month: month ?? null };
+  }
+
+  /**
+   * Per-band session-count x rate breakdown for a teacher over a calendar month
+   * (port of Teacher_salary_report::index, which combined the salary computation
+   * with the month's payments). Reuses the same band/demo rule as computeSalary,
+   * then subtracts the month's recorded payments to surface the balance.
+   */
+  async salarySummary(teacherId: number, month: string) {
+    await this.findOne(teacherId); // 404 if missing / not a teacher
+
+    const { start, end } = this.monthWindow(month);
+    const from = start.toISOString().slice(0, 10);
+    const to = end.toISOString().slice(0, 10);
+
+    const [computed, payments] = await Promise.all([
+      this.computeSalary(teacherId, from, to),
+      this.prisma.salary_payment.findMany({
+        where: {
+          teacher_id: teacherId,
+          deleted_at: null,
+          payment_date: { gte: start, lte: end },
+        },
+        select: { paid_amount: true },
+      }),
+    ]);
+
+    const total_paid = payments.reduce(
+      (sum, p) => sum + (p.paid_amount ?? 0),
+      0,
+    );
+
+    return {
+      teacher_id: teacherId,
+      month,
+      bands: computed.bands,
+      demo: computed.demo,
+      completed_sessions: computed.completed_sessions,
+      has_rate: computed.has_rate,
+      total_salary: computed.total,
+      total_paid,
+      balance: computed.total - total_paid,
+    };
   }
 
   // --- Phase-3 sagas (not implemented this phase) ---------------------------

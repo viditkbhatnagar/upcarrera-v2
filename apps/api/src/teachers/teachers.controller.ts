@@ -17,6 +17,17 @@ import { CreateSubjectDto } from './dto/create-subject.dto';
 import { TeacherListDto, TeacherIdListDto, UserIdListDto } from './dto/list.dto';
 import { ComputeSalaryDto } from './dto/compute-salary.dto';
 import { CreateSalaryPaymentDto } from './dto/create-salary-payment.dto';
+import {
+  AssignStudentDto,
+  EnrolCourseDto,
+  ResetPasswordDto,
+  UpdateZoomEmailDto,
+} from './dto/reset-password.dto';
+import {
+  CreateSalaryRateDto,
+  UpdateSalaryRateDto,
+} from './dto/salary-rate.dto';
+import { MonthFilterDto, RequiredMonthDto } from './dto/month-filter.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
@@ -33,7 +44,137 @@ export class TeachersController {
   @Get()
   @ResponseMessage('Teachers fetched successfully!')
   findAll(@Query() q: TeacherListDto) {
-    return this.teachers.findAll(q.page, q.limit, q.search_key);
+    return this.teachers.findAll(
+      q.page,
+      q.limit,
+      q.search_key,
+      q.course_id,
+      q.subject_id,
+    );
+  }
+
+  // ROUTE ORDER: all literal `:id/<sub-path>` routes below live one segment
+  // DEEPER than the bare `:id` route, so they never collide with it. They are
+  // grouped here for readability; their depth (not source order) keeps them
+  // unambiguous against `@Get(':id')` / `@Patch(':id')` / `@Delete(':id')`.
+
+  @Get(':id/students')
+  @ResponseMessage('Teacher students fetched successfully!')
+  findStudents(@Param('id', ParseIntPipe) id: number) {
+    return this.teachers.findStudents(id);
+  }
+
+  @Get(':id/schedules')
+  @ResponseMessage('Teacher schedules fetched successfully!')
+  findScheduleEvents(@Param('id', ParseIntPipe) id: number) {
+    return this.teachers.findScheduleEvents(id);
+  }
+
+  @Get(':id/enrolled-courses')
+  @ResponseMessage('Teacher enrolled courses fetched successfully!')
+  findEnrolledCourses(@Param('id', ParseIntPipe) id: number) {
+    return this.teachers.findEnrolledCourses(id);
+  }
+
+  @Post(':id/enrolled-courses')
+  @ResponseMessage('Course assigned successfully!')
+  addEnrolledCourse(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: EnrolCourseDto,
+    @CurrentUser('id') actorId: number,
+  ) {
+    return this.teachers.addEnrolledCourse(id, dto, actorId);
+  }
+
+  @Delete(':id/enrolled-courses/:courseId')
+  @ResponseMessage('Course unassigned successfully!')
+  removeEnrolledCourse(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('courseId', ParseIntPipe) courseId: number,
+    @CurrentUser('id') actorId: number,
+  ) {
+    return this.teachers.removeEnrolledCourse(id, courseId, actorId);
+  }
+
+  @Get(':id/assigned-students')
+  @ResponseMessage('Assigned students fetched successfully!')
+  findAssignedStudents(@Param('id', ParseIntPipe) id: number) {
+    return this.teachers.findAssignedStudents(id);
+  }
+
+  @Post(':id/assigned-students')
+  @ResponseMessage('Student assigned successfully!')
+  assignStudent(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AssignStudentDto,
+    @CurrentUser('id') actorId: number,
+  ) {
+    return this.teachers.assignStudent(id, dto, actorId);
+  }
+
+  @Delete(':id/assigned-students/:assignmentId')
+  @ResponseMessage('Student unassigned successfully!')
+  removeAssignedStudent(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('assignmentId', ParseIntPipe) assignmentId: number,
+    @CurrentUser('id') actorId: number,
+  ) {
+    return this.teachers.removeAssignedStudent(id, assignmentId, actorId);
+  }
+
+  @Get(':id/salary-payments')
+  @ResponseMessage('Teacher salary payments fetched successfully!')
+  findSalaryPayments(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() q: MonthFilterDto,
+  ) {
+    return this.teachers.findSalaryPayments(id, q.month);
+  }
+
+  @Get(':id/salary-summary')
+  @ResponseMessage('Teacher salary summary computed successfully!')
+  salarySummary(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() q: RequiredMonthDto,
+  ) {
+    return this.teachers.salarySummary(id, q.month);
+  }
+
+  /**
+   * Update a teacher's username + password. Exposed at two paths (same impl):
+   * PATCH /teachers/:id/password and PATCH /teachers/:id/reset-password.
+   */
+  @Patch(':id/password')
+  @ResponseMessage('Password updated successfully!')
+  resetPassword(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ResetPasswordDto,
+  ) {
+    return this.teachers.resetPassword(id, dto);
+  }
+
+  @Patch(':id/reset-password')
+  @ResponseMessage('Password updated successfully!')
+  resetPasswordAlias(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ResetPasswordDto,
+  ) {
+    return this.teachers.resetPassword(id, dto);
+  }
+
+  @Patch(':id/zoom-email')
+  @ResponseMessage('Zoom email updated successfully!')
+  updateZoomEmail(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateZoomEmailDto,
+  ) {
+    return this.teachers.updateZoomEmail(id, dto);
+  }
+
+  @Patch(':id/device')
+  @ResponseMessage('Device cleared successfully!')
+  clearDevice(@Param('id', ParseIntPipe) id: number) {
+    return this.teachers.clearDevice(id);
   }
 
   @Get(':id')
@@ -109,9 +250,15 @@ export class TeacherSubjectsController {
   create(@Body() dto: CreateSubjectDto) {
     return this.teachers.createSubject(dto);
   }
+
+  @Delete(':id')
+  @ResponseMessage('Teacher subject deleted successfully!')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.teachers.removeSubject(id);
+  }
 }
 
-/** Teacher salary-rate sub-resource (read-only this phase). */
+/** Teacher salary-rate sub-resource (list + create/update). */
 @Controller('teacher-salary-rates')
 export class TeacherSalaryRatesController {
   constructor(private readonly teachers: TeachersService) {}
@@ -120,6 +267,25 @@ export class TeacherSalaryRatesController {
   @ResponseMessage('Teacher salary rates fetched successfully!')
   findAll(@Query() q: TeacherIdListDto) {
     return this.teachers.findSalaryRates(q.page, q.limit, q.teacher_id);
+  }
+
+  @Post()
+  @ResponseMessage('Teacher salary rate created successfully!')
+  create(
+    @Body() dto: CreateSalaryRateDto,
+    @CurrentUser('id') actorId: number,
+  ) {
+    return this.teachers.createSalaryRate(dto, actorId);
+  }
+
+  @Patch(':id')
+  @ResponseMessage('Teacher salary rate updated successfully!')
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateSalaryRateDto,
+    @CurrentUser('id') actorId: number,
+  ) {
+    return this.teachers.updateSalaryRate(id, dto, actorId);
   }
 }
 

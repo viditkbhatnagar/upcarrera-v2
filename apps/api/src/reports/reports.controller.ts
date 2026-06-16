@@ -6,6 +6,7 @@ import {
   ReportQueryDto,
 } from './dto/report-query.dto';
 import { EnrollmentReportQueryDto } from './dto/enrollment-report-query.dto';
+import { TeacherSalaryReportQueryDto } from './dto/teacher-salary-report-query.dto';
 import { EnrollmentPdfService } from './enrollment-pdf.service';
 import { toCsv } from './reports.csv';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
@@ -72,6 +73,24 @@ export class ReportsController {
   ) {
     return this.respond(query, res, 'followups-report', () =>
       this.reports.followups(query),
+    );
+  }
+
+  /**
+   * Per-teacher salary report for a calendar month (port of
+   * Teacher_salary_report.php). `?month=YYYY-MM` selects the window (defaults to
+   * the current month); `?format=csv` downloads. Declared before the enrollment
+   * block; there is no `/reports/:id` catch-all, so this literal stays
+   * unambiguous.
+   */
+  @Get('teacher-salary')
+  @ResponseMessage('Teacher salary report')
+  teacherSalary(
+    @Query() query: TeacherSalaryReportQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.respondEnrollment(res, 'teacher-salary-report', () =>
+      this.reports.teacherSalary(query),
     );
   }
 
