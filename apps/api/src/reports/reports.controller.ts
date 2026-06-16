@@ -27,6 +27,19 @@ export class ReportsController {
     );
   }
 
+  // Declared before any `/leads/:something` param routes (there are none today,
+  // but the literal path keeps it unambiguous).
+  @Get('leads/by-country')
+  @ResponseMessage('Leads by country report')
+  leadsByCountry(
+    @Query() query: FollowupReportQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.respond(query, res, 'leads-by-country-report', () =>
+      this.reports.leadsByCountry(query),
+    );
+  }
+
   @Get('students')
   @ResponseMessage('Student report')
   students(

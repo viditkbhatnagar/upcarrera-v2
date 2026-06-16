@@ -12,10 +12,19 @@ import { UpdateLeadDto } from './dto/update-lead.dto';
 import { ListLeadsDto } from './dto/list-leads.dto';
 import { UpdateLeadStatusDto } from './dto/update-lead-status.dto';
 import { CreateLeadSourceDto } from './dto/create-lead-source.dto';
+import { UpdateLeadSourceDto } from './dto/update-lead-source.dto';
+import { CreateLeadStatusDto } from './dto/create-lead-status.dto';
+import { UpdateLeadStatusConfigDto } from './dto/update-lead-status-config.dto';
 import { BulkImportLeadsDto } from './dto/bulk-import-leads.dto';
+import { ListFollowupsDto } from './dto/list-followups.dto';
+import { AssignTelecallerDto } from './dto/assign-telecaller.dto';
+import { VerifyLeadDto } from './dto/verify-lead.dto';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
+
+/** lead_status_id the legacy follow-up screens hard-code (Followup_report.php). */
+const FOLLOWUP_LEAD_STATUS_ID = 3;
 
 /**
  * CRM funnel service. Ports the read/write CRUD of CI4
@@ -146,6 +155,126 @@ export class LeadsService {
     return { lead, activity };
   }
 
+  /**
+   * Port of the legacy follow-up funnel screen: leads parked at lead_status_id=3
+   * (Follow-up) that have not yet converted. Paginated, newest first, with the
+   * optional filters the legacy screen offered. The from/to bounds apply to the
+   * followup_date column (a DATE), inclusive of both ends.
+   */
+  async findFollowups(query: ListFollowupsDto) {
+    const page = query.page ?? DEFAULT_PAGE;
+    const limit = query.limit ?? DEFAULT_LIMIT;
+
+    const followupDate = this.dateRange(query.from, query.to);
+
+    const where = {
+      deleted_at: null,
+      lead_status_id: FOLLOWUP_LEAD_STATUS_ID,
+      is_converted: 0,
+      ...(query.telecaller_id !== undefined && {
+        telecaller_id: query.telecaller_id,
+      }),
+      ...(query.lead_source_id !== undefined && {
+        lead_source_id: query.lead_source_id,
+      }),
+      ...(query.course_id !== undefined && { course_id: query.course_id }),
+      ...(followupDate && { followup_date: followupDate }),
+    };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.leads.findMany({
+        where,
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { id: 'desc' },
+      }),
+      this.prisma.leads.count({ where }),
+    ]);
+
+    return { items, total, page, limit };
+  }
+
+  /**
+   * Port of Leads::ajax_lead_history — the activity/status timeline for a lead.
+   * Returns the lead_activity rows newest first, each decorated with the
+   * lead_status title (resolved in one extra query, no relation in the schema).
+   */
+  async findActivity(id: number) {
+    await this.findOne(id); // 404 if the lead is missing/soft-deleted
+
+    const activities = await this.prisma.lead_activity.findMany({
+      where: { lead_id: id, deleted_at: null },
+      orderBy: { id: 'desc' },
+    });
+
+    // Resolve lead_status titles in a single lookup (no FK relation modelled).
+    const statusIds = [
+      ...new Set(
+        activities
+          .map((a) => a.lead_status_id)
+          .filter((s): s is number => s != null),
+      ),
+    ];
+    const statuses =
+      statusIds.length > 0
+        ? await this.prisma.lead_status.findMany({
+            where: { id: { in: statusIds } },
+            select: { id: true, title: true },
+          })
+        : [];
+    const titleById = new Map(statuses.map((s) => [s.id, s.title]));
+
+    return activities.map((a) => ({
+      ...a,
+      lead_status_title:
+        a.lead_status_id != null
+          ? (titleById.get(a.lead_status_id) ?? null)
+          : null,
+    }));
+  }
+
+  /**
+   * Port of Leads::update_telecaller — reassign the lead's owning telecaller.
+   */
+  async assignTelecaller(id: number, dto: AssignTelecallerDto, userId: number) {
+    await this.findOne(id); // 404 if missing/soft-deleted
+
+    return this.prisma.leads.update({
+      where: { id },
+      data: {
+        telecaller_id: dto.telecaller_id,
+        updated_by: userId,
+        updated_at: new Date(),
+      },
+    });
+  }
+
+  /**
+   * Port of Leads::verify_lead — flag the lead verified and update the verified
+   * contact fields. The legacy `name` field maps to the `title` column. Only the
+   * fields the caller supplies are written (the rest are left untouched).
+   */
+  async verify(id: number, dto: VerifyLeadDto, userId: number) {
+    await this.findOne(id); // 404 if missing/soft-deleted
+
+    const now = new Date();
+
+    return this.prisma.leads.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined && { title: dto.name }),
+        ...(dto.phone !== undefined && { phone: dto.phone }),
+        ...(dto.email !== undefined && { email: dto.email }),
+        ...(dto.course_id !== undefined && { course_id: dto.course_id }),
+        is_verified: 1,
+        verified_by: userId,
+        verified_at: now,
+        updated_by: userId,
+        updated_at: now,
+      },
+    });
+  }
+
   // ---- lead_source ---------------------------------------------------------
 
   findAllSources() {
@@ -168,6 +297,41 @@ export class LeadsService {
     });
   }
 
+  /** Port of Lead_source::edit. 404 when missing/soft-deleted. */
+  async updateSource(id: number, dto: UpdateLeadSourceDto, userId: number) {
+    const source = await this.prisma.lead_source.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!source) {
+      throw new NotFoundException('Lead source not found!');
+    }
+
+    return this.prisma.lead_source.update({
+      where: { id },
+      data: {
+        ...(dto.title !== undefined && { title: dto.title }),
+        updated_by: userId,
+        updated_at: new Date(),
+      },
+    });
+  }
+
+  /** Port of Lead_source::delete (soft delete: stamp deleted_at/deleted_by). */
+  async removeSource(id: number, userId: number) {
+    const source = await this.prisma.lead_source.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!source) {
+      throw new NotFoundException('Lead source not found!');
+    }
+
+    await this.prisma.lead_source.update({
+      where: { id },
+      data: { deleted_at: new Date(), deleted_by: userId },
+    });
+    return { id };
+  }
+
   // ---- lead_status ---------------------------------------------------------
 
   findAllStatuses() {
@@ -175,6 +339,59 @@ export class LeadsService {
       where: { deleted_at: null },
       orderBy: { id: 'asc' },
     });
+  }
+
+  /** Port of Lead_status::add. */
+  createStatus(dto: CreateLeadStatusDto, userId: number) {
+    const now = new Date();
+    return this.prisma.lead_status.create({
+      data: {
+        title: dto.title,
+        created_by: userId,
+        updated_by: userId,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  /** Port of Lead_status::edit. 404 when missing/soft-deleted. */
+  async updateStatusConfig(
+    id: number,
+    dto: UpdateLeadStatusConfigDto,
+    userId: number,
+  ) {
+    const status = await this.prisma.lead_status.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!status) {
+      throw new NotFoundException('Lead status not found!');
+    }
+
+    return this.prisma.lead_status.update({
+      where: { id },
+      data: {
+        ...(dto.title !== undefined && { title: dto.title }),
+        updated_by: userId,
+        updated_at: new Date(),
+      },
+    });
+  }
+
+  /** Port of Lead_status::delete (soft delete: stamp deleted_at/deleted_by). */
+  async removeStatus(id: number, userId: number) {
+    const status = await this.prisma.lead_status.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!status) {
+      throw new NotFoundException('Lead status not found!');
+    }
+
+    await this.prisma.lead_status.update({
+      where: { id },
+      data: { deleted_at: new Date(), deleted_by: userId },
+    });
+    return { id };
   }
 
   // ---- conversion saga -----------------------------------------------------
@@ -638,5 +855,27 @@ export class LeadsService {
     if (value === undefined || value === null || value === '') return null;
     const n = Number(value);
     return Number.isNaN(n) ? null : n;
+  }
+
+  /**
+   * Build an inclusive date-range filter (mirrors the reports module helper).
+   * `from` covers from 00:00:00, `to` covers through 23:59:59.999 of that day.
+   * Returns undefined when neither bound is supplied so the filter is omitted.
+   */
+  private dateRange(
+    from?: string,
+    to?: string,
+  ): { gte?: Date; lte?: Date } | undefined {
+    if (!from && !to) {
+      return undefined;
+    }
+    const range: { gte?: Date; lte?: Date } = {};
+    if (from) {
+      range.gte = new Date(`${from}T00:00:00.000`);
+    }
+    if (to) {
+      range.lte = new Date(`${to}T23:59:59.999`);
+    }
+    return range;
   }
 }

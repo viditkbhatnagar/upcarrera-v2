@@ -22,6 +22,7 @@ import { CreateSemesterDto } from './dto/create-semester.dto';
 import { UpdateSemesterDto } from './dto/update-semester.dto';
 import { CreateSpecialisationDto } from './dto/create-specialisation.dto';
 import { UpdateSpecialisationDto } from './dto/update-specialisation.dto';
+import { TeachersBySubjectsDto } from './dto/teachers-by-subjects.dto';
 
 /**
  * Academic catalog HTTP surface. Every route is a STAFF route, protected by the
@@ -38,6 +39,13 @@ export class CoursesController {
   @ResponseMessage('Courses')
   list(@Query() query: ListQueryDto) {
     return this.academics.listCourses(query);
+  }
+
+  // Declared before the `:id` route so the literal segment wins routing.
+  @Get(':id/subjects-with-teachers')
+  @ResponseMessage('Subjects with teachers')
+  subjectsWithTeachers(@Param('id', ParseIntPipe) id: number) {
+    return this.academics.subjectsWithTeachers(id);
   }
 
   @Get(':id')
@@ -110,6 +118,13 @@ export class SubjectsController {
   @ResponseMessage('Subjects')
   list(@Query() query: ListQueryDto) {
     return this.academics.listSubjects(query);
+  }
+
+  /** Teachers assigned to each of the given subjects (via the subject's course). */
+  @Post('teachers-by-subjects')
+  @ResponseMessage('Teachers by subjects')
+  teachersBySubjects(@Body() dto: TeachersBySubjectsDto) {
+    return this.academics.teachersBySubjects(dto);
   }
 
   @Get(':id')

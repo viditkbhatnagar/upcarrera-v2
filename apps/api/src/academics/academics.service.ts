@@ -14,9 +14,13 @@ import { CreateSemesterDto } from './dto/create-semester.dto';
 import { UpdateSemesterDto } from './dto/update-semester.dto';
 import { CreateSpecialisationDto } from './dto/create-specialisation.dto';
 import { UpdateSpecialisationDto } from './dto/update-specialisation.dto';
+import { TeachersBySubjectsDto } from './dto/teachers-by-subjects.dto';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
+
+/** role_id for teachers in the users table (legacy convention). */
+const TEACHER_ROLE_ID = 3;
 
 interface Pagination {
   page?: number;
@@ -328,6 +332,127 @@ export class AcademicsService {
       where: { id },
       data: { deleted_at: new Date() },
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // teacher assignment helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Resolve the teachers assigned to each of the given course ids.
+   *
+   * The live `teachers_subjects` table links a teacher (user_id, role 3) to a
+   * course (course_id) — the current prisma schema models no per-subject column,
+   * so assignment is at the course grain. Teachers are `users` with
+   * role_id = 3. Returns a Map<course_id, teacher[]> built in two bulk queries
+   * (no N+1).
+   */
+  private async teachersByCourseIds(
+    courseIds: number[],
+  ): Promise<Map<number, Array<{ id: number; name: string | null }>>> {
+    const result = new Map<number, Array<{ id: number; name: string | null }>>();
+    const uniqueCourseIds = [...new Set(courseIds.filter((c) => c != null))];
+    if (uniqueCourseIds.length === 0) {
+      return result;
+    }
+
+    // 1. all teacher<->course links for these courses.
+    const links = await this.prisma.teachers_subjects.findMany({
+      where: { course_id: { in: uniqueCourseIds }, deleted_at: null },
+      select: { user_id: true, course_id: true },
+    });
+
+    // 2. resolve those user ids to active teachers (role 3) in one query.
+    const teacherIds = [
+      ...new Set(
+        links.map((l) => l.user_id).filter((u): u is number => u != null),
+      ),
+    ];
+    const teachers =
+      teacherIds.length > 0
+        ? await this.prisma.users.findMany({
+            where: {
+              id: { in: teacherIds },
+              role_id: TEACHER_ROLE_ID,
+              deleted_at: null,
+            },
+            select: { id: true, name: true },
+          })
+        : [];
+    const teacherById = new Map(teachers.map((t) => [t.id, t]));
+
+    for (const courseId of uniqueCourseIds) {
+      result.set(courseId, []);
+    }
+    for (const link of links) {
+      if (link.course_id == null || link.user_id == null) continue;
+      const teacher = teacherById.get(link.user_id);
+      if (!teacher) continue; // user_id is not an active teacher
+      const bucket = result.get(link.course_id);
+      // de-dupe in case a teacher is linked to the same course twice.
+      if (bucket && !bucket.some((t) => t.id === teacher.id)) {
+        bucket.push(teacher);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * POST /subjects/teachers-by-subjects — for each requested subject id, return
+   * the subject with the teachers assigned to its course. Missing/soft-deleted
+   * subject ids are dropped. Mirrors the legacy
+   * Teachers_subjects_model::get_teacher_enrolments join, adapted to the current
+   * (course-grained) schema.
+   */
+  async teachersBySubjects(dto: TeachersBySubjectsDto) {
+    const subjects = await this.prisma.subjects.findMany({
+      where: { id: { in: dto.subject_ids }, deleted_at: null },
+      select: { id: true, title: true, course_id: true },
+    });
+
+    const teacherMap = await this.teachersByCourseIds(
+      subjects
+        .map((s) => s.course_id)
+        .filter((c): c is number => c != null),
+    );
+
+    return subjects.map((subject) => ({
+      subject_id: subject.id,
+      title: subject.title,
+      course_id: subject.course_id,
+      teachers:
+        subject.course_id != null
+          ? (teacherMap.get(subject.course_id) ?? [])
+          : [],
+    }));
+  }
+
+  /**
+   * GET /courses/:id/subjects-with-teachers — all subjects for the course, each
+   * decorated with the teachers assigned to the course. 404 when the course is
+   * missing/soft-deleted.
+   */
+  async subjectsWithTeachers(courseId: number) {
+    await this.getCourse(courseId); // 404 if missing/soft-deleted
+
+    const [subjects, teacherMap] = await Promise.all([
+      this.prisma.subjects.findMany({
+        where: { course_id: courseId, deleted_at: null },
+        orderBy: { id: 'asc' },
+        select: { id: true, title: true, course_id: true },
+      }),
+      this.teachersByCourseIds([courseId]),
+    ]);
+
+    const teachers = teacherMap.get(courseId) ?? [];
+
+    return subjects.map((subject) => ({
+      subject_id: subject.id,
+      title: subject.title,
+      course_id: subject.course_id,
+      teachers,
+    }));
   }
 
   // ---------------------------------------------------------------------------

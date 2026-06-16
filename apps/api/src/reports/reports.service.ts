@@ -135,6 +135,84 @@ export class ReportsService {
     return { data, csv: { rows, headers: ['dimension', 'key', 'count'] } };
   }
 
+  // ---- leads-by-country report ---------------------------------------------
+
+  /**
+   * Leads grouped by country_id, each with a per-lead_status_id breakdown, plus
+   * a per-country total and the grand total. Filters: created_at date range and
+   * an optional telecaller_id. Extends the Lead_report.php status tally with the
+   * country dimension.
+   *
+   * Uses a single groupBy on [country_id, lead_status_id] then folds the flat
+   * rows into the nested shape — one query, no N+1.
+   */
+  async leadsByCountry(query: FollowupReportQueryDto): Promise<ReportResult<{
+    total: number;
+    by_country: Array<{
+      country_id: number | null;
+      total: number;
+      by_status: Array<{ lead_status_id: number | null; count: number }>;
+    }>;
+  }>> {
+    const where: Prisma.leadsWhereInput = { deleted_at: null };
+    const createdAt = this.dateRange(query.from, query.to);
+    if (createdAt) {
+      where.created_at = createdAt;
+    }
+    if (query.telecaller_id !== undefined) {
+      where.telecaller_id = query.telecaller_id;
+    }
+
+    const grouped = await this.prisma.leads.groupBy({
+      by: ['country_id', 'lead_status_id'],
+      where,
+      _count: { _all: true },
+      orderBy: [{ country_id: 'asc' }, { lead_status_id: 'asc' }],
+    });
+
+    // Fold flat (country, status) rows into nested per-country buckets,
+    // preserving the groupBy ordering via an insertion-ordered Map.
+    const byCountryMap = new Map<
+      number | null,
+      {
+        country_id: number | null;
+        total: number;
+        by_status: Array<{ lead_status_id: number | null; count: number }>;
+      }
+    >();
+
+    for (const row of grouped) {
+      const count = row._count._all;
+      let bucket = byCountryMap.get(row.country_id);
+      if (!bucket) {
+        bucket = { country_id: row.country_id, total: 0, by_status: [] };
+        byCountryMap.set(row.country_id, bucket);
+      }
+      bucket.total += count;
+      bucket.by_status.push({
+        lead_status_id: row.lead_status_id,
+        count,
+      });
+    }
+
+    const byCountry = [...byCountryMap.values()];
+    const total = byCountry.reduce((sum, c) => sum + c.total, 0);
+
+    const data = { total, by_country: byCountry };
+
+    // CSV: one flat row per (country, status) pair so the breakdown exports.
+    const rows: CsvRow[] = grouped.map((row) => ({
+      country_id: row.country_id ?? '',
+      lead_status_id: row.lead_status_id ?? '',
+      count: row._count._all,
+    }));
+
+    return {
+      data,
+      csv: { rows, headers: ['country_id', 'lead_status_id', 'count'] },
+    };
+  }
+
   // ---- students report -----------------------------------------------------
 
   /**
