@@ -29,17 +29,22 @@ type ReadableResponse = Pick<NodeJS.ReadableStream, 'on'>;
  *      Streams a binary PDF via @Res({ passthrough:false }); PdfService pipes the
  *      document and ends it. Because headers are flushed before the envelope can
  *      run, ResponseInterceptor bails on `headersSent` and the raw bytes reach the
- *      client untouched. Seeded invoice id=1 (student_id=2, payable 1000) loads a
- *      real document, so the response is a genuine "%PDF" stream. This route is
- *      behind the global JwtAuthGuard, so it carries the admin Bearer token.
+ *      client untouched. A LIVE invoice id captured from GET /api/invoices (never
+ *      a hardcoded seed id — local reruns accumulate invoices and the original
+ *      seed row may be gone) loads a real document, so the response is a genuine
+ *      "%PDF" stream. This route is behind the global JwtAuthGuard, so it carries
+ *      the admin Bearer token.
  */
 describe('Integrations + Invoice PDF (e2e)', () => {
   let app: INestApplication;
   let http: Server;
   let token: string;
 
-  // Seeded by database/ci-seed.sql: invoice id=1, student_id=2, payable 1000.
-  const SEEDED_INVOICE_ID = 1;
+  // A live invoice id captured from GET /api/invoices in beforeAll. The CI seed
+  // guarantees at least one invoice, but its id is NOT guaranteed to be 1 on a
+  // non-recreated DB (local reruns accumulate invoices and the seed row may be
+  // gone), so we resolve a real id at runtime — mirroring finance.e2e-spec.ts.
+  let invoiceId: number;
 
   beforeAll(async () => {
     ({ app, http } = await bootApp());
@@ -48,6 +53,15 @@ describe('Integrations + Invoice PDF (e2e)', () => {
       ADMIN_CREDENTIALS.username,
       ADMIN_CREDENTIALS.password,
     );
+
+    // Resolve a live invoice id for the PDF download test (seed guarantees >= 1).
+    const list = await request(http).get('/api/invoices').set(authHeader(token));
+    expect([200, 201]).toContain(list.status);
+    const items = list.body?.data?.items as Array<{ id: number }> | undefined;
+    expect(Array.isArray(items)).toBe(true);
+    expect(items!.length).toBeGreaterThanOrEqual(1);
+    invoiceId = items![0].id;
+    expect(typeof invoiceId).toBe('number');
   });
 
   afterAll(async () => {
@@ -80,7 +94,7 @@ describe('Integrations + Invoice PDF (e2e)', () => {
   describe('GET /api/invoices/:id/pdf', () => {
     it('rejects an unauthenticated request with 401 (global JwtAuthGuard)', async () => {
       const res = await request(http).get(
-        `/api/invoices/${SEEDED_INVOICE_ID}/pdf`,
+        `/api/invoices/${invoiceId}/pdf`,
       );
 
       expect(res.status).toBe(401);
@@ -93,7 +107,7 @@ describe('Integrations + Invoice PDF (e2e)', () => {
       // opt in with .buffer() and a custom .parse that concatenates the chunks
       // into a single Buffer. This lets us sniff the PDF magic bytes ("%PDF").
       const res = await request(http)
-        .get(`/api/invoices/${SEEDED_INVOICE_ID}/pdf`)
+        .get(`/api/invoices/${invoiceId}/pdf`)
         .set(authHeader(token))
         .buffer(true)
         .parse((res, callback) => {
@@ -110,7 +124,7 @@ describe('Integrations + Invoice PDF (e2e)', () => {
       // The stream bypasses the { status, message, data } envelope entirely.
       expect(res.headers['content-type']).toMatch(/pdf/);
       expect(res.headers['content-disposition']).toContain(
-        `invoice-${SEEDED_INVOICE_ID}.pdf`,
+        `invoice-${invoiceId}.pdf`,
       );
 
       // The body is a real PDF: it begins with the "%PDF" magic header.

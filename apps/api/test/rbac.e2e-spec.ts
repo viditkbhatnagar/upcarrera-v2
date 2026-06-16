@@ -1,7 +1,13 @@
 import type { INestApplication } from '@nestjs/common';
 import type { Server } from 'http';
 import request from 'supertest';
-import { ADMIN_CREDENTIALS, authHeader, bootApp, loginAs } from './app.factory';
+import {
+  ADMIN_CREDENTIALS,
+  authHeader,
+  bootApp,
+  loginAs,
+  purgeUsersByUsername,
+} from './app.factory';
 
 /**
  * RBAC (e2e) — exercises the PermissionsGuard allow-list against the real
@@ -31,10 +37,11 @@ describe('RBAC permissions (e2e)', () => {
   let nonAdminToken: string;
 
   // role_id 4 is a non-super-admin staff role; the create path pins it per the
-  // RBAC contract. A unique-ish username keeps repeated local runs collision-free.
+  // RBAC contract. A static username + purge-before-create (see beforeAll) keeps
+  // reruns deterministic and collision-free without leaking a row per run.
   const NON_ADMIN_ROLE_ID = 4;
   const NON_ADMIN_PASSWORD = 'Test@123';
-  const nonAdminUsername = `e2e_rbac_${Date.now()}`;
+  const nonAdminUsername = 'e2e_rbac_cov';
 
   beforeAll(async () => {
     ({ app, http } = await bootApp());
@@ -46,11 +53,14 @@ describe('RBAC permissions (e2e)', () => {
       ADMIN_CREDENTIALS.password,
     );
 
-    // 2) Create the non-admin user. Admin bypasses 'consultants/create', so this
-    //    should normally return a success envelope. We don't hard-assert the
-    //    create here: if the username already exists from a prior run the service
-    //    surfaces an error envelope, and that's acceptable — we only need to be
-    //    able to log in as the user below.
+    // 2) Purge any leftover fixture so the create below mints exactly one row.
+    //    The create path enforces no username uniqueness, so without this a rerun
+    //    against a non-recreated DB would accumulate duplicates and auth.login()
+    //    (findFirst) could resolve a stale row.
+    await purgeUsersByUsername(app, nonAdminUsername);
+
+    // 3) Create the non-admin user. Admin bypasses 'consultants/create', so this
+    //    returns a success envelope; we only need to be able to log in as the user.
     await request(http)
       .post('/api/users')
       .set(authHeader(adminToken))
@@ -62,12 +72,14 @@ describe('RBAC permissions (e2e)', () => {
         phone: '9111100009',
       });
 
-    // 3) Log in as the freshly-created (or pre-existing) non-admin user.
-    //    loginAs throws if this fails, so a broken create surfaces loudly here.
+    // 4) Log in as the freshly-created non-admin user. loginAs throws if this
+    //    fails, so a broken create surfaces loudly here.
     nonAdminToken = await loginAs(http, nonAdminUsername, NON_ADMIN_PASSWORD);
   });
 
   afterAll(async () => {
+    // Leave the DB as we found it so repeated local runs stay idempotent.
+    await purgeUsersByUsername(app, nonAdminUsername);
     await app.close();
   });
 

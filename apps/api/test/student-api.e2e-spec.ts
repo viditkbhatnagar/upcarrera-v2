@@ -1,7 +1,13 @@
 import type { INestApplication } from '@nestjs/common';
 import type { Server } from 'http';
 import request from 'supertest';
-import { ADMIN_CREDENTIALS, authHeader, bootApp, loginAs } from './app.factory';
+import {
+  ADMIN_CREDENTIALS,
+  authHeader,
+  bootApp,
+  loginAs,
+  purgeUsersByUsername,
+} from './app.factory';
 
 /**
  * Student mobile-API surface (e2e).
@@ -39,8 +45,10 @@ describe('Student API (e2e)', () => {
   let adminToken: string;
   let studentToken: string;
 
-  // id of the user minted in the setup POST; captured but the student logs in by
-  // username/password (loginAs), which findFirst-resolves deterministically on reruns.
+  // id of the user minted in the setup POST. The student then logs in by
+  // username/password, and auth.login() resolves the username with findFirst
+  // (OLDEST matching row). Because beforeAll purges the username first, exactly
+  // one row exists — so this captured id always equals the login-resolved id.
   let createdUserId: number;
 
   // Static, spec-unique credentials -> deterministic across reruns.
@@ -59,6 +67,12 @@ describe('Student API (e2e)', () => {
       ADMIN_CREDENTIALS.username,
       ADMIN_CREDENTIALS.password,
     );
+
+    // Deterministic isolation: the create path enforces no username uniqueness,
+    // so purge any rows a prior run left behind BEFORE minting the fixture. This
+    // guarantees exactly one 'e2e_studapi_cov' row exists, so createdUserId (from
+    // the POST) matches the row auth.login() (findFirst) resolves at student login.
+    await purgeUsersByUsername(app, STUDENT.username);
 
     // Admin bypasses RBAC -> can create a student user. POST yields 201 in Nest.
     const res = await request(http)
@@ -84,6 +98,8 @@ describe('Student API (e2e)', () => {
   });
 
   afterAll(async () => {
+    // Leave the DB as we found it so repeated local runs stay idempotent.
+    await purgeUsersByUsername(app, STUDENT.username);
     await app.close();
   });
 

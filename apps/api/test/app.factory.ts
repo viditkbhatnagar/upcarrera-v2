@@ -6,6 +6,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
+import { PrismaService } from '../src/prisma/prisma.service';
 
 export interface BootedApp {
   app: INestApplication;
@@ -80,3 +81,23 @@ export const ADMIN_CREDENTIALS = {
   username: 'upcarrera.superadmin',
   password: 'upcarrera@2024',
 } as const;
+
+/**
+ * Hard-deletes every `users` row carrying the given username.
+ *
+ * The user-create path (POST /api/users) enforces NO username uniqueness, so a
+ * spec that mints a fixed-username fixture would append a duplicate row on every
+ * rerun against a non-recreated DB. auth.service.login() resolves a username with
+ * findFirst({ where: { username, deleted_at: null } }) — i.e. the OLDEST matching
+ * row — so the id a spec captures from its latest POST diverges from the id it
+ * then logs in as. Purging by username BEFORE the create (and again in afterAll)
+ * guarantees exactly one row exists, keeping reruns deterministic and the DB
+ * clean. Scoped to the spec's own `e2e_*` username, so seed rows are untouched.
+ */
+export async function purgeUsersByUsername(
+  app: INestApplication,
+  username: string,
+): Promise<void> {
+  const prisma = app.get(PrismaService);
+  await prisma.users.deleteMany({ where: { username } });
+}

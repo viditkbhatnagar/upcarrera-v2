@@ -1,7 +1,13 @@
 import type { INestApplication } from '@nestjs/common';
 import type { Server } from 'http';
 import request from 'supertest';
-import { ADMIN_CREDENTIALS, authHeader, bootApp, loginAs } from './app.factory';
+import {
+  ADMIN_CREDENTIALS,
+  authHeader,
+  bootApp,
+  loginAs,
+  purgeUsersByUsername,
+} from './app.factory';
 
 /**
  * Staff platform administration (e2e).
@@ -52,14 +58,17 @@ describe('Platform (e2e)', () => {
     ({ app, http } = await bootApp());
     token = await loginAs(http, ADMIN_CREDENTIALS.username, ADMIN_CREDENTIALS.password);
 
-    // Clean up any leftover row from a previous interrupted run so the POST below
-    // creates a fresh, assertable row (delete is a soft delete, so a new insert is fine).
-    if (createdUserId) {
-      await request(http).delete(`/api/users/${createdUserId}`).set(authHeader(token));
-    }
+    // Hard-purge any 'e2e_user_cov' rows left by a prior run so the POST test below
+    // creates exactly one assertable row. The create path enforces no username
+    // uniqueness, so without this reruns against a non-recreated DB accumulate
+    // duplicates (the old `if (createdUserId)` guard never fired — createdUserId is
+    // only set later, inside the POST test).
+    await purgeUsersByUsername(app, newUser.username);
   });
 
   afterAll(async () => {
+    // Leave the DB as we found it so repeated local runs stay idempotent.
+    await purgeUsersByUsername(app, newUser.username);
     await app.close();
   });
 

@@ -1,7 +1,13 @@
 import type { INestApplication } from '@nestjs/common';
 import type { Server } from 'http';
 import request from 'supertest';
-import { ADMIN_CREDENTIALS, authHeader, bootApp, loginAs } from './app.factory';
+import {
+  ADMIN_CREDENTIALS,
+  authHeader,
+  bootApp,
+  loginAs,
+  purgeUsersByUsername,
+} from './app.factory';
 
 /**
  * Teacher staff-management e2e.
@@ -53,9 +59,17 @@ describe('Teachers (e2e)', () => {
   beforeAll(async () => {
     ({ app, http } = await bootApp());
     token = await loginAs(http, ADMIN_CREDENTIALS.username, ADMIN_CREDENTIALS.password);
+
+    // Deterministic isolation: POST /api/teachers creates a role_id-3 users row and
+    // never deletes it, and the create path enforces no username uniqueness — so
+    // reruns against a non-recreated DB would accumulate active 'e2e_teacher_cov'
+    // rows. Purge any prior fixture before this run mints its own.
+    await purgeUsersByUsername(app, newTeacher.username);
   });
 
   afterAll(async () => {
+    // Leave the DB as we found it so repeated local runs stay idempotent.
+    await purgeUsersByUsername(app, newTeacher.username);
     await app.close();
   });
 
