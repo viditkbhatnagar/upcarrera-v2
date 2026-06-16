@@ -1,13 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiPatch, ApiError } from "@/lib/api";
 import {
   ArrowLeft,
   Building2,
   Pencil,
   BookPlus,
-  CalendarPlus,
   Globe,
   Mail,
   Phone,
@@ -16,11 +15,8 @@ import {
   Eye,
   Search,
   CheckCircle2,
-  FileText,
-  Tag,
   Activity,
   Wallet,
-  Settings2,
   Trash2,
   Lock,
   ChevronLeft,
@@ -190,79 +186,75 @@ function mapApiUniversity(u: ApiUniversity): UniRow {
   };
 }
 
-/* ---- Mock supporting data ---- */
+/* ---- Live API row types + view models -------------------------------------
+ * Courses tab  -> GET /courses?university_id=<id>   (CourseListQueryDto)
+ * Fee tab      -> GET /semesters?university_id=<id> (SemesterListQueryDto)
+ * Both list endpoints return the paginated { items, total, page, limit } envelope.
+ */
+
+interface ApiCourse {
+  id: number;
+  title: string | null;
+  short_name: string | null;
+  stream: string | null;
+  level: string | null;
+  duration: string | null;
+  total_duration: string | null;
+  specialisations: string | null;
+  status: number | null;
+}
+
+interface ApiSemester {
+  id: number;
+  university_id: number | null;
+  course_id: number | null;
+  title: string | null;
+  semester_fee: number | null;
+}
 
 type CourseRow = {
+  id: number;
   code: string;
   name: string;
-  level: "UG" | "PG" | "Diploma" | "Certificate";
-  category: string;
+  level: string;
+  group: string;
   specialisation: string;
   duration: string;
   status: "Active" | "Inactive";
 };
 
-const TAGGED_COURSES: CourseRow[] = [
-  { code: "CRS-001", name: "MBA", level: "PG", category: "Management", specialisation: "Marketing", duration: "2 Years", status: "Active" },
-  { code: "CRS-002", name: "MBA", level: "PG", category: "Management", specialisation: "Finance", duration: "2 Years", status: "Active" },
-  { code: "CRS-003", name: "MCA", level: "PG", category: "Technology", specialisation: "Data Science", duration: "2 Years", status: "Active" },
-  { code: "CRS-004", name: "BBA", level: "UG", category: "Management", specialisation: "General", duration: "3 Years", status: "Active" },
-  { code: "CRS-005", name: "BCA", level: "UG", category: "Technology", specialisation: "Cloud Computing", duration: "3 Years", status: "Inactive" },
-];
-
-const COURSE_LIBRARY: Omit<CourseRow, "status">[] = [
-  { code: "CRS-006", name: "B.Tech Computer Science", level: "UG", category: "Technology", specialisation: "AI & ML", duration: "4 Years" },
-  { code: "CRS-007", name: "M.Tech Data Science", level: "PG", category: "Technology", specialisation: "Big Data", duration: "2 Years" },
-  { code: "CRS-008", name: "B.Com Honours", level: "UG", category: "Commerce", specialisation: "Accounting", duration: "3 Years" },
-  { code: "CRS-009", name: "LLB", level: "UG", category: "Law", specialisation: "Corporate Law", duration: "3 Years" },
-  { code: "CRS-010", name: "BBA International Business", level: "UG", category: "Management", specialisation: "International Business", duration: "3 Years" },
-];
-
+function mapApiCourse(c: ApiCourse): CourseRow {
+  const name = (c.title ?? c.short_name ?? "").trim() || `Course #${c.id}`;
+  const specialisation =
+    (c.specialisations ?? "").split(",")[0]?.trim() || "—";
+  return {
+    id: c.id,
+    code: `CRS-${String(c.id).padStart(3, "0")}`,
+    name,
+    level: (c.level ?? "").trim() || "—",
+    group: (c.stream ?? "").trim() || "—",
+    specialisation,
+    duration: (c.duration ?? c.total_duration ?? "").trim() || "—",
+    // course.status: 1 (or null treated as active to match legacy default).
+    status: c.status === 0 ? "Inactive" : "Active",
+  };
+}
 
 type FeeRow = {
-  id: string;
+  id: number;
+  code: string;
   course: string;
-  intake: string;
-  registration: number;
-  tuition: number;
   total: number;
-  status: "Active" | "Draft" | "Inactive";
 };
 
-const FEE_STRUCTURES: FeeRow[] = [
-  { id: "FEE-2026-001", course: "MBA in Marketing", intake: "Jan 2026", registration: 5000, tuition: 168000, total: 173000, status: "Active" },
-  { id: "FEE-2026-002", course: "MBA in Finance", intake: "Jan 2026", registration: 5000, tuition: 168000, total: 173000, status: "Active" },
-  { id: "FEE-2026-003", course: "MCA in Data Science", intake: "Jul 2026", registration: 5000, tuition: 142000, total: 147000, status: "Draft" },
-];
-
-type ActivityItem = {
-  id: string;
-  type: "created" | "course" | "intake" | "fee" | "commission" | "payout" | "status";
-  title: string;
-  description: string;
-  actor: string;
-  date: string;
-};
-
-const ACTIVITIES: ActivityItem[] = [
-  { id: "a1", type: "created", title: "University Created", description: "University profile was created.", actor: "Priya Sharma", date: "12 Jan 2026, 10:32 AM" },
-  { id: "a2", type: "course", title: "Course Tagged", description: "MBA — Marketing tagged to university.", actor: "Priya Sharma", date: "12 Jan 2026, 11:04 AM" },
-  { id: "a3", type: "intake", title: "Intake Tagged", description: "January 2026 intake added.", actor: "Rahul Verma", date: "14 Jan 2026, 09:15 AM" },
-  { id: "a4", type: "fee", title: "Fee Structure Created", description: "FEE-2026-001 created for MBA — Marketing.", actor: "Finance Admin", date: "16 Jan 2026, 04:21 PM" },
-  { id: "a5", type: "commission", title: "Commission Rule Updated", description: "Counsellor commission set to 6%.", actor: "Ops Admin", date: "20 Jan 2026, 12:08 PM" },
-  { id: "a6", type: "payout", title: "Payout Rule Updated", description: "Payout cycle set to T+30.", actor: "Finance Admin", date: "22 Jan 2026, 03:47 PM" },
-  { id: "a7", type: "status", title: "Status Changed", description: "Marked as Active.", actor: "Ops Admin", date: "23 Jan 2026, 10:00 AM" },
-];
-
-const ACTIVITY_META: Record<ActivityItem["type"], { icon: typeof Tag; color: string }> = {
-  created: { icon: Building2, color: "bg-sky-100 text-sky-700" },
-  course: { icon: BookPlus, color: "bg-emerald-100 text-emerald-700" },
-  intake: { icon: CalendarPlus, color: "bg-violet-100 text-violet-700" },
-  fee: { icon: Wallet, color: "bg-amber-100 text-amber-700" },
-  commission: { icon: Settings2, color: "bg-indigo-100 text-indigo-700" },
-  payout: { icon: Settings2, color: "bg-pink-100 text-pink-700" },
-  status: { icon: CheckCircle2, color: "bg-teal-100 text-teal-700" },
-};
+function mapApiSemester(s: ApiSemester): FeeRow {
+  return {
+    id: s.id,
+    code: `FEE-${String(s.id).padStart(4, "0")}`,
+    course: (s.title ?? "").trim() || (s.course_id != null ? `Course #${s.course_id}` : "—"),
+    total: s.semester_fee ?? 0,
+  };
+}
 
 function UniversityProfilePage() {
   // The $code route param is the university id; pass it straight to /universities/:id.
@@ -277,9 +269,49 @@ function UniversityProfilePage() {
     queryFn: () => apiGet<ApiUniversity>(`/universities/${code}`),
   });
 
-  // TODO(api): no per-university endpoints for tagged courses, fee structures,
-  // the course library used by the Tag-Course dialog, or the activity timeline
-  // that match these table columns — those tabs stay on mock data.
+  const qc = useQueryClient();
+
+  // Courses tab -> GET /courses?university_id=<id>. apiGet's query arg becomes
+  // the ?university_id filter (CourseListQueryDto.university_id).
+  const {
+    data: coursesData,
+    isLoading: coursesLoading,
+    isError: coursesError,
+  } = useQuery({
+    queryKey: ["university-courses", code],
+    queryFn: () =>
+      apiGet<{ items: ApiCourse[]; total: number; page: number; limit: number }>(
+        "/courses",
+        { university_id: code },
+      ),
+  });
+  const taggedCourses = useMemo(
+    () => (coursesData?.items ?? []).map(mapApiCourse),
+    [coursesData],
+  );
+
+  // Fee Structure tab -> GET /semesters?university_id=<id>. Each semester row
+  // carries a single semester_fee; the legacy schema has no separate
+  // registration/tuition breakdown, so the table shows course + total fee.
+  const {
+    data: semestersData,
+    isLoading: feesLoading,
+    isError: feesError,
+  } = useQuery({
+    queryKey: ["university-semesters", code],
+    queryFn: () =>
+      apiGet<{ items: ApiSemester[]; total: number; page: number; limit: number }>(
+        "/semesters",
+        { university_id: code },
+      ),
+  });
+  const feeStructures = useMemo(
+    () => (semestersData?.items ?? []).map(mapApiSemester),
+    [semestersData],
+  );
+
+  // Edit University -> PATCH /universities/:id. Dialog state below.
+  const [editOpen, setEditOpen] = useState(false);
 
   // Derived view-model from the live row; placeholder keeps hooks unconditional
   // while the request is in flight (real loading/error UI is rendered below).
@@ -334,12 +366,14 @@ function UniversityProfilePage() {
   );
 
   const selectedCourseObj = useMemo(
-    () => TAGGED_COURSES.find((c) => c.code === feeCourse),
-    [feeCourse],
+    () => taggedCourses.find((c) => c.code === feeCourse),
+    [taggedCourses, feeCourse],
   );
 
   const courseLabel = selectedCourseObj
-    ? `${selectedCourseObj.name} in ${selectedCourseObj.specialisation}`
+    ? selectedCourseObj.specialisation && selectedCourseObj.specialisation !== "—"
+      ? `${selectedCourseObj.name} in ${selectedCourseObj.specialisation}`
+      : selectedCourseObj.name
     : "";
 
   const feeStructureName =
@@ -411,8 +445,11 @@ function UniversityProfilePage() {
     toast.success("Fee Structure Created Successfully");
   };
 
+  // The Tag-Course dialog has no backing write endpoint (no university↔course
+  // junction route), so it stays local. Source its picker from the live tagged
+  // courses rather than a mock library so no fabricated rows are shown.
   const filteredLibrary = useMemo(() => {
-    return COURSE_LIBRARY.filter((c) => {
+    return taggedCourses.filter((c) => {
       const matchesSearch =
         courseSearch.trim() === "" ||
         c.name.toLowerCase().includes(courseSearch.toLowerCase()) ||
@@ -420,7 +457,7 @@ function UniversityProfilePage() {
       const matchesLevel = courseLevelFilter === "All" || c.level === courseLevelFilter;
       return matchesSearch && matchesLevel;
     });
-  }, [courseSearch, courseLevelFilter]);
+  }, [taggedCourses, courseSearch, courseLevelFilter]);
 
   const toggleCourse = (code: string) => {
     setSelectedCourses((prev) =>
@@ -446,6 +483,69 @@ function UniversityProfilePage() {
       status: uni.status,
     };
   }, [uni, apiUni]);
+
+  // --- Edit University form (PATCH /universities/:id) ----------------------
+  // Form mirrors the snake_case UpdateUniversityDto columns. Seeded from the
+  // live row each time the dialog opens for this university.
+  const [editForm, setEditForm] = useState({
+    title: "",
+    category: "",
+    website: "",
+    email: "",
+    phone: "",
+    country_id: "",
+    state: "",
+    address: "",
+    status: "1",
+  });
+  // Re-seed whenever the dialog is opened.
+  const [editSeeded, setEditSeeded] = useState(false);
+  if (editOpen && !editSeeded) {
+    setEditSeeded(true);
+    setEditForm({
+      title: apiUni?.title ?? "",
+      category: apiUni?.category ?? "",
+      website: apiUni?.website ?? "",
+      email: apiUni?.email ?? "",
+      phone: apiUni?.phone ?? "",
+      country_id: apiUni?.country_id ?? "",
+      state: apiUni?.state ?? "",
+      address: apiUni?.address ?? "",
+      status: String(apiUni?.status ?? "1") === "0" ? "0" : "1",
+    });
+  }
+  if (!editOpen && editSeeded) {
+    setEditSeeded(false);
+  }
+
+  const updateEditField = (field: keyof typeof editForm, value: string) =>
+    setEditForm((prev) => ({ ...prev, [field]: value }));
+
+  const editMut = useMutation({
+    mutationFn: (body: Partial<ApiUniversity>) =>
+      apiPatch(`/universities/${code}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["university", code] });
+      toast.success("University updated");
+      setEditOpen(false);
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
+
+  const submitEdit = () => {
+    editMut.mutate({
+      title: editForm.title.trim(),
+      category: editForm.category.trim(),
+      website: editForm.website.trim(),
+      email: editForm.email.trim(),
+      phone: editForm.phone.trim(),
+      country_id: editForm.country_id.trim(),
+      state: editForm.state.trim(),
+      address: editForm.address.trim(),
+      status: editForm.status,
+    });
+  };
 
   const backLink = (
     <div>
@@ -560,7 +660,7 @@ function UniversityProfilePage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" className="gap-2">
+            <Button variant="outline" className="gap-2" onClick={() => setEditOpen(true)}>
               <Pencil className="h-4 w-4" />
               Edit University
             </Button>
@@ -678,30 +778,58 @@ function UniversityProfilePage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {TAGGED_COURSES.map((c) => (
-                    <TableRow key={c.code} className="hover:bg-muted/40">
-                      <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">{c.code}</TableCell>
-                      <TableCell className="py-3 text-sm font-medium text-foreground">{c.name} in {c.specialisation}</TableCell>
-                      <TableCell className="py-3">
-                        <Badge variant="secondary" className="bg-slate-100 text-slate-700">{c.level}</Badge>
-                      </TableCell>
-                      <TableCell className="py-3 text-sm">{c.name}</TableCell>
-                      <TableCell className="py-3 text-sm">{c.specialisation}</TableCell>
-                      <TableCell className="py-3 text-sm">{c.duration}</TableCell>
-                      <TableCell className="py-3">
-                        {c.status === "Active" ? (
-                          <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">Active</Badge>
-                        ) : (
-                          <Badge variant="secondary" className="bg-zinc-100 text-zinc-600">Inactive</Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="py-3 pr-4 text-right">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" title="View">
-                          <Eye className="h-4 w-4" />
-                        </Button>
+                  {coursesLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                        Loading courses…
                       </TableCell>
                     </TableRow>
-                  ))}
+                  ) : coursesError ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                        Couldn’t load courses for this university.
+                      </TableCell>
+                    </TableRow>
+                  ) : taggedCourses.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="py-12 text-center">
+                        <div className="mx-auto flex max-w-sm flex-col items-center gap-1">
+                          <div className="mb-2 grid h-11 w-11 place-items-center rounded-full bg-muted text-muted-foreground">
+                            <BookPlus className="h-5 w-5" />
+                          </div>
+                          <p className="text-sm font-medium text-foreground">No courses tagged yet</p>
+                          <p className="text-xs text-muted-foreground">
+                            Courses mapped to this university will appear here.
+                          </p>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    taggedCourses.map((c) => (
+                      <TableRow key={c.id} className="hover:bg-muted/40">
+                        <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">{c.code}</TableCell>
+                        <TableCell className="py-3 text-sm font-medium text-foreground">{c.name}</TableCell>
+                        <TableCell className="py-3">
+                          <Badge variant="secondary" className="bg-slate-100 text-slate-700">{c.level}</Badge>
+                        </TableCell>
+                        <TableCell className="py-3 text-sm">{c.group}</TableCell>
+                        <TableCell className="py-3 text-sm">{c.specialisation}</TableCell>
+                        <TableCell className="py-3 text-sm">{c.duration}</TableCell>
+                        <TableCell className="py-3">
+                          {c.status === "Active" ? (
+                            <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">Active</Badge>
+                          ) : (
+                            <Badge variant="secondary" className="bg-zinc-100 text-zinc-600">Inactive</Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="py-3 pr-4 text-right">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title="View">
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </div>
@@ -731,45 +859,52 @@ function UniversityProfilePage() {
                 <TableHeader className="bg-muted/40">
                   <TableRow>
                     <TableHead className="px-4">Fee Structure ID</TableHead>
-                    <TableHead>Course</TableHead>
-                    <TableHead>Intake</TableHead>
-                    <TableHead className="text-right">Registration Fee</TableHead>
-                    <TableHead className="text-right">Tuition Fee</TableHead>
+                    <TableHead>Course / Semester</TableHead>
                     <TableHead className="text-right">Total Fee</TableHead>
-                    <TableHead>Status</TableHead>
                     <TableHead className="pr-4 text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {FEE_STRUCTURES.map((f) => (
-                    <TableRow key={f.id} className="hover:bg-muted/40">
-                      <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">{f.id}</TableCell>
-                      <TableCell className="py-3 text-sm font-medium text-foreground">{f.course}</TableCell>
-                      <TableCell className="py-3 text-sm">{f.intake}</TableCell>
-                      <TableCell className="py-3 text-right text-sm tabular-nums">₹{f.registration.toLocaleString()}</TableCell>
-                      <TableCell className="py-3 text-right text-sm tabular-nums">₹{f.tuition.toLocaleString()}</TableCell>
-                      <TableCell className="py-3 text-right text-sm font-semibold tabular-nums">₹{f.total.toLocaleString()}</TableCell>
-                      <TableCell className="py-3">
-                        {f.status === "Active" ? (
-                          <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">Active</Badge>
-                        ) : f.status === "Draft" ? (
-                          <Badge variant="secondary" className="bg-amber-100 text-amber-700">Draft</Badge>
-                        ) : (
-                          <Badge variant="secondary" className="bg-zinc-100 text-zinc-600">Inactive</Badge>
-                        )}
+                  {feesLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
+                        Loading fee structures…
                       </TableCell>
-                      <TableCell className="py-3 pr-4 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button variant="ghost" size="icon" className="h-8 w-8" title="View">
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit">
-                            <Pencil className="h-4 w-4" />
-                          </Button>
+                    </TableRow>
+                  ) : feesError ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
+                        Couldn’t load fee structures for this university.
+                      </TableCell>
+                    </TableRow>
+                  ) : feeStructures.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-12 text-center">
+                        <div className="mx-auto flex max-w-sm flex-col items-center gap-1">
+                          <div className="mb-2 grid h-11 w-11 place-items-center rounded-full bg-muted text-muted-foreground">
+                            <Wallet className="h-5 w-5" />
+                          </div>
+                          <p className="text-sm font-medium text-foreground">No fee structures yet</p>
+                          <p className="text-xs text-muted-foreground">
+                            Fee structures created under this university will appear here.
+                          </p>
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))}
+                  ) : (
+                    feeStructures.map((f) => (
+                      <TableRow key={f.id} className="hover:bg-muted/40">
+                        <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">{f.code}</TableCell>
+                        <TableCell className="py-3 text-sm font-medium text-foreground">{f.course}</TableCell>
+                        <TableCell className="py-3 text-right text-sm font-semibold tabular-nums">₹{f.total.toLocaleString()}</TableCell>
+                        <TableCell className="py-3 pr-4 text-right">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title="View">
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </div>
@@ -783,32 +918,15 @@ function UniversityProfilePage() {
             <p className="mt-0.5 text-xs text-muted-foreground">
               Chronological log of all profile changes and events.
             </p>
-            <ol className="mt-6 relative space-y-5 border-l border-border pl-6">
-              {ACTIVITIES.map((a) => {
-                const meta = ACTIVITY_META[a.type];
-                const Icon = meta.icon;
-                return (
-                  <li key={a.id} className="relative">
-                    <span
-                      className={cn(
-                        "absolute -left-[34px] grid h-7 w-7 place-items-center rounded-full ring-4 ring-card",
-                        meta.color,
-                      )}
-                    >
-                      <Icon className="h-3.5 w-3.5" />
-                    </span>
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex flex-wrap items-baseline gap-2">
-                        <span className="text-sm font-medium text-foreground">{a.title}</span>
-                        <span className="text-xs text-muted-foreground">· {a.date}</span>
-                      </div>
-                      <p className="text-sm text-muted-foreground">{a.description}</p>
-                      <p className="text-xs text-muted-foreground">by {a.actor}</p>
-                    </div>
-                  </li>
-                );
-              })}
-            </ol>
+            <div className="mt-6 flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed py-14 text-center">
+              <div className="mb-2 grid h-11 w-11 place-items-center rounded-full bg-muted text-muted-foreground">
+                <Activity className="h-5 w-5" />
+              </div>
+              <p className="text-sm font-medium text-foreground">No activity yet</p>
+              <p className="max-w-sm text-xs text-muted-foreground">
+                Profile changes and events for this university will be tracked here.
+              </p>
+            </div>
           </div>
         </TabsContent>
       </Tabs>
@@ -868,7 +986,7 @@ function UniversityProfilePage() {
                         <div>
                           <div className="text-sm font-medium text-foreground">{c.name}</div>
                           <div className="mt-0.5 text-xs text-muted-foreground">
-                            {c.code} · {c.level} · {c.category} · {c.specialisation}
+                            {c.code} · {c.level} · {c.group} · {c.specialisation}
                           </div>
                         </div>
                         {selected && (
@@ -1004,11 +1122,19 @@ function UniversityProfilePage() {
                         <SelectValue placeholder="Select course" />
                       </SelectTrigger>
                       <SelectContent>
-                        {TAGGED_COURSES.map((c) => (
-                          <SelectItem key={c.code} value={c.code}>
-                            {c.name} in {c.specialisation}
-                          </SelectItem>
-                        ))}
+                        {taggedCourses.length === 0 ? (
+                          <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                            No tagged courses
+                          </div>
+                        ) : (
+                          taggedCourses.map((c) => (
+                            <SelectItem key={c.code} value={c.code}>
+                              {c.specialisation && c.specialisation !== "—"
+                                ? `${c.name} in ${c.specialisation}`
+                                : c.name}
+                            </SelectItem>
+                          ))
+                        )}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1213,6 +1339,109 @@ function UniversityProfilePage() {
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit University Dialog -> PATCH /universities/:id */}
+      <Dialog open={editOpen} onOpenChange={(o) => (o ? setEditOpen(true) : setEditOpen(false))}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit University</DialogTitle>
+            <DialogDescription>
+              Update the core profile and contact details for {uni.name}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2 sm:grid-cols-2">
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>University Name</Label>
+              <Input
+                value={editForm.title}
+                onChange={(e) => updateEditField("title", e.target.value)}
+                placeholder="University name"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Category</Label>
+              <Input
+                value={editForm.category}
+                onChange={(e) => updateEditField("category", e.target.value)}
+                placeholder="e.g. Private University"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Country</Label>
+              <Input
+                value={editForm.country_id}
+                onChange={(e) => updateEditField("country_id", e.target.value)}
+                placeholder="Country"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>State</Label>
+              <Input
+                value={editForm.state}
+                onChange={(e) => updateEditField("state", e.target.value)}
+                placeholder="State"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Website</Label>
+              <Input
+                value={editForm.website}
+                onChange={(e) => updateEditField("website", e.target.value)}
+                placeholder="https://"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Official Email</Label>
+              <Input
+                type="email"
+                value={editForm.email}
+                onChange={(e) => updateEditField("email", e.target.value)}
+                placeholder="contact@university.edu"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Official Phone</Label>
+              <Input
+                value={editForm.phone}
+                onChange={(e) => updateEditField("phone", e.target.value)}
+                placeholder="Phone"
+              />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Address</Label>
+              <Input
+                value={editForm.address}
+                onChange={(e) => updateEditField("address", e.target.value)}
+                placeholder="Address"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Status</Label>
+              <Select value={editForm.status} onValueChange={(v) => updateEditField("status", v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">Active</SelectItem>
+                  <SelectItem value="0">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)} disabled={editMut.isPending}>
+              Cancel
+            </Button>
+            <Button
+              className="gap-2 bg-accent text-accent-foreground hover:bg-accent-hover"
+              onClick={submitEdit}
+              disabled={editMut.isPending}
+            >
+              {editMut.isPending ? "Saving…" : "Save Changes"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

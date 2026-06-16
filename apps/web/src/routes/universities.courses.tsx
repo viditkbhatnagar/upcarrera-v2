@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiPost, ApiError } from "@/lib/api";
 import { Download, Plus, Search, Pencil, Eye, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -102,6 +102,23 @@ interface ApiSpecialisationRow {
   course_id: number | string | null;
   title: string | null;
   description: string | null;
+}
+
+// --- Write payloads (snake_case, mirror the NestJS create DTOs) -------------
+// POST /courses  -> CreateCourseDto (all fields optional; status is 1/0)
+interface CreateCoursePayload {
+  title?: string;
+  level?: string;
+  duration?: string;
+  specialisations?: string;
+  eligibility_criteria?: string;
+  status?: number;
+}
+// POST /specialisations -> CreateSpecialisationDto (all fields optional; the
+// specialisations table has NO status column, so status is never sent).
+interface CreateSpecPayload {
+  title?: string;
+  description?: string;
 }
 
 const PAGE_SIZE = 100;
@@ -281,9 +298,10 @@ function TableStatusRow({
 }
 
 function CoursesPage() {
-  // Live data sources. Locally-created rows (via the dialogs) are kept in
-  // separate overlay arrays and prepended/appended to the fetched rows, so the
-  // create flows keep working without a write round-trip.
+  const qc = useQueryClient();
+  // Live data sources. Create flows POST to the live API and invalidate the
+  // matching list query so the table refetches; the Activate/Deactivate spec
+  // toggle has no server-side status column, so it stays a session-only overlay.
   const coursesQuery = useQuery({
     queryKey: ["courses", { page: 1, limit: PAGE_SIZE }],
     queryFn: () =>
@@ -309,26 +327,30 @@ function CoursesPage() {
       ),
   });
 
-  const [addedCourses, setAddedCourses] = useState<Course[]>([]);
-  const [addedGroups, setAddedGroups] = useState<Group[]>([]);
-  // Status overrides for the (server-backed) spec rows toggled in this session.
+  // Status overrides for the spec rows toggled in this session. The
+  // specialisations table has no status column (confirmed against the
+  // create/update DTOs), so Activate/Deactivate has no endpoint and is kept as a
+  // session-only overlay.
   const [specStatusOverride, setSpecStatusOverride] = useState<Record<string, Status>>({});
-  const [addedSpecs, setAddedSpecs] = useState<Specialisation[]>([]);
+  // Add Group overlay — see the NOTE on the missing course-picker below for why
+  // this create flow stays local instead of POSTing to /group-courses.
+  const [addedGroups, setAddedGroups] = useState<Group[]>([]);
 
   const courses = useMemo<Course[]>(
-    () => [...addedCourses, ...(coursesQuery.data?.items ?? []).map(mapCourseRow)],
-    [addedCourses, coursesQuery.data],
+    () => (coursesQuery.data?.items ?? []).map(mapCourseRow),
+    [coursesQuery.data],
   );
   const groups = useMemo<Group[]>(
     () => [...(groupsQuery.data?.items ?? []).map(mapGroupRow), ...addedGroups],
-    [addedGroups, groupsQuery.data],
+    [groupsQuery.data, addedGroups],
   );
-  const specs = useMemo<Specialisation[]>(() => {
-    const live = (specsQuery.data?.items ?? []).map(mapSpecRow).map((s) =>
-      specStatusOverride[s.code] ? { ...s, status: specStatusOverride[s.code] } : s,
-    );
-    return [...live, ...addedSpecs];
-  }, [specsQuery.data, specStatusOverride, addedSpecs]);
+  const specs = useMemo<Specialisation[]>(
+    () =>
+      (specsQuery.data?.items ?? []).map(mapSpecRow).map((s) =>
+        specStatusOverride[s.code] ? { ...s, status: specStatusOverride[s.code] } : s,
+      ),
+    [specsQuery.data, specStatusOverride],
+  );
 
   const setSpecs = (updater: (prev: Specialisation[]) => Specialisation[]) => {
     // The spec list's only in-place mutation is the Activate/Deactivate toggle;
@@ -345,6 +367,35 @@ function CoursesPage() {
   const [createCourseOpen, setCreateCourseOpen] = useState(false);
   const [addGroupOpen, setAddGroupOpen] = useState(false);
   const [addSpecOpen, setAddSpecOpen] = useState(false);
+
+  // --- Write flows --------------------------------------------------------
+  // Each create POSTs the live snake_case body, invalidates the matching list
+  // query (so the table refetches), toasts, and closes its dialog.
+  const createCourseMut = useMutation({
+    mutationFn: (body: CreateCoursePayload) => apiPost("/courses", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["courses"] });
+      toast.success("Course created");
+      setCreateCourseOpen(false);
+    },
+    onError: (e) => toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
+
+  // NOTE: Add Group is intentionally NOT wired. POST /group-courses
+  // (CreateGroupCourseDto) requires a NON-EMPTY `course_ids: number[]`
+  // (@ArrayNotEmpty), but this dialog has no course-picker UI to collect course
+  // ids — every POST would 400 on validation. Wiring it would need a course
+  // multi-select added to the dialog (a structural change out of scope here), so
+  // the Add Group flow stays a session-only local overlay (`addedGroups` above).
+  const createSpecMut = useMutation({
+    mutationFn: (body: CreateSpecPayload) => apiPost("/specialisations", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["specialisations"] });
+      toast.success("Specialisation added");
+      setAddSpecOpen(false);
+    },
+    onError: (e) => toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
 
   const filteredCourses = useMemo(() => {
     const q = query.toLowerCase();
@@ -614,9 +665,11 @@ function CoursesPage() {
         groups={groups}
         specs={specs}
         nextIndex={courses.length + 1}
-        onCreate={(c) => setAddedCourses((prev) => [c, ...prev])}
+        isPending={createCourseMut.isPending}
+        onSubmit={(body) => createCourseMut.mutate(body)}
       />
 
+      {/* Local-only: no usable POST without a course picker (see NOTE above). */}
       <AddGroupDialog
         open={addGroupOpen}
         onClose={() => setAddGroupOpen(false)}
@@ -628,7 +681,8 @@ function CoursesPage() {
         open={addSpecOpen}
         onClose={() => setAddSpecOpen(false)}
         nextIndex={specs.length + 1}
-        onCreate={(s) => setAddedSpecs((prev) => [...prev, s])}
+        isPending={createSpecMut.isPending}
+        onSubmit={(body) => createSpecMut.mutate(body)}
       />
     </div>
   );
@@ -642,14 +696,16 @@ function CreateCourseDialog({
   groups,
   specs,
   nextIndex,
-  onCreate,
+  isPending,
+  onSubmit,
 }: {
   open: boolean;
   onClose: () => void;
   groups: Group[];
   specs: Specialisation[];
   nextIndex: number;
-  onCreate: (c: Course) => void;
+  isPending: boolean;
+  onSubmit: (body: CreateCoursePayload) => void;
 }) {
   const [level, setLevel] = useState<Level | "">("");
   const [group, setGroup] = useState("");
@@ -675,17 +731,19 @@ function CreateCourseDialog({
       toast.error("Please fill all required fields");
       return;
     }
-    onCreate({
-      code: courseCode,
-      group,
-      specialisation: spec,
+    // Map the form onto CreateCourseDto. `title` is the auto-generated course
+    // name; `specialisations` is a free-text column so we pass the chosen spec
+    // name through; status is the legacy 1/0 int. (The DTO has no `description`
+    // column, so the Description field is intentionally not sent.)
+    onSubmit({
+      title: courseName,
       level: level as Level,
       duration: `${duration} ${durationType}`,
-      mappedUniversities: 0,
-      status,
+      specialisations: spec,
+      eligibility_criteria: eligibility.trim() || undefined,
+      status: status === "Active" ? 1 : 0,
     });
-    toast.success(`${courseName} created`);
-    handleClose();
+    reset();
   };
 
   return (
@@ -776,8 +834,14 @@ function CreateCourseDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={handleClose}>Cancel</Button>
-          <Button onClick={submit} className="bg-accent text-accent-foreground hover:bg-accent-hover">Create Course</Button>
+          <Button variant="outline" onClick={handleClose} disabled={isPending}>Cancel</Button>
+          <Button
+            onClick={submit}
+            disabled={isPending}
+            className="bg-accent text-accent-foreground hover:bg-accent-hover"
+          >
+            {isPending ? "Saving…" : "Create Course"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -867,15 +931,18 @@ function AddGroupDialog({
 /* ---------------- Add Specialisation ---------------- */
 
 function AddSpecDialog({
-  open, onClose, nextIndex, onCreate,
+  open, onClose, nextIndex, isPending, onSubmit,
 }: {
   open: boolean;
   onClose: () => void;
   nextIndex: number;
-  onCreate: (s: Specialisation) => void;
+  isPending: boolean;
+  onSubmit: (body: CreateSpecPayload) => void;
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  // Status is kept for parity with the table UI, but the specialisations table
+  // has no status column, so it is never sent to the API.
   const [status, setStatus] = useState<Status>("Active");
 
   const code = `SPC-${String(nextIndex).padStart(3, "0")}`;
@@ -887,9 +954,10 @@ function AddSpecDialog({
 
   const submit = () => {
     if (!name) { toast.error("Name required"); return; }
-    onCreate({ code, name, description, mappedCourses: 0, status });
-    toast.success(`Specialisation ${name} added`);
-    handleClose();
+    // CreateSpecialisationDto: `title` is the specialisation name; description is
+    // free-text. There is no status column, so status is intentionally omitted.
+    onSubmit({ title: name.trim(), description: description.trim() || undefined });
+    setName(""); setDescription(""); setStatus("Active");
   };
 
   return (
@@ -926,8 +994,14 @@ function AddSpecDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={handleClose}>Cancel</Button>
-          <Button onClick={submit} className="bg-accent text-accent-foreground hover:bg-accent-hover">Add Specialisation</Button>
+          <Button variant="outline" onClick={handleClose} disabled={isPending}>Cancel</Button>
+          <Button
+            onClick={submit}
+            disabled={isPending}
+            className="bg-accent text-accent-foreground hover:bg-accent-hover"
+          >
+            {isPending ? "Saving…" : "Add Specialisation"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

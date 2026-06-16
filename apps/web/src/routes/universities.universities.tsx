@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from "@/lib/api";
+import { toast } from "sonner";
 import {
   Building2,
   Download,
@@ -16,6 +17,7 @@ import {
   Phone,
   RefreshCcw,
   Edit3,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,6 +64,7 @@ export const Route = createFileRoute("/universities/universities")({
 type UniType = "Private" | "Deemed" | "State" | "Central" | "Foreign";
 
 type UniRow = {
+  id: number;
   code: string;
   name: string;
   type: UniType;
@@ -71,6 +74,8 @@ type UniRow = {
   status: "Active" | "Inactive";
   initials: string;
   color: string;
+  // Raw fields carried through for the edit form prefill.
+  raw: ApiUniversity;
 };
 
 const TYPE_STYLE: Record<UniRow["type"], string> = {
@@ -119,6 +124,21 @@ const AVATAR_COLORS = [
 
 const VALID_TYPES: UniType[] = ["Private", "Deemed", "State", "Central", "Foreign"];
 
+// Shared list query key — invalidated after every write so the table refreshes.
+const UNIVERSITIES_QUERY_KEY = ["universities"] as const;
+
+/**
+ * Legacy `status` column is CHAR(1): "1" = Active, "0" = Inactive.
+ * The dialog Select uses human labels, so map them to the backend value.
+ */
+function statusToApi(status: string): string {
+  return status === "Inactive" ? "0" : "1";
+}
+
+function statusFromApi(status: string | number | null | undefined): "Active" | "Inactive" {
+  return deriveStatus(status);
+}
+
 function deriveInitials(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return "UN";
@@ -147,6 +167,7 @@ function deriveStatus(status: string | number | null | undefined): "Active" | "I
 function mapApiUniversity(u: ApiUniversity): UniRow {
   const name = u.title?.trim() || `University #${u.id}`;
   return {
+    id: u.id,
     code: `UNI-${String(u.id).padStart(3, "0")}`,
     name,
     type: deriveType(u.category),
@@ -157,6 +178,7 @@ function mapApiUniversity(u: ApiUniversity): UniRow {
     status: deriveStatus(u.status),
     initials: deriveInitials(name),
     color: AVATAR_COLORS[u.id % AVATAR_COLORS.length],
+    raw: u,
   };
 }
 
@@ -166,15 +188,30 @@ function UniversitiesPage() {
   const [status, setStatus] = useState<string>("all");
   const [page, setPage] = useState(1);
   const [addOpen, setAddOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<UniRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<UniRow | null>(null);
   const pageSize = 10;
 
+  const qc = useQueryClient();
+
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["universities", { page: 1, limit: 100 }],
+    queryKey: [...UNIVERSITIES_QUERY_KEY, { page: 1, limit: 100 }],
     queryFn: () =>
       apiGet<{ items: ApiUniversity[]; total: number; page: number; limit: number }>(
         "/universities",
         { page: 1, limit: 100 },
       ),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => apiDelete(`/universities/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: UNIVERSITIES_QUERY_KEY });
+      toast.success("University deleted");
+      setDeleteTarget(null);
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
   });
 
   const universities = useMemo<UniRow[]>(
@@ -394,8 +431,23 @@ function UniversitiesPage() {
                             <Eye className="h-4 w-4" />
                           </Link>
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          title="Edit"
+                          onClick={() => setEditTarget(u)}
+                        >
                           <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-red-500 hover:bg-red-50 hover:text-red-600"
+                          title="Delete"
+                          onClick={() => setDeleteTarget(u)}
+                        >
+                          <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
                     </TableCell>
@@ -447,7 +499,56 @@ function UniversitiesPage() {
         </div>
       </div>
 
-      <AddUniversityDialog open={addOpen} onClose={() => setAddOpen(false)} />
+      <AddUniversityDialog
+        open={addOpen}
+        editRow={null}
+        onClose={() => setAddOpen(false)}
+      />
+
+      <AddUniversityDialog
+        open={editTarget !== null}
+        editRow={editTarget}
+        onClose={() => setEditTarget(null)}
+      />
+
+      {/* Delete confirmation */}
+      <Dialog
+        open={deleteTarget !== null}
+        onOpenChange={(v) => {
+          if (!v && !deleteMut.isPending) setDeleteTarget(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete University</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete{" "}
+              <span className="font-semibold text-foreground">
+                {deleteTarget?.name}
+              </span>
+              ? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              disabled={deleteMut.isPending}
+              onClick={() => setDeleteTarget(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="bg-red-600 text-white hover:bg-red-700"
+              disabled={deleteMut.isPending}
+              onClick={() => {
+                if (deleteTarget) deleteMut.mutate(deleteTarget.id);
+              }}
+            >
+              {deleteMut.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -456,7 +557,47 @@ function UniversitiesPage() {
 
 interface AddUniversityDialogProps {
   open: boolean;
+  /** When set, the dialog edits this row (PATCH); when null, it creates (POST). */
+  editRow: UniRow | null;
   onClose: () => void;
+}
+
+/** Map the dialog form to the backend CreateUniversityDto (snake_case columns). */
+type UniversityApiBody = {
+  title: string;
+  country_id: string;
+  website: string;
+  email: string;
+  phone: string;
+  category: string;
+  state: string;
+  address: string;
+  status: string;
+};
+
+function buildUniversityBody(form: {
+  name: string;
+  website: string;
+  email: string;
+  phone: string;
+  category: string;
+  country: string;
+  state: string;
+  address: string;
+  status: string;
+}): UniversityApiBody {
+  return {
+    title: form.name.trim(),
+    // Legacy `country_id` is a free-form Text column; send the typed country name.
+    country_id: form.country.trim(),
+    website: form.website.trim(),
+    email: form.email.trim(),
+    phone: form.phone.trim(),
+    category: form.category,
+    state: form.state.trim(),
+    address: form.address.trim(),
+    status: statusToApi(form.status),
+  };
 }
 
 const CATEGORIES = [
@@ -467,7 +608,10 @@ const CATEGORIES = [
   "International University",
 ];
 
-function AddUniversityDialog({ open, onClose }: AddUniversityDialogProps) {
+function AddUniversityDialog({ open, editRow, onClose }: AddUniversityDialogProps) {
+  const isEdit = editRow !== null;
+  const qc = useQueryClient();
+
   const [step, setStep] = useState<"form" | "success">("form");
   const [codeLocked, setCodeLocked] = useState(true);
   const [createdUni, setCreatedUni] = useState<{
@@ -478,28 +622,25 @@ function AddUniversityDialog({ open, onClose }: AddUniversityDialogProps) {
     status: string;
   } | null>(null);
 
-  const [form, setForm] = useState({
-    name: "",
-    code: "",
-    type: "",
-    category: "",
-    website: "",
-    email: "",
-    phone: "",
-    country: "",
-    state: "",
-    city: "",
-    address: "",
-    status: "Active",
-  });
-
-  const [errors, setErrors] = useState<Record<string, string>>({});
-
-  const reset = () => {
-    setStep("form");
-    setCodeLocked(true);
-    setCreatedUni(null);
-    setForm({
+  const buildInitialForm = () => {
+    if (editRow) {
+      const r = editRow.raw;
+      return {
+        name: r.title?.trim() ?? editRow.name,
+        code: editRow.code,
+        type: "",
+        category: r.category ?? "",
+        website: r.website ?? "",
+        email: r.email ?? "",
+        phone: r.phone ?? "",
+        country: r.country_id ?? "",
+        state: r.state ?? "",
+        city: "",
+        address: r.address ?? "",
+        status: statusFromApi(r.status),
+      };
+    }
+    return {
       name: "",
       code: "",
       type: "",
@@ -512,7 +653,58 @@ function AddUniversityDialog({ open, onClose }: AddUniversityDialogProps) {
       city: "",
       address: "",
       status: "Active",
-    });
+    };
+  };
+
+  const [form, setForm] = useState(buildInitialForm);
+  // Re-seed the form whenever a different row is opened for editing.
+  const [seededId, setSeededId] = useState<number | null>(editRow?.id ?? null);
+  if (open && (editRow?.id ?? null) !== seededId) {
+    setSeededId(editRow?.id ?? null);
+    setForm(buildInitialForm());
+    setStep("form");
+    setCodeLocked(!editRow);
+  }
+
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const createMut = useMutation({
+    mutationFn: (body: UniversityApiBody) => apiPost("/universities", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: UNIVERSITIES_QUERY_KEY });
+      toast.success("University created");
+      setCreatedUni({
+        name: form.name,
+        code: form.code,
+        type: form.type,
+        category: form.category,
+        status: form.status,
+      });
+      setStep("success");
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: (body: UniversityApiBody) =>
+      apiPatch(`/universities/${editRow!.id}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: UNIVERSITIES_QUERY_KEY });
+      toast.success("University updated");
+      handleClose();
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
+
+  const isPending = createMut.isPending || updateMut.isPending;
+
+  const reset = () => {
+    setStep("form");
+    setCodeLocked(!editRow);
+    setCreatedUni(null);
+    setForm(buildInitialForm());
     setErrors({});
   };
 
@@ -569,14 +761,12 @@ function AddUniversityDialog({ open, onClose }: AddUniversityDialogProps) {
 
   const handleSave = () => {
     if (!validate()) return;
-    setCreatedUni({
-      name: form.name,
-      code: form.code,
-      type: form.type,
-      category: form.category,
-      status: form.status,
-    });
-    setStep("success");
+    const body = buildUniversityBody(form);
+    if (isEdit) {
+      updateMut.mutate(body);
+    } else {
+      createMut.mutate(body);
+    }
   };
 
   const SectionTitle = ({ children }: { children: React.ReactNode }) => (
@@ -594,9 +784,14 @@ function AddUniversityDialog({ open, onClose }: AddUniversityDialogProps) {
         {step === "form" ? (
           <>
             <DialogHeader className="px-6 pt-6 pb-0">
-              <DialogTitle className="text-xl font-semibold">Add New University</DialogTitle>
+              <DialogTitle className="text-xl font-semibold">
+                {isEdit ? "Edit University" : "Add New University"}
+              </DialogTitle>
               <DialogDescription>
-                Create a new university profile. Fields marked with <span className="text-accent">*</span> are required.
+                {isEdit
+                  ? "Update this university profile."
+                  : "Create a new university profile."}{" "}
+                Fields marked with <span className="text-accent">*</span> are required.
               </DialogDescription>
             </DialogHeader>
 
@@ -819,16 +1014,22 @@ function AddUniversityDialog({ open, onClose }: AddUniversityDialogProps) {
             <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-6 py-4">
               <button
                 onClick={handleClose}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-muted"
+                disabled={isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSave}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow transition hover:bg-accent-hover"
+                disabled={isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <CheckCircle2 className="h-4 w-4" />
-                Save University
+                {isPending
+                  ? "Saving…"
+                  : isEdit
+                    ? "Update University"
+                    : "Save University"}
               </button>
             </div>
           </>

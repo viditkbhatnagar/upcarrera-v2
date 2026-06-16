@@ -1,11 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Download,
   Plus,
   Search,
   Pencil,
   Eye,
+  Trash2,
   CalendarRange,
   CalendarCheck2,
   CalendarX2,
@@ -38,6 +40,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/universities/intakes")({
@@ -48,6 +51,7 @@ export const Route = createFileRoute("/universities/intakes")({
 type IntakeStatus = "Open" | "Closed" | "Inactive";
 
 type Intake = {
+  id: number;
   code: string;
   name: string;
   month: string;
@@ -58,6 +62,50 @@ type Intake = {
   mappedCourses: number;
   status: IntakeStatus;
 };
+
+/** Raw intake row as returned by GET /api/intakes (snake_case, nullable). */
+type ApiIntake = {
+  id: number;
+  name: string | null;
+  month: string | null;
+  year: number | null;
+  start_date: string | null;
+  closing_date: string | null;
+  status: string | null;
+  mapped_universities: number;
+  mapped_courses: number;
+};
+
+const INTAKE_STATUSES: IntakeStatus[] = ["Open", "Closed", "Inactive"];
+
+function toIntakeStatus(value: string | null): IntakeStatus {
+  return INTAKE_STATUSES.includes(value as IntakeStatus)
+    ? (value as IntakeStatus)
+    : "Open";
+}
+
+/** Prisma serialises dates as full ISO timestamps; the date inputs need YYYY-MM-DD. */
+function toDateInput(iso: string | null): string {
+  if (!iso) return "";
+  return iso.slice(0, 10);
+}
+
+function mapApiIntake(r: ApiIntake): Intake {
+  const month = r.month ?? "";
+  const year = r.year ?? new Date().getFullYear();
+  return {
+    id: r.id,
+    code: `INT-${year}-${MONTH_CODE[month] ?? "XXX"}`,
+    name: r.name ?? `${month} ${year} Intake`,
+    month,
+    year,
+    startDate: toDateInput(r.start_date),
+    closingDate: toDateInput(r.closing_date),
+    mappedUniversities: r.mapped_universities ?? 0,
+    mappedCourses: r.mapped_courses ?? 0,
+    status: toIntakeStatus(r.status),
+  };
+}
 
 const MONTHS = [
   "January",
@@ -90,86 +138,6 @@ const MONTH_CODE: Record<string, string> = {
 };
 
 const YEARS = [2024, 2025, 2026, 2027];
-
-const INITIAL_INTAKES: Intake[] = [
-  {
-    code: "INT-2026-JAN",
-    name: "January 2026 Intake",
-    month: "January",
-    year: 2026,
-    startDate: "2025-11-01",
-    closingDate: "2026-01-15",
-    mappedUniversities: 10,
-    mappedCourses: 28,
-    status: "Open",
-  },
-  {
-    code: "INT-2026-APR",
-    name: "April 2026 Intake",
-    month: "April",
-    year: 2026,
-    startDate: "2026-02-01",
-    closingDate: "2026-04-10",
-    mappedUniversities: 7,
-    mappedCourses: 18,
-    status: "Open",
-  },
-  {
-    code: "INT-2026-JUL",
-    name: "July 2026 Intake",
-    month: "July",
-    year: 2026,
-    startDate: "2026-05-01",
-    closingDate: "2026-07-15",
-    mappedUniversities: 8,
-    mappedCourses: 22,
-    status: "Open",
-  },
-  {
-    code: "INT-2026-OCT",
-    name: "October 2026 Intake",
-    month: "October",
-    year: 2026,
-    startDate: "2026-08-01",
-    closingDate: "2026-10-10",
-    mappedUniversities: 5,
-    mappedCourses: 14,
-    status: "Open",
-  },
-  {
-    code: "INT-2025-JUL",
-    name: "July 2025 Intake",
-    month: "July",
-    year: 2025,
-    startDate: "2025-05-01",
-    closingDate: "2025-07-15",
-    mappedUniversities: 9,
-    mappedCourses: 24,
-    status: "Closed",
-  },
-  {
-    code: "INT-2025-JAN",
-    name: "January 2025 Intake",
-    month: "January",
-    year: 2025,
-    startDate: "2024-11-01",
-    closingDate: "2025-01-15",
-    mappedUniversities: 8,
-    mappedCourses: 20,
-    status: "Closed",
-  },
-  {
-    code: "INT-2024-OCT",
-    name: "October 2024 Intake",
-    month: "October",
-    year: 2024,
-    startDate: "2024-08-01",
-    closingDate: "2024-10-10",
-    mappedUniversities: 3,
-    mappedCourses: 9,
-    status: "Inactive",
-  },
-];
 
 const UNIVERSITY_OPTIONS = [
   "Manipal Sikkim University",
@@ -238,17 +206,36 @@ function KpiCard({
 }
 
 function IntakesPage() {
-  // TODO(api): No admission-intake endpoint exists. This screen needs intake rows
-  // { code, name, month, year, startDate, closingDate, mappedUniversities,
-  //   mappedCourses, status } — e.g. GET/POST /api/intakes (or /api/sessions).
-  // /api/semesters is NOT a match: it returns course-bound fee rows
-  // { id, university_id, course_id, title, semester_fee } with no month/year,
-  // start/closing dates, Open/Closed/Inactive status, or mapped-entity counts.
-  // Reports reference session_id/session_title but expose no CRUD list endpoint.
-  // Leaving mock data in place until an intake endpoint is added.
-  const [intakes, setIntakes] = useState<Intake[]>(INITIAL_INTAKES);
+  const qc = useQueryClient();
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["intakes"],
+    queryFn: () =>
+      apiGet<{ items: ApiIntake[]; total: number; page: number; limit: number }>(
+        "/intakes",
+        { page: 1, limit: 100 },
+      ),
+  });
+
+  const intakes = useMemo<Intake[]>(
+    () => (data?.items ?? []).map(mapApiIntake),
+    [data],
+  );
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<Intake | null>(null);
+  const [deleting, setDeleting] = useState<Intake | null>(null);
+
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => apiDelete(`/intakes/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["intakes"] });
+      toast.success("Intake deleted");
+      setDeleting(null);
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
 
   // Filters
   const [query, setQuery] = useState("");
@@ -439,7 +426,25 @@ function IntakesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.length === 0 ? (
+              {isLoading ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={8}
+                    className="py-10 text-center text-sm text-muted-foreground"
+                  >
+                    Loading intakes…
+                  </TableCell>
+                </TableRow>
+              ) : isError ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={8}
+                    className="py-10 text-center text-sm text-red-500"
+                  >
+                    Failed to load intakes. Please try again.
+                  </TableCell>
+                </TableRow>
+              ) : filtered.length === 0 ? (
                 <TableRow>
                   <TableCell
                     colSpan={8}
@@ -450,7 +455,7 @@ function IntakesPage() {
                 </TableRow>
               ) : (
                 filtered.map((i) => (
-                  <TableRow key={i.code} className="hover:bg-muted/40">
+                  <TableRow key={i.id} className="hover:bg-muted/40">
                     <TableCell className="px-4 py-3">
                       <button className="font-mono text-xs font-medium text-primary hover:underline">
                         {i.code}
@@ -479,8 +484,23 @@ function IntakesPage() {
                         <Button variant="ghost" size="icon" className="h-8 w-8" title="View">
                           <Eye className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          title="Edit"
+                          onClick={() => setEditing(i)}
+                        >
                           <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive hover:text-destructive"
+                          title="Delete"
+                          onClick={() => setDeleting(i)}
+                        >
+                          <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
                     </TableCell>
@@ -492,27 +512,55 @@ function IntakesPage() {
         </div>
       </div>
 
-      <CreateIntakeDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        existingCodes={intakes.map((i) => i.code)}
-        onCreate={(i) => setIntakes((prev) => [i, ...prev])}
-      />
+      <CreateIntakeDialog open={createOpen} onClose={() => setCreateOpen(false)} />
+
+      <EditIntakeDialog intake={editing} onClose={() => setEditing(null)} />
+
+      <Dialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)}>
+        <DialogContent className="sm:max-w-[440px]">
+          <DialogHeader>
+            <DialogTitle>Delete intake</DialogTitle>
+            <DialogDescription>
+              {deleting
+                ? `This will permanently remove ${deleting.name}. This action cannot be undone.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteMut.isPending}
+              onClick={() => deleting && deleteMut.mutate(deleting.id)}
+            >
+              {deleteMut.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
+type IntakeWriteBody = {
+  name: string;
+  month: string;
+  year: number;
+  start_date: string;
+  closing_date: string;
+  status: string;
+};
+
 function CreateIntakeDialog({
   open,
   onClose,
-  existingCodes,
-  onCreate,
 }: {
   open: boolean;
   onClose: () => void;
-  existingCodes: string[];
-  onCreate: (i: Intake) => void;
 }) {
+  const qc = useQueryClient();
   const [month, setMonth] = useState<string>("July");
   const [year, setYear] = useState<string>(String(new Date().getFullYear() + 1));
   const [startDate, setStartDate] = useState("");
@@ -520,7 +568,6 @@ function CreateIntakeDialog({
 
   const name = `${month} ${year} Intake`;
   const code = `INT-${year}-${MONTH_CODE[month] ?? "XXX"}`;
-  const codeTaken = existingCodes.includes(code);
 
   const reset = () => {
     setMonth("July");
@@ -529,29 +576,31 @@ function CreateIntakeDialog({
     setClosingDate("");
   };
 
+  const createMut = useMutation({
+    mutationFn: (body: IntakeWriteBody) => apiPost("/intakes", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["intakes"] });
+      toast.success("Intake created");
+      reset();
+      onClose();
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
+
   const handleSubmit = () => {
     if (!startDate || !closingDate) {
       toast.error("Please fill start and closing dates");
       return;
     }
-    if (codeTaken) {
-      toast.error(`${code} already exists`);
-      return;
-    }
-    onCreate({
-      code,
+    createMut.mutate({
       name,
       month,
       year: Number(year),
-      startDate,
-      closingDate,
-      mappedUniversities: 0,
-      mappedCourses: 0,
+      start_date: startDate,
+      closing_date: closingDate,
       status: "Open",
     });
-    toast.success(`${name} created`);
-    reset();
-    onClose();
   };
 
   return (
@@ -605,9 +654,6 @@ function CreateIntakeDialog({
           <div className="space-y-2">
             <Label>Intake Code</Label>
             <Input value={code} readOnly className="bg-muted/40 font-mono text-xs" />
-            {codeTaken && (
-              <p className="text-xs text-destructive">This code already exists.</p>
-            )}
           </div>
 
           <div className="space-y-2">
@@ -635,9 +681,172 @@ function CreateIntakeDialog({
           </Button>
           <Button
             onClick={handleSubmit}
+            disabled={createMut.isPending}
             className="bg-accent text-accent-foreground hover:bg-accent-hover"
           >
-            Create Intake
+            {createMut.isPending ? "Saving…" : "Create Intake"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EditIntakeDialog({
+  intake,
+  onClose,
+}: {
+  intake: Intake | null;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [month, setMonth] = useState<string>("July");
+  const [year, setYear] = useState<string>(String(new Date().getFullYear()));
+  const [startDate, setStartDate] = useState("");
+  const [closingDate, setClosingDate] = useState("");
+  const [status, setStatus] = useState<IntakeStatus>("Open");
+
+  // Sync the form whenever a different intake is opened for editing.
+  useEffect(() => {
+    if (!intake) return;
+    setMonth(intake.month || "July");
+    setYear(String(intake.year));
+    setStartDate(intake.startDate);
+    setClosingDate(intake.closingDate);
+    setStatus(intake.status);
+  }, [intake]);
+
+  const name = `${month} ${year} Intake`;
+  const code = `INT-${year}-${MONTH_CODE[month] ?? "XXX"}`;
+
+  const updateMut = useMutation({
+    mutationFn: (body: IntakeWriteBody) =>
+      apiPatch(`/intakes/${intake?.id}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["intakes"] });
+      toast.success("Intake updated");
+      onClose();
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
+
+  const handleSubmit = () => {
+    if (!startDate || !closingDate) {
+      toast.error("Please fill start and closing dates");
+      return;
+    }
+    updateMut.mutate({
+      name,
+      month,
+      year: Number(year),
+      start_date: startDate,
+      closing_date: closingDate,
+      status,
+    });
+  };
+
+  return (
+    <Dialog open={intake !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-[560px]">
+        <DialogHeader>
+          <DialogTitle>Edit Intake</DialogTitle>
+          <DialogDescription>
+            Update this admission intake. Name and code are auto-generated.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label>Month</Label>
+            <Select value={month} onValueChange={setMonth}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select month" />
+              </SelectTrigger>
+              <SelectContent>
+                {MONTHS.map((m) => (
+                  <SelectItem key={m} value={m}>
+                    {m}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Year</Label>
+            <Select value={year} onValueChange={setYear}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select year" />
+              </SelectTrigger>
+              <SelectContent>
+                {YEARS.map((y) => (
+                  <SelectItem key={y} value={String(y)}>
+                    {y}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Intake Name</Label>
+            <Input value={name} readOnly className="bg-muted/40" />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Intake Code</Label>
+            <Input value={code} readOnly className="bg-muted/40 font-mono text-xs" />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Start Date</Label>
+            <Input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Admission Closing Date</Label>
+            <Input
+              type="date"
+              value={closingDate}
+              onChange={(e) => setClosingDate(e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Status</Label>
+            <Select
+              value={status}
+              onValueChange={(v) => setStatus(v as IntakeStatus)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select status" />
+              </SelectTrigger>
+              <SelectContent>
+                {INTAKE_STATUSES.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {s}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={updateMut.isPending}
+            className="bg-accent text-accent-foreground hover:bg-accent-hover"
+          >
+            {updateMut.isPending ? "Saving…" : "Save Changes"}
           </Button>
         </DialogFooter>
       </DialogContent>
