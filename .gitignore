@@ -15,6 +15,7 @@ apps/api/uploads/
 .env
 .env.*
 !.env.example
+!.env.*.example
 
 # prisma generated client
 packages/db/generated/

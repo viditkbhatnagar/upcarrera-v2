@@ -70,13 +70,17 @@ conversion sagas, payments, and reports. CI runs it on every push against a fres
 apps/api/   NestJS API (modules: auth, leads, students, academics, teachers, finance,
             sessions, platform, files, integrations, reports, notifications, student)
 apps/web/   Next.js staff app (app/(staff)/<domain> list + new/[id]/[id]/edit)
-database/   ci-seed.sql, normalize-zero-dates.sql (run at cutover)
+database/   ci-seed.sql (CI seed loaded by the e2e workflow)
+scripts/    normalize-zero-dates.sql (run against production at cutover)
+deploy/     nginx config + deploy/db-cutover runbook scripts (see DEPLOY.md)
 .github/    CI workflow
 ```
 
 ## Notes for production
 
+For the full terminal-driven DigitalOcean deploy + verification runbook, see [DEPLOY.md](DEPLOY.md).
+
 - Set the integration API keys in `apps/api/.env` (Zoom, Brevo, 2factor, Razorpay) — all are
   env-gated and the app runs without them.
-- Run `database/normalize-zero-dates.sql` against production once, before cutover (Prisma rejects
+- Run `scripts/normalize-zero-dates.sql` against production once, before cutover (Prisma rejects
   MySQL `0000-00-00` dates).
