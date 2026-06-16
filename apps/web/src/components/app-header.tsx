@@ -1,11 +1,38 @@
-import { Search, Bell, ChevronDown, CheckCircle2, CalendarClock, PanelLeft } from "lucide-react";
+import { Search, Bell, ChevronDown, CalendarClock, PanelLeft, LogOut } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { getUser } from "@/lib/session";
+import { logout } from "@/lib/auth";
 
 interface AppHeaderProps {
   collapsed: boolean;
   onToggle: () => void;
 }
 
+function initials(name: string | null, username: string | null): string {
+  const base = (name ?? username ?? "U").trim();
+  const parts = base.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return base.slice(0, 2).toUpperCase();
+}
+
 export function AppHeader({ collapsed, onToggle }: AppHeaderProps) {
+  const navigate = useNavigate();
+  const user = getUser();
+  const displayName = user?.name ?? user?.username ?? "Account";
+
+  const handleLogout = () => {
+    logout();
+    navigate({ to: "/login" });
+  };
+
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-surface/80 backdrop-blur-md">
       <div className="flex h-16 items-center gap-3 px-4 sm:px-6 lg:px-8">
@@ -48,19 +75,30 @@ export function AppHeader({ collapsed, onToggle }: AppHeaderProps) {
 
         <div className="mx-1 hidden sm:block h-8 w-px bg-border" />
 
-        <button className="flex items-center gap-3 rounded-xl border border-transparent px-1.5 py-1 transition hover:bg-muted hover:border-border">
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-sm font-semibold">
-            PS
-          </div>
-          <div className="hidden md:block text-left leading-tight">
-            <div className="text-sm font-semibold text-foreground">Welcome back, Priya</div>
-            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-              <CheckCircle2 className="h-3 w-3 text-success" />
-              Student Support Executive
-            </div>
-          </div>
-          <ChevronDown className="hidden md:block h-4 w-4 text-muted-foreground" />
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="flex items-center gap-3 rounded-xl border border-transparent px-1.5 py-1 transition hover:bg-muted hover:border-border">
+              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-sm font-semibold">
+                {initials(user?.name ?? null, user?.username ?? null)}
+              </div>
+              <div className="hidden md:block text-left leading-tight">
+                <div className="text-sm font-semibold text-foreground">{displayName}</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {user?.email ?? user?.username ?? "Signed in"}
+                </div>
+              </div>
+              <ChevronDown className="hidden md:block h-4 w-4 text-muted-foreground" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuLabel>{displayName}</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </header>
   );

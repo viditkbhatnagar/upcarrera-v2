@@ -2,12 +2,16 @@ import {
   Outlet,
   Link,
   createRootRouteWithContext,
+  redirect,
   useRouter,
 } from "@tanstack/react-router";
 import { useEffect } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 
 import { AppShell } from "../components/app-shell";
+import { getToken } from "../lib/session";
+
+const PUBLIC_PATHS = new Set(["/", "/login"]);
 
 function NotFoundComponent() {
   return (
@@ -66,6 +70,12 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
 }
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
+  // Guard: every non-public route requires a token, else bounce to /login.
+  beforeLoad: ({ location }) => {
+    if (!PUBLIC_PATHS.has(location.pathname) && !getToken()) {
+      throw redirect({ to: "/login" });
+    }
+  },
   component: RootComponent,
   notFoundComponent: NotFoundComponent,
   errorComponent: ErrorComponent,

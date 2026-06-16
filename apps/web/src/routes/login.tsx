@@ -25,6 +25,8 @@ import {
   InputOTPSlot,
 } from "@/components/ui/input-otp";
 import { cn } from "@/lib/utils";
+import { login } from "@/lib/auth";
+import { ApiError } from "@/lib/api";
 
 export const Route = createFileRoute("/login")({
   head: () => ({
@@ -98,11 +100,22 @@ export function LoginPage() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!email || !password) {
+      toast.error("Enter your email / user ID and password.");
+      return;
+    }
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 400));
-    setLoading(false);
-    toast.success("Welcome back to upCarrera.");
-    navigate({ to: "/dashboard" });
+    try {
+      const user = await login(email, password);
+      toast.success(`Welcome back${user.name ? `, ${user.name.split(" ")[0]}` : ""}.`);
+      navigate({ to: "/dashboard" });
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Login failed. Please try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
 
