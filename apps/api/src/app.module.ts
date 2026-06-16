@@ -17,6 +17,8 @@ import { IntegrationsModule } from './integrations/integrations.module';
 import { ReportsModule } from './reports/reports.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { StudentModule } from './student/student.module';
+import { ConsultantsModule } from './consultants/consultants.module';
+import { SalesModule } from './sales/sales.module';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 
 @Module({
@@ -36,6 +38,8 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
     ReportsModule,
     NotificationsModule,
     StudentModule,
+    ConsultantsModule,
+    SalesModule,
   ],
   providers: [
     // Global JWT guard — every route is protected unless marked @Public().
