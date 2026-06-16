@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { StudentsController } from './students.controller';
 import { ApplicationsController } from './applications.controller';
+import { AcademicStudentsController } from './academic-students.controller';
 import { StudentsService } from './students.service';
 
 /**
@@ -8,7 +9,11 @@ import { StudentsService } from './students.service';
  * PrismaService is provided by the @Global() PrismaModule, so no import is needed.
  */
 @Module({
-  controllers: [StudentsController, ApplicationsController],
+  controllers: [
+    StudentsController,
+    ApplicationsController,
+    AcademicStudentsController,
+  ],
   providers: [StudentsService],
   exports: [StudentsService],
 })
