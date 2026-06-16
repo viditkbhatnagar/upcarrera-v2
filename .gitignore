@@ -29,3 +29,4 @@ graphify-out/
 # logs / os
 *.log
 .DS_Store
+.gap_backlog.json
