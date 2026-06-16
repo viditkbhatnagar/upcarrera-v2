@@ -6,11 +6,15 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from './storage.service';
 import { CreateStudentDocumentDto } from './dto/create-student-document.dto';
+import { CreateCandidateDocumentDto } from './dto/create-candidate-document.dto';
+import { UpdateCandidateDocumentDto } from './dto/update-candidate-document.dto';
 import { UploadedFileType } from './uploaded-file.type';
 
-/** Subdir under uploads/ for ad-hoc uploads and student docs respectively. */
+/** Subdir under uploads/ for ad-hoc uploads, student docs and candidate docs. */
 const GENERIC_SUBDIR = 'files';
 const STUDENT_DOCS_SUBDIR = 'student_documents';
+/** Mirrors the legacy 'canditates/documents' upload path (App/Upload_document). */
+const CANDIDATE_DOCS_SUBDIR = 'candidate_documents';
 
 /**
  * File upload + secure download service.
@@ -147,5 +151,185 @@ export class FilesService {
     const filename = this.storage.basename(document.file);
 
     return { document, stream, filename };
+  }
+
+  // ---- candidate (lead) documents ------------------------------------------
+  //
+  // Port of CI4 App/Controllers/App/Upload_document (candidate/applicant docs).
+  // A "candidate" is a leads row; legacy keyed each document row on
+  // `candidate_id`. This migration's `student_document` model has no
+  // `candidate_id` column — the linkage column that exists is `application_id`
+  // (the same column convertApplication stamps documents through). We therefore
+  // store candidate documents with application_id = candidate id, label =
+  // document_type.title, and file = stored path, faithfully against the real
+  // columns. (See create/update DTOs for the full schema-mapping note.)
+
+  /**
+   * GET /candidates/:id/documents — list a candidate's (lead's) documents.
+   * Legacy: Upload_document::index() -> get(['candidate_id' => $id]).
+   */
+  async listCandidateDocuments(candidateId: number) {
+    await this.assertCandidateExists(candidateId);
+
+    return this.prisma.student_document.findMany({
+      where: { application_id: candidateId, deleted_at: null },
+      orderBy: { student_document_id: 'desc' },
+    });
+  }
+
+  /**
+   * POST /candidates/:id/documents — store a file and record a student_document
+   * row keyed on the candidate (application_id). Legacy: Upload_document::add().
+   *
+   * As with createStudentDocument, the disk write happens before the row insert;
+   * the insert runs inside $transaction so the DB never references a half-written
+   * file. An orphaned file on insert failure is a tolerable artifact.
+   */
+  async createCandidateDocument(
+    candidateId: number,
+    dto: CreateCandidateDocumentDto,
+    userId: number,
+    file?: UploadedFileType,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    // Validate FK targets up-front so we fail before writing anything to disk.
+    const [, docType] = await Promise.all([
+      this.assertCandidateExists(candidateId),
+      this.findDocumentType(dto.document_type_id),
+    ]);
+
+    const path = await this.storage.save(
+      file.buffer,
+      CANDIDATE_DOCS_SUBDIR,
+      file.originalname,
+    );
+
+    const now = new Date();
+
+    const document = await this.prisma.$transaction(async (tx) => {
+      return tx.student_document.create({
+        data: {
+          // The legacy free-text `title` and `document_type` both collapse into
+          // the single `label` column that exists; the resolved type title wins.
+          label: docType.title ?? dto.title ?? null,
+          file: path,
+          application_id: candidateId,
+          created_by: userId,
+          created_at: now,
+          updated_by: userId,
+          updated_at: now,
+        },
+      });
+    });
+
+    return {
+      document,
+      path,
+      original_name: file.originalname,
+      size: file.size,
+    };
+  }
+
+  /**
+   * PATCH /candidates/documents/:id — update title/type, optionally replacing
+   * the file. Legacy: Upload_document::edit() only updated supplied fields and
+   * replaced the file only when a new one was attached.
+   */
+  async updateCandidateDocument(
+    documentId: number,
+    dto: UpdateCandidateDocumentDto,
+    userId: number,
+    file?: UploadedFileType,
+  ) {
+    const existing = await this.findCandidateDocument(documentId);
+
+    const data: {
+      label?: string | null;
+      file?: string;
+      updated_by: number;
+      updated_at: Date;
+    } = {
+      updated_by: userId,
+      updated_at: new Date(),
+    };
+
+    // When a document_type is supplied, re-resolve its title into `label`;
+    // otherwise fall back to a supplied free-text title (legacy `title`).
+    if (dto.document_type_id !== undefined) {
+      const docType = await this.findDocumentType(dto.document_type_id);
+      data.label = docType.title ?? dto.title ?? existing.label;
+    } else if (dto.title !== undefined) {
+      data.label = dto.title;
+    }
+
+    // Replace the stored file only when a new one was actually attached.
+    if (file?.buffer?.length) {
+      data.file = await this.storage.save(
+        file.buffer,
+        CANDIDATE_DOCS_SUBDIR,
+        file.originalname,
+      );
+    }
+
+    return this.prisma.student_document.update({
+      where: { student_document_id: documentId },
+      data,
+    });
+  }
+
+  /**
+   * DELETE /candidates/documents/:id — soft delete (set deleted_at = now).
+   * Legacy: Upload_document::delete() hard-deleted; we soft-delete to match the
+   * rest of this migration (deleted_at convention).
+   */
+  async deleteCandidateDocument(documentId: number, userId: number) {
+    await this.findCandidateDocument(documentId);
+
+    await this.prisma.student_document.update({
+      where: { student_document_id: documentId },
+      data: { deleted_at: new Date(), deleted_by: userId },
+    });
+
+    return { id: documentId };
+  }
+
+  // ---- internal lookups ----------------------------------------------------
+
+  /** Resolve a non-deleted document_type or 404. */
+  private async findDocumentType(documentTypeId: number) {
+    const docType = await this.prisma.document_type.findFirst({
+      where: { id: documentTypeId, deleted_at: null },
+      select: { id: true, title: true },
+    });
+    if (!docType) {
+      throw new NotFoundException('Document type not found');
+    }
+    return docType;
+  }
+
+  /** Ensure the candidate (lead) exists and is not soft-deleted, else 404. */
+  private async assertCandidateExists(candidateId: number) {
+    const candidate = await this.prisma.leads.findFirst({
+      where: { id: candidateId, deleted_at: null },
+      select: { id: true },
+    });
+    if (!candidate) {
+      throw new NotFoundException('Candidate not found');
+    }
+    return candidate;
+  }
+
+  /** Resolve a non-deleted candidate document row or 404. */
+  private async findCandidateDocument(documentId: number) {
+    const document = await this.prisma.student_document.findFirst({
+      where: { student_document_id: documentId, deleted_at: null },
+    });
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+    return document;
   }
 }

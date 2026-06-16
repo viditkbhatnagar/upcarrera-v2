@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { FilesController } from './files.controller';
+import { CandidatesDocumentsController } from './candidates-documents.controller';
 import { FilesService } from './files.service';
 import { StorageService } from './storage.service';
 
@@ -13,7 +14,7 @@ import { StorageService } from './storage.service';
  * invoices) can persist files through the same abstraction later.
  */
 @Module({
-  controllers: [FilesController],
+  controllers: [FilesController, CandidatesDocumentsController],
   providers: [FilesService, StorageService],
   exports: [StorageService],
 })
