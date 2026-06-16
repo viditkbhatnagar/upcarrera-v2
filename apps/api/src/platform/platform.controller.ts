@@ -7,14 +7,23 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { PlatformService } from './platform.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
+import { ResetPasswordDto, ChangePasswordDto } from './dto/password.dto';
+import {
+  ListRolePermissionsDto,
+  AssignRolePermissionsDto,
+} from './dto/role-permission.dto';
+import { CreatePermissionDto, UpdatePermissionDto } from './dto/permission.dto';
+import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { RequirePermission } from '../common/decorators/require-permission.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 /** Parse a numeric query param, returning undefined for missing/blank/NaN. */
 function toNumber(value?: string): number | undefined {
@@ -73,6 +82,29 @@ export class PlatformController {
     return this.platform.removeUser(id);
   }
 
+  // Admin override: set username + new bcrypt password (App/Admin::reset_password).
+  @Post('users/:id/reset-password')
+  @RequirePermission('consultants/edit')
+  @ResponseMessage('Password reset')
+  resetPassword(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ResetPasswordDto,
+  ) {
+    return this.platform.resetPassword(id, dto);
+  }
+
+  // Self-service: change OWN password (current-password verified). The :id must
+  // match the authenticated user — we ignore the param and use the JWT id so a
+  // caller can only ever change their own credentials.
+  @Post('users/:id/change-password')
+  @ResponseMessage('Password changed')
+  changePassword(
+    @Body() dto: ChangePasswordDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.platform.changePassword(userId, dto);
+  }
+
   // ----- Roles -----
 
   @Get('roles')
@@ -80,6 +112,27 @@ export class PlatformController {
   @ResponseMessage('Roles fetched')
   findRoles() {
     return this.platform.findRoles();
+  }
+
+  @Post('roles')
+  @RequirePermission('roles/create')
+  @ResponseMessage('Role created')
+  createRole(@Body() dto: CreateRoleDto) {
+    return this.platform.createRole(dto);
+  }
+
+  @Patch('roles/:id')
+  @RequirePermission('roles/edit')
+  @ResponseMessage('Role updated')
+  updateRole(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateRoleDto) {
+    return this.platform.updateRole(id, dto);
+  }
+
+  @Delete('roles/:id')
+  @RequirePermission('roles/delete')
+  @ResponseMessage('Role deleted')
+  removeRole(@Param('id', ParseIntPipe) id: number) {
+    return this.platform.removeRole(id);
   }
 
   // ----- Permissions -----
@@ -91,13 +144,53 @@ export class PlatformController {
     return this.platform.findPermissions();
   }
 
+  @Post('permissions')
+  @RequirePermission('permissions/create')
+  @ResponseMessage('Permission created')
+  createPermission(@Body() dto: CreatePermissionDto) {
+    return this.platform.createPermission(dto);
+  }
+
+  @Patch('permissions/:id')
+  @RequirePermission('permissions/edit')
+  @ResponseMessage('Permission updated')
+  updatePermission(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdatePermissionDto,
+  ) {
+    return this.platform.updatePermission(id, dto);
+  }
+
+  @Delete('permissions/:id')
+  @RequirePermission('permissions/delete')
+  @ResponseMessage('Permission deleted')
+  removePermission(@Param('id', ParseIntPipe) id: number) {
+    return this.platform.removePermission(id);
+  }
+
   // ----- Role-permissions -----
+  // Literal sub-path (`unassigned`) is declared before the body-only PUT so it
+  // resolves cleanly; there is no role-permissions/:id route to shadow.
 
   @Get('role-permissions')
   @RequirePermission('roles-permissions/index')
   @ResponseMessage('Role permissions fetched')
-  findRolePermissions(@Query('role_id') roleId?: string) {
-    return this.platform.findRolePermissions(toNumber(roleId));
+  findRolePermissions(@Query() query: ListRolePermissionsDto) {
+    return this.platform.findRolePermissions(query.role_id);
+  }
+
+  @Get('role-permissions/unassigned')
+  @RequirePermission('roles-permissions/index')
+  @ResponseMessage('Unassigned permissions fetched')
+  findUnassignedPermissions(@Query() query: ListRolePermissionsDto) {
+    return this.platform.findUnassignedPermissions(query.role_id ?? 0);
+  }
+
+  @Put('role-permissions')
+  @RequirePermission('roles-permissions/create')
+  @ResponseMessage('Role permissions updated')
+  replaceRolePermissions(@Body() dto: AssignRolePermissionsDto) {
+    return this.platform.replaceRolePermissions(dto);
   }
 
   // ----- Settings -----

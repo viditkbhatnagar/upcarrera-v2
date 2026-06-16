@@ -1,12 +1,18 @@
 import {
+  ConflictException,
   Injectable,
   NotFoundException,
-  NotImplementedException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { ResetPasswordDto, ChangePasswordDto } from './dto/password.dto';
+import { AssignRolePermissionsDto } from './dto/role-permission.dto';
+import { CreatePermissionDto, UpdatePermissionDto } from './dto/permission.dto';
+import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -115,6 +121,80 @@ export class PlatformService {
     return { id };
   }
 
+  /**
+   * Admin password reset. Ports App/Admin::reset_password.
+   * Sets a new username (uniqueness-checked against other live users) + a fresh
+   * bcrypt password, and snapshots the old hash into `prev_password`. No
+   * current-password check — this is an administrative override.
+   */
+  async resetPassword(id: number, dto: ResetPasswordDto) {
+    const user = await this.prisma.users.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (dto.username !== undefined) {
+      const clash = await this.prisma.users.findFirst({
+        where: { username: dto.username, deleted_at: null, NOT: { id } },
+        select: { id: true },
+      });
+      if (clash) {
+        throw new ConflictException('Username already exists');
+      }
+    }
+
+    const now = new Date();
+    const hashed = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
+
+    const updated = await this.prisma.users.update({
+      where: { id },
+      data: {
+        ...(dto.username !== undefined ? { username: dto.username } : {}),
+        prev_password: user.password ?? null,
+        password: hashed,
+        updated_at: now,
+      },
+    });
+    return this.sanitizeUser(updated);
+  }
+
+  /**
+   * Self-service password change. Ports App/Profile::reset_password, hardened
+   * with a current-password verification the legacy form lacked. Never touches
+   * the username. The acting user id comes from the JWT, not the body.
+   */
+  async changePassword(id: number, dto: ChangePasswordDto) {
+    const user = await this.prisma.users.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const matches =
+      typeof user.password === 'string' &&
+      user.password.length > 0 &&
+      (await bcrypt.compare(dto.current_password, user.password));
+    if (!matches) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+
+    const now = new Date();
+    const hashed = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
+
+    await this.prisma.users.update({
+      where: { id },
+      data: {
+        prev_password: user.password ?? null,
+        password: hashed,
+        updated_at: now,
+      },
+    });
+    return { id };
+  }
+
   // ---------------------------------------------------------------------------
   // Roles (user_role)
   // ---------------------------------------------------------------------------
@@ -126,6 +206,48 @@ export class PlatformService {
     });
   }
 
+  /** Port of App/User_role::add. user_role uses created_at/updated_at. */
+  async createRole(dto: CreateRoleDto) {
+    const now = new Date();
+    return this.prisma.user_role.create({
+      data: { title: dto.title ?? null, created_at: now, updated_at: now },
+    });
+  }
+
+  /** Port of App/User_role::edit. 404 if missing/soft-deleted. */
+  async updateRole(id: number, dto: UpdateRoleDto) {
+    const existing = await this.prisma.user_role.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!existing) {
+      throw new NotFoundException('Role not found');
+    }
+    const now = new Date();
+    return this.prisma.user_role.update({
+      where: { id },
+      data: {
+        ...(dto.title !== undefined ? { title: dto.title } : {}),
+        updated_at: now,
+      },
+    });
+  }
+
+  /** Soft-delete a role (App/User_role::delete used the model's soft remove()). */
+  async removeRole(id: number) {
+    const existing = await this.prisma.user_role.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!existing) {
+      throw new NotFoundException('Role not found');
+    }
+    const now = new Date();
+    await this.prisma.user_role.update({
+      where: { id },
+      data: { deleted_at: now, updated_at: now },
+    });
+    return { id };
+  }
+
   // ---------------------------------------------------------------------------
   // Permissions
   // ---------------------------------------------------------------------------
@@ -135,6 +257,59 @@ export class PlatformService {
       where: { deleted_at: null },
       orderBy: { id: 'asc' },
     });
+  }
+
+  /** Port of App/Permissions::add. permissions uses created_at/updated_at. */
+  async createPermission(dto: CreatePermissionDto) {
+    const now = new Date();
+    return this.prisma.permissions.create({
+      data: {
+        title: dto.title ?? null,
+        slug: dto.slug ?? null,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  /** Port of App/Permissions::edit. 404 if missing/soft-deleted. */
+  async updatePermission(id: number, dto: UpdatePermissionDto) {
+    const existing = await this.prisma.permissions.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!existing) {
+      throw new NotFoundException('Permission not found');
+    }
+    const now = new Date();
+    return this.prisma.permissions.update({
+      where: { id },
+      data: {
+        ...(dto.title !== undefined ? { title: dto.title } : {}),
+        ...(dto.slug !== undefined ? { slug: dto.slug } : {}),
+        updated_at: now,
+      },
+    });
+  }
+
+  /**
+   * Soft-delete a permission (App/Permissions::delete used the model's soft
+   * remove()). The role_permissions guard reads slugs through this table, so we
+   * flush the RBAC cache afterwards.
+   */
+  async removePermission(id: number) {
+    const existing = await this.prisma.permissions.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!existing) {
+      throw new NotFoundException('Permission not found');
+    }
+    const now = new Date();
+    await this.prisma.permissions.update({
+      where: { id },
+      data: { deleted_at: now, updated_at: now },
+    });
+    PermissionsGuard.invalidateCache();
+    return { id };
   }
 
   // ---------------------------------------------------------------------------
@@ -176,14 +351,79 @@ export class PlatformService {
   }
 
   /**
-   * TODO(phase-3): privilege-escalation guard + bulk assign/remove of
-   * role_permissions (Roles_permission::add wipes and re-inserts per role).
-   * Phase-3 also wires the RBAC PermissionsGuard that reads these rows.
+   * Permissions NOT yet granted to the given role. Ports
+   * App/Roles_permission::get_unassigned_permissions (a LEFT JOIN where the
+   * role_permissions row is null). Here: all live permissions minus the ids
+   * already linked to this role.
    */
-  assignRolePermissions(): never {
-    throw new NotImplementedException(
-      'Role-permission assignment + privilege-escalation guard — phase 3',
-    );
+  async findUnassignedPermissions(roleId: number) {
+    const links = await this.prisma.role_permissions.findMany({
+      where: { role_id: roleId, deleted_at: null },
+      select: { permission_id: true },
+    });
+
+    const assignedIds = links
+      .map((l) => l.permission_id)
+      .filter((id): id is number => id !== null && id !== undefined);
+
+    return this.prisma.permissions.findMany({
+      where: {
+        deleted_at: null,
+        ...(assignedIds.length ? { id: { notIn: assignedIds } } : {}),
+      },
+      orderBy: { id: 'asc' },
+    });
+  }
+
+  /**
+   * Replace a role's permission set. Ports App/Roles_permission::add, which
+   * wiped the role's role_permissions rows and re-inserted one per submitted
+   * permission. We delete (soft, deleted_at) the existing live rows, validate
+   * the requested permission ids against live permissions, insert fresh rows
+   * (role_permissions uses created_on, NOT created_at), then flush the RBAC
+   * slug cache for this role so the change takes effect immediately.
+   */
+  async replaceRolePermissions(dto: AssignRolePermissionsDto) {
+    const { role_id, permission_ids } = dto;
+
+    const role = await this.prisma.user_role.findFirst({
+      where: { id: role_id, deleted_at: null },
+      select: { id: true },
+    });
+    if (!role) {
+      throw new NotFoundException('Role not found');
+    }
+
+    // Keep only ids that map to live permissions (legacy looked each slug up in
+    // a lookup table and skipped unknown ones — same defensive intent).
+    const validPermissions = await this.prisma.permissions.findMany({
+      where: { id: { in: permission_ids }, deleted_at: null },
+      select: { id: true },
+    });
+    const validIds = validPermissions.map((p) => p.id);
+
+    const now = new Date();
+
+    // Soft-delete the role's current live links, then insert the new set.
+    await this.prisma.role_permissions.updateMany({
+      where: { role_id, deleted_at: null },
+      data: { deleted_at: now, updated_on: now },
+    });
+
+    if (validIds.length) {
+      await this.prisma.role_permissions.createMany({
+        data: validIds.map((permission_id) => ({
+          role_id,
+          permission_id,
+          created_on: now,
+        })),
+      });
+    }
+
+    // Newly granted/revoked slugs must take effect without a process restart.
+    PermissionsGuard.invalidateCache(role_id);
+
+    return this.findRolePermissions(role_id);
   }
 
   // ---------------------------------------------------------------------------
