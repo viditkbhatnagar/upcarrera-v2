@@ -3,7 +3,7 @@
   "compilerOptions": {
     "rootDir": "..",
     "types": ["node", "jest"],
-    "esModuleInterop": false,
+    "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "noEmit": true
   },

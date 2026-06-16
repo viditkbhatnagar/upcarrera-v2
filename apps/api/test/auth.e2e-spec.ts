@@ -1,6 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import type { Server } from 'http';
-import * as request from 'supertest';
+import request from 'supertest';
 import { ADMIN_CREDENTIALS, authHeader, bootApp, loginAs } from './app.factory';
 
 describe('Auth (e2e)', () => {

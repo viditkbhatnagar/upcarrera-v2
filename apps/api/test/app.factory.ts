@@ -2,7 +2,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import type { Server } from 'http';
-import * as request from 'supertest';
+import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
