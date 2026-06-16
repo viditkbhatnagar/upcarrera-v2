@@ -65,6 +65,12 @@ export class ApplicationsController {
     return this.students.getApplication(id);
   }
 
+  @Get(':id/activity')
+  @ResponseMessage('Application activity fetched')
+  activity(@Param('id', ParseIntPipe) id: number) {
+    return this.students.getApplicationActivity(id);
+  }
+
   @Patch(':id')
   @ResponseMessage('Application updated')
   update(

@@ -22,6 +22,7 @@ import { ApplicationCourseFeeDto } from './dto/application-course-fee.dto';
 import { ApplicationAcademicDto } from './dto/application-academic.dto';
 import { ListAcademicStudentsDto } from './dto/list-academic-students.dto';
 import { UpdateAcademicStudentDto } from './dto/update-academic-student.dto';
+import { CreateEnrolmentDto } from './dto/create-enrolment.dto';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -1187,5 +1188,89 @@ export class StudentsService {
         ? { enrollment_date: new Date(enrollment_date) }
         : {}),
     };
+  }
+
+  // ===========================================================================
+  // Application activity / candidate statuses (legacy Candidate controller)
+  // ===========================================================================
+
+  /**
+   * GET /applications/:id/activity — the candidate activity log for an
+   * application. The legacy `candidate_activity` table is ABSENT from the current
+   * Prisma schema, so we cannot query it without breaking compilation. Validate
+   * the application exists (404 otherwise) and return a well-formed empty list.
+   * TODO(prod-table): once a `candidate_activity` model exists, replace the empty
+   * `items` with the real log filtered by application id, ordered newest-first.
+   */
+  async getApplicationActivity(
+    applicationId: number,
+  ): Promise<{ items: unknown[]; total: number }> {
+    await this.getApplication(applicationId); // 404 if missing/soft-deleted
+    return { items: [], total: 0 };
+  }
+
+  /**
+   * GET /candidate-statuses — the candidate status options. The legacy
+   * `candidate_status` table is ABSENT from the current Prisma schema, so we
+   * return an empty list rather than reference a non-existent model.
+   * TODO(prod-table): once a `candidate_status` model exists, return its live
+   * (deleted_at IS NULL) rows ordered by id.
+   */
+  async getCandidateStatuses(): Promise<{ items: unknown[]; total: number }> {
+    return { items: [], total: 0 };
+  }
+
+  // ===========================================================================
+  // Student enrolments (enrol table; enrol.user_id = users.id)
+  // ===========================================================================
+
+  /**
+   * POST /students/:id/enrolments — create an `enrol` row linking a student
+   * (the :id param is the student record id) to a course, and optionally a
+   * subject/teacher. Validates the student exists, then resolves the student's
+   * underlying users.id (students.student_id) for enrol.user_id.
+   *
+   * NOTE: `dto.session_count` is accepted for API parity but the `enrol` table has
+   * no column for it in the current schema.
+   * TODO(prod-table): persist session count once `enrol` gains the column.
+   */
+  async createEnrolment(
+    studentId: number,
+    dto: CreateEnrolmentDto,
+    actorUserId: number,
+  ) {
+    const student = await this.getStudent(studentId); // 404 if missing
+    const now = new Date();
+
+    return this.prisma.enrol.create({
+      data: {
+        user_id: student.student_id,
+        ...(dto.course_id !== undefined ? { course_id: dto.course_id } : {}),
+        ...(dto.subject_id !== undefined ? { subject_id: dto.subject_id } : {}),
+        ...(dto.teacher_id !== undefined ? { teacher_id: dto.teacher_id } : {}),
+        created_by: actorUserId,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  /**
+   * DELETE /students/enrolments/:id — soft-delete an `enrol` row (set deleted_at).
+   * 404 if the row is missing or already soft-deleted.
+   */
+  async deleteEnrolment(enrolId: number, actorUserId: number) {
+    const existing = await this.prisma.enrol.findFirst({
+      where: { id: enrolId, deleted_at: null },
+    });
+    if (!existing) {
+      throw new NotFoundException('Enrolment not found!');
+    }
+    const now = new Date();
+    await this.prisma.enrol.update({
+      where: { id: enrolId },
+      data: { deleted_at: now, deleted_by: actorUserId, updated_at: now },
+    });
+    return { id: enrolId };
   }
 }

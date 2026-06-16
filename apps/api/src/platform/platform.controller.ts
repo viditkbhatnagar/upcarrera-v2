@@ -21,9 +21,12 @@ import {
 } from './dto/role-permission.dto';
 import { CreatePermissionDto, UpdatePermissionDto } from './dto/permission.dto';
 import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
+import { UpdateMeDto } from './dto/update-me.dto';
+import { SwitchRoleDto } from './dto/switch-role.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { RequirePermission } from '../common/decorators/require-permission.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Public } from '../common/decorators/public.decorator';
 
 /** Parse a numeric query param, returning undefined for missing/blank/NaN. */
 function toNumber(value?: string): number | undefined {
@@ -43,6 +46,17 @@ function toNumber(value?: string): number | undefined {
 export class PlatformController {
   constructor(private readonly platform: PlatformService) {}
 
+  // ----- App (public version gate) -----
+
+  // Public mobile launch check (App::app_version). Only public route in this
+  // controller; opts out of the global JwtAuthGuard via @Public().
+  @Get('app/version')
+  @Public()
+  @ResponseMessage('success')
+  getAppVersion() {
+    return this.platform.getAppVersion();
+  }
+
   // ----- Users -----
 
   @Get('users')
@@ -53,6 +67,22 @@ export class PlatformController {
     @Query('role_id') roleId?: string,
   ) {
     return this.platform.findUsers(toNumber(page), toNumber(limit), toNumber(roleId));
+  }
+
+  // ----- Self-service (own row) -----
+  // Literal `users/me` routes are declared BEFORE the `users/:id` routes so
+  // `me` is never parsed as a user id. The acting user always comes from the JWT.
+
+  @Patch('users/me')
+  @ResponseMessage('Success')
+  updateMe(@CurrentUser('id') userId: number, @Body() dto: UpdateMeDto) {
+    return this.platform.updateMe(userId, dto);
+  }
+
+  @Post('users/me/switch-role')
+  @ResponseMessage('Success')
+  switchRole(@CurrentUser('id') userId: number, @Body() dto: SwitchRoleDto) {
+    return this.platform.switchRole(userId, dto);
   }
 
   @Get('users/:id')

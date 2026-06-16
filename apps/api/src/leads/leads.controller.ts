@@ -49,6 +49,26 @@ export class LeadsController {
     return this.leads.findFollowups(query);
   }
 
+  /**
+   * Static syllabus options (Lead::syllabus). Literal sub-path declared BEFORE
+   * the `:id` route so 'syllabus' is never parsed as a lead id.
+   */
+  @Get('syllabus')
+  @ResponseMessage('Success')
+  syllabus() {
+    return this.leads.getSyllabusOptions();
+  }
+
+  /**
+   * Static class/grade options (Lead::classes). Literal sub-path declared BEFORE
+   * the `:id` route so 'classes' is never parsed as a lead id.
+   */
+  @Get('classes')
+  @ResponseMessage('Success')
+  classes() {
+    return this.leads.getClassOptions();
+  }
+
   @Get(':id')
   @ResponseMessage('Lead')
   findOne(@Param('id', ParseIntPipe) id: number) {

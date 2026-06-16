@@ -878,4 +878,43 @@ export class LeadsService {
     }
     return range;
   }
+
+  // ---- static option lists (Lead::syllabus / Lead::classes) ----------------
+
+  /**
+   * Static syllabus options for lead forms. Ports App/Controllers/Api/Lead::syllabus.
+   * No DB access — the legacy controller returned this fixed list verbatim.
+   */
+  getSyllabusOptions(): Array<{ id: string; title: string }> {
+    return [
+      { id: 'state', title: 'State' },
+      { id: 'cbse', title: 'CBSE' },
+      { id: 'icse', title: 'ICSE' },
+      { id: 'igcse', title: 'IGCSE' },
+    ];
+  }
+
+  /**
+   * Static class/grade-level options for lead forms. Ports
+   * App/Controllers/Api/Lead::classes. Fixed list, no DB access.
+   */
+  getClassOptions(): Array<{ id: string; title: string }> {
+    return [
+      { id: 'early_learning', title: 'Early Learning' },
+      { id: 'kg1', title: 'KG1' },
+      { id: 'kg2', title: 'KG2' },
+      { id: '1', title: '1' },
+      { id: '2', title: '2' },
+      { id: '3', title: '3' },
+      { id: '4', title: '4' },
+      { id: '5', title: '5' },
+      { id: '6', title: '6' },
+      { id: '7', title: '7' },
+      { id: '8', title: '8' },
+      { id: '9', title: '9' },
+      { id: '10', title: '10' },
+      { id: '+1', title: '+1' },
+      { id: '+2', title: '+2' },
+    ];
+  }
 }

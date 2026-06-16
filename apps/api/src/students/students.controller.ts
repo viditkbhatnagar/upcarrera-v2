@@ -19,7 +19,9 @@ import { ListFinanceDto } from './dto/list-finance.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
 import { AcademicGradesDto } from './dto/academic-grades.dto';
 import { UpdateQualificationsDto } from './dto/update-qualifications.dto';
+import { CreateEnrolmentDto } from './dto/create-enrolment.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 /**
  * Staff-only student records endpoints (protected by the global JwtAuthGuard).
@@ -67,6 +69,17 @@ export class StudentsController {
     return this.students.deleteDocument(id);
   }
 
+  // Literal `enrolments/:id` declared BEFORE the catch-all `:id` so 'enrolments'
+  // is never parsed as a student id.
+  @Delete('enrolments/:id')
+  @ResponseMessage('Enrolment deleted')
+  deleteEnrolment(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.students.deleteEnrolment(id, userId);
+  }
+
   // --- /:id and its sub-resources ---
 
   @Get(':id')
@@ -112,6 +125,16 @@ export class StudentsController {
   @ResponseMessage('Enrolled courses fetched')
   enrolledCourses(@Param('id', ParseIntPipe) id: number) {
     return this.students.getEnrolledCourses(id);
+  }
+
+  @Post(':id/enrolments')
+  @ResponseMessage('Enrolment created')
+  createEnrolment(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateEnrolmentDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.students.createEnrolment(id, dto, userId);
   }
 
   @Post(':id/finance')

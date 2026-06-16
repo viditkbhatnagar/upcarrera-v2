@@ -13,6 +13,8 @@ import { ResetPasswordDto, ChangePasswordDto } from './dto/password.dto';
 import { AssignRolePermissionsDto } from './dto/role-permission.dto';
 import { CreatePermissionDto, UpdatePermissionDto } from './dto/permission.dto';
 import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
+import { UpdateMeDto } from './dto/update-me.dto';
+import { SwitchRoleDto } from './dto/switch-role.dto';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -477,5 +479,82 @@ export class PlatformService {
       },
       orderBy: { id: 'desc' },
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // App (public) — App/Controllers/Api/App::app_version
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Public mobile app version gate. Ports App::app_version, which returns the
+   * three settings rows the app reads on launch. Missing rows resolve to null
+   * (the settings table has no row for an item until it is first set).
+   */
+  async getAppVersion(): Promise<{
+    ios_version: string | null;
+    android_version: string | null;
+    ios_register_show: string | null;
+  }> {
+    const settings = await this.getSettings();
+    return {
+      ios_version: settings.ios_version ?? null,
+      android_version: settings.android_version ?? null,
+      // Legacy key is `ios_register`, surfaced to the app as `ios_register_show`.
+      ios_register_show: settings.ios_register ?? null,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Self-service profile — App/Controllers/Api/User::update / ::switch_role
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Authenticated user updates their OWN profile. Ports User::update. The id is
+   * always the JWT subject (never a body/param), so a caller can only edit their
+   * own row. Only the self-editable fields are accepted (the DTO whitelists
+   * name/code/phone/email/profile_picture).
+   */
+  async updateMe(id: number, dto: UpdateMeDto) {
+    const user = await this.prisma.users.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const now = new Date();
+    const updated = await this.prisma.users.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.code !== undefined ? { code: dto.code } : {}),
+        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+        ...(dto.email !== undefined ? { email: dto.email } : {}),
+        ...(dto.profile_picture !== undefined
+          ? { profile_picture: dto.profile_picture }
+          : {}),
+        updated_by: id,
+        updated_at: now,
+      },
+    });
+    return this.sanitizeUser(updated);
+  }
+
+  /**
+   * Switch the acting user's active role. Ports User::switch_role, which wrote
+   * users.current_role. That column is ABSENT from the current Prisma schema, so
+   * this is a documented no-op: we simply return the (unchanged) current user.
+   * TODO(prod-table): once `users.current_role` exists in schema.prisma, persist
+   * `dto.current_role` here (updated_by = id, updated_at = now) and return the
+   * refreshed row.
+   */
+  async switchRole(id: number, _dto: SwitchRoleDto) {
+    const user = await this.prisma.users.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    return this.sanitizeUser(user);
   }
 }
