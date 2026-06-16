@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -9,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { SessionsService } from './sessions.service';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ListSessionRequestsDto } from './dto/list-session-requests.dto';
 import { UpdateSessionRequestDto } from './dto/update-session-request.dto';
 
@@ -26,6 +28,17 @@ export class SessionRequestsController {
     return this.sessions.listSessionRequests(query);
   }
 
+  // Literal sub-path PATCH — declared before the bare `:id` PATCH so
+  // /:id/approve is not captured by /:id.
+  @Patch(':id/approve')
+  @ResponseMessage('Session request approved successfully!')
+  approve(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.sessions.approveSessionRequest(id, userId);
+  }
+
   @Patch(':id')
   @ResponseMessage('Session request updated successfully!')
   update(
@@ -33,5 +46,11 @@ export class SessionRequestsController {
     @Body() dto: UpdateSessionRequestDto,
   ) {
     return this.sessions.updateSessionRequest(id, dto);
+  }
+
+  @Delete(':id')
+  @ResponseMessage('Session request deleted successfully!')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.sessions.removeSessionRequest(id);
   }
 }

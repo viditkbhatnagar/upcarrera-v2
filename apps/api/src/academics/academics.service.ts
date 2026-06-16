@@ -3,6 +3,7 @@ import {
   NotFoundException,
   NotImplementedException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
@@ -15,6 +16,7 @@ import { UpdateSemesterDto } from './dto/update-semester.dto';
 import { CreateSpecialisationDto } from './dto/create-specialisation.dto';
 import { UpdateSpecialisationDto } from './dto/update-specialisation.dto';
 import { TeachersBySubjectsDto } from './dto/teachers-by-subjects.dto';
+import { SubjectListQueryDto } from './dto/subject-list-query.dto';
 import { CourseListQueryDto } from './dto/course-list-query.dto';
 import { SemesterListQueryDto } from './dto/semester-list-query.dto';
 import { StatesListQueryDto } from './dto/states-list-query.dto';
@@ -36,6 +38,9 @@ const DEFAULT_LIMIT = 20;
 
 /** role_id for teachers in the users table (legacy convention). */
 const TEACHER_ROLE_ID = 3;
+
+/** role_id for students in the users table (legacy convention). */
+const STUDENT_ROLE_ID = 4;
 
 interface Pagination {
   page?: number;
@@ -306,16 +311,20 @@ export class AcademicsService {
   // subjects  -> /subjects
   // ---------------------------------------------------------------------------
 
-  async listSubjects(query: Pagination): Promise<Paginated<unknown>> {
+  async listSubjects(query: SubjectListQueryDto): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
+    const where: Prisma.subjectsWhereInput = { deleted_at: null };
+    if (query.course_id !== undefined) {
+      where.course_id = query.course_id;
+    }
     const [items, total] = await Promise.all([
       this.prisma.subjects.findMany({
-        where: { deleted_at: null },
+        where,
         orderBy: { id: 'desc' },
         skip,
         take,
       }),
-      this.prisma.subjects.count({ where: { deleted_at: null } }),
+      this.prisma.subjects.count({ where }),
     ]);
     return this.paginated(items, total, page, limit);
   }
@@ -602,6 +611,80 @@ export class AcademicsService {
       title: subject.title,
       course_id: subject.course_id,
       teachers,
+    }));
+  }
+
+  /**
+   * Bulk-scheduling context for a course: for every subject in the course,
+   * resolve the teachers and the enrolled students. Port of
+   * Demo_sessions::get_subjects_teachers_students_by_course().
+   *
+   * Returns `[{ subject, teachers: [], students: [] }]`. 404 when the course is
+   * missing/soft-deleted.
+   *
+   * Schema notes:
+   *  - teachers_subjects has NO subject_id column in the current schema (only
+   *    user_id + course_id), so teachers are resolved per-course and the same
+   *    course teacher list appears on each subject — matching the existing
+   *    teachersByCourseIds() / subjectsWithTeachers() behavior.
+   *  - students come from the `enrol` table (legacy Enrol_model), which DOES
+   *    carry subject_id, so students are resolved per-subject.
+   */
+  async scheduleContext(courseId: number) {
+    await this.getCourse(courseId); // 404 if missing/soft-deleted
+
+    const [subjects, teacherMap] = await Promise.all([
+      this.prisma.subjects.findMany({
+        where: { course_id: courseId, deleted_at: null },
+        orderBy: { id: 'asc' },
+      }),
+      this.teachersByCourseIds([courseId]),
+    ]);
+
+    const teachers = teacherMap.get(courseId) ?? [];
+
+    // Resolve students per subject from the enrol table, batched to avoid N+1.
+    const enrolments = await this.prisma.enrol.findMany({
+      where: { course_id: courseId, deleted_at: null },
+      select: { user_id: true, subject_id: true },
+    });
+
+    const studentIds = [
+      ...new Set(
+        enrolments
+          .map((e) => e.user_id)
+          .filter((u): u is number => u != null),
+      ),
+    ];
+    const students = studentIds.length
+      ? await this.prisma.users.findMany({
+          where: {
+            id: { in: studentIds },
+            role_id: STUDENT_ROLE_ID,
+            deleted_at: null,
+          },
+          select: { id: true, name: true },
+        })
+      : [];
+    const studentById = new Map(students.map((s) => [s.id, s]));
+
+    // Group student ids by subject.
+    const studentsBySubject = new Map<number, Array<{ id: number; name: string | null }>>();
+    for (const e of enrolments) {
+      if (e.subject_id == null || e.user_id == null) continue;
+      const student = studentById.get(e.user_id);
+      if (!student) continue; // user_id is not an active student
+      const bucket = studentsBySubject.get(e.subject_id) ?? [];
+      if (!bucket.some((s) => s.id === student.id)) {
+        bucket.push(student);
+      }
+      studentsBySubject.set(e.subject_id, bucket);
+    }
+
+    return subjects.map((subject) => ({
+      subject,
+      teachers,
+      students: studentsBySubject.get(subject.id) ?? [],
     }));
   }
 

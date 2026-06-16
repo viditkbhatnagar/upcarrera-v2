@@ -11,9 +11,11 @@ import {
 } from '@nestjs/common';
 import { SessionsService } from './sessions.service';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { UpdateSessionDto } from './dto/update-session.dto';
 import { ListSessionsDto } from './dto/list-sessions.dto';
+import { BulkSessionsDto } from './dto/bulk-sessions.dto';
 
 /**
  * Staff-only endpoints for live class sessions. Protected by the global
@@ -39,6 +41,14 @@ export class SessionsController {
   @ResponseMessage('Session attendance fetched successfully!')
   attendance(@Param('id', ParseIntPipe) id: number) {
     return this.sessions.getSessionAttendance(id);
+  }
+
+  // Literal sub-path POST — declared before the bare @Post() (and ahead of the
+  // `:id` routes) so /sessions/bulk is never captured by /sessions/:id.
+  @Post('bulk')
+  @ResponseMessage('Sessions added successfully!')
+  bulk(@Body() dto: BulkSessionsDto, @CurrentUser('id') userId: number) {
+    return this.sessions.bulkCreateSessions(dto, userId);
   }
 
   @Post()

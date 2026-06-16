@@ -23,6 +23,7 @@ import { UpdateSemesterDto } from './dto/update-semester.dto';
 import { CreateSpecialisationDto } from './dto/create-specialisation.dto';
 import { UpdateSpecialisationDto } from './dto/update-specialisation.dto';
 import { TeachersBySubjectsDto } from './dto/teachers-by-subjects.dto';
+import { SubjectListQueryDto } from './dto/subject-list-query.dto';
 import { CourseListQueryDto } from './dto/course-list-query.dto';
 import { SemesterListQueryDto } from './dto/semester-list-query.dto';
 import { StatesListQueryDto } from './dto/states-list-query.dto';
@@ -69,6 +70,14 @@ export class CoursesController {
   @ResponseMessage('Subjects with teachers')
   subjectsWithTeachers(@Param('id', ParseIntPipe) id: number) {
     return this.academics.subjectsWithTeachers(id);
+  }
+
+  // Bulk-scheduling context: [{ subject, teachers:[], students:[] }] for a
+  // course. Literal trailing segment, declared before the bare `:id` route.
+  @Get(':id/schedule-context')
+  @ResponseMessage('Course schedule context')
+  scheduleContext(@Param('id', ParseIntPipe) id: number) {
+    return this.academics.scheduleContext(id);
   }
 
   @Get(':id')
@@ -163,7 +172,7 @@ export class SubjectsController {
 
   @Get()
   @ResponseMessage('Subjects')
-  list(@Query() query: ListQueryDto) {
+  list(@Query() query: SubjectListQueryDto) {
     return this.academics.listSubjects(query);
   }
 
