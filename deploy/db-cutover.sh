@@ -24,11 +24,23 @@ cd "$(dirname "$0")/.."
 : "${DB_CA_CERT:?set DB_CA_CERT (path to the DO CA cert)}"
 : "${DUMP_FILE:?set DUMP_FILE (path to the production mysqldump)}"
 
-MYSQL=(mysql
-  --host="$DB_HOST" --port="$DB_PORT"
-  --user="$DB_USER" --password="$DB_PASSWORD"
-  --ssl-ca="$DB_CA_CERT" --ssl-mode=REQUIRED
-  "$DB_NAME")
+# Credentials go in a chmod-600 defaults file, NOT on the mysql command line
+# (CLI flags are visible to any user via `ps`). printf keeps the literal value
+# out of this script's source — it is read from the environment at runtime.
+MYSQL_CNF="$(mktemp)"
+chmod 600 "$MYSQL_CNF"
+trap 'rm -f "$MYSQL_CNF"' EXIT
+{
+  printf '[client]\n'
+  printf 'host=%s\n' "$DB_HOST"
+  printf 'port=%s\n' "$DB_PORT"
+  printf 'user=%s\n' "$DB_USER"
+  printf 'password=%s\n' "$DB_PASSWORD"
+  printf 'ssl-ca=%s\n' "$DB_CA_CERT"
+  printf 'ssl-mode=%s\n' "REQUIRED"
+} > "$MYSQL_CNF"
+
+MYSQL=(mysql --defaults-extra-file="$MYSQL_CNF" "$DB_NAME")
 
 echo "==> [1/3] Loading $DUMP_FILE into $DB_NAME@$DB_HOST over TLS"
 "${MYSQL[@]}" < "$DUMP_FILE"
