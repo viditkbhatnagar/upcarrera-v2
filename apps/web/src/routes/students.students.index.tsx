@@ -1,5 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Download,
   Search,
@@ -18,6 +20,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Hash,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -38,6 +41,7 @@ import {
   STATUS_ORDER,
   STATUS_STYLES,
   UNIVERSITIES,
+  type Student,
   type StudentStatus,
 } from "@/lib/students-data";
 
@@ -45,6 +49,78 @@ export const Route = createFileRoute("/students/students/")({
   head: () => ({ meta: [{ title: "Students — upCarrera" }] }),
   component: StudentsPage,
 });
+
+// --- Live API wiring (GET /api/students) ---------------------------------
+// The list endpoint returns raw students rows (ids + raw fields). It does NOT
+// join the users table, so display name/email/phone and university/course/
+// coordinator *titles* are not available from this endpoint. We render what the
+// endpoint gives us and derive sensible display fallbacks for the rest.
+// admission_status is a numeric code; map it to the UI's StudentStatus label.
+interface ApiStudentRow {
+  id: number | string;
+  student_id: number | string | null;
+  enrollment_id: string | null;
+  application_id: number | string | null;
+  admission_status: number | string | null;
+  course_id: number | string | null;
+  consultant_id: number | string | null;
+  enrollment_date: string | null;
+  created_at: string | null;
+}
+
+const ADMISSION_STATUS_LABEL: Record<string, StudentStatus> = {
+  "1": "Pending",
+  "2": "In Progress",
+  "3": "Enrolled",
+  "4": "Dropout",
+  "5": "Passed Out",
+  "6": "Cancelled",
+};
+
+function mapAdmissionStatus(code: number | string | null): StudentStatus {
+  if (code === null || code === undefined) return "Pending";
+  return ADMISSION_STATUS_LABEL[String(code)] ?? "Pending";
+}
+
+// admission_status query value the API expects for a given UI status label.
+const STATUS_TO_CODE: Record<StudentStatus, string> = {
+  Pending: "1",
+  "In Progress": "2",
+  Enrolled: "3",
+  Dropout: "4",
+  "Passed Out": "5",
+  Cancelled: "6",
+};
+
+function formatDate(value: string | null): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function mapApiRow(r: ApiStudentRow): Student {
+  const displayId =
+    r.enrollment_id != null && String(r.enrollment_id).trim() !== ""
+      ? String(r.enrollment_id)
+      : `STU-${r.student_id ?? r.id}`;
+  return {
+    id: displayId,
+    name: r.student_id != null ? `Student #${r.student_id}` : `Record #${r.id}`,
+    email: "—",
+    phone: "",
+    university: "—",
+    course: r.course_id != null ? `Course #${r.course_id}` : "—",
+    batch: "—",
+    enrollmentDate: formatDate(r.enrollment_date ?? r.created_at),
+    coordinator: r.consultant_id != null ? `Consultant #${r.consultant_id}` : "—",
+    coordinatorInitials: "C",
+    status: mapAdmissionStatus(r.admission_status),
+    totalFee: 0,
+    paid: 0,
+    overdue: 0,
+  };
+}
 
 function StudentsPage() {
   const [statusFilter, setStatusFilter] = useState<StudentStatus | "All">("All");
@@ -58,9 +134,27 @@ function StudentsPage() {
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
 
-  const filtered = useMemo(() => {
-    return ALL_STUDENTS.filter((s) => {
-      if (statusFilter !== "All" && s.status !== statusFilter) return false;
+  // Live students list. The API supports server-side page/limit + admission_status
+  // (+ course_id/referred_by) filters; we drive those from state. The remaining
+  // text/university/batch/coordinator filters are applied client-side over the
+  // fetched page (the endpoint does not join those label columns — see mapApiRow).
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["students", { page, limit: PAGE_SIZE, statusFilter }],
+    queryFn: () =>
+      apiGet<{ items: ApiStudentRow[]; total: number; page: number; limit: number }>("/students", {
+        page,
+        limit: PAGE_SIZE,
+        admission_status: statusFilter === "All" ? undefined : STATUS_TO_CODE[statusFilter],
+      }),
+  });
+
+  const apiTotal = data?.total ?? 0;
+  const allRows = useMemo(() => (data?.items ?? []).map(mapApiRow), [data]);
+
+  // Client-side refinement of the current page (best-effort: most label columns
+  // are not returned by the list endpoint, so these mostly act on derived values).
+  const pageRows = useMemo(() => {
+    return allRows.filter((s) => {
       if (search && !s.name.toLowerCase().includes(search.toLowerCase())) return false;
       if (stuId && !s.id.toLowerCase().includes(stuId.toLowerCase())) return false;
       if (phone && !s.phone.includes(phone)) return false;
@@ -70,12 +164,13 @@ function StudentsPage() {
       if (coordinator !== "All" && s.coordinator !== coordinator) return false;
       return true;
     });
-  }, [statusFilter, search, stuId, phone, university, course, batch, coordinator]);
+  }, [allRows, search, stuId, phone, university, course, batch, coordinator]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(apiTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const pageRows = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
+  // KPI status counts are not available as aggregates from /students, so the
+  // cards stay on the seeded mock counts for now.
   const counts = useMemo(() => {
     const m: Record<StudentStatus, number> = {
       Pending: 0,
@@ -213,7 +308,7 @@ function StudentsPage() {
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="text-sm font-semibold text-foreground">
-            {filtered.length.toLocaleString()} students
+            {isLoading ? "Loading…" : `${apiTotal.toLocaleString()} students`}
             {statusFilter !== "All" && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                 {statusFilter}
@@ -229,7 +324,20 @@ function StudentsPage() {
         </div>
 
         <div className="overflow-x-auto scrollbar-thin">
-          {pageRows.length === 0 ? (
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
+              <div className="text-sm font-semibold text-foreground">Loading students…</div>
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <AlertTriangle className="h-10 w-10 text-red-500/60" />
+              <div className="text-sm font-semibold text-foreground">Couldn’t load students</div>
+              <div className="text-xs text-muted-foreground">
+                {error instanceof Error ? error.message : "Please try again."}
+              </div>
+            </div>
+          ) : pageRows.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
               <Users className="h-10 w-10 text-muted-foreground/50" />
               <div className="text-sm font-semibold text-foreground">No students found</div>
@@ -328,13 +436,13 @@ function StudentsPage() {
           <div>
             Showing{" "}
             <span className="font-semibold text-foreground">
-              {(currentPage - 1) * PAGE_SIZE + 1}
+              {apiTotal === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}
             </span>{" "}
             – {" "}
             <span className="font-semibold text-foreground">
-              {Math.min(currentPage * PAGE_SIZE, filtered.length)}
+              {Math.min(currentPage * PAGE_SIZE, apiTotal)}
             </span>{" "}
-            of <span className="font-semibold text-foreground">{filtered.length}</span>
+            of <span className="font-semibold text-foreground">{apiTotal}</span>
           </div>
           <div className="flex items-center gap-1">
             <button

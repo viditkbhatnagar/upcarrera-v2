@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import {
   Users,
   ClipboardList,
@@ -16,6 +17,75 @@ import {
   Mail,
   FileCheck2,
 } from "lucide-react";
+import { apiGet } from "@/lib/api";
+import { getUser } from "@/lib/session";
+
+// Shape of GET /api/dashboard (role-aware headline metrics).
+interface DashboardResponse {
+  role_id: number;
+  scope: string;
+  leads: { total: number; open: number; converted: number; follow_up: number };
+  students: { total: number; active: number; discontinued: number };
+  courses: { total: number };
+  income: { paid_today: number; paid_total: number; payable_total: number; pending: number };
+  recent: {
+    leads: Array<{
+      id: number;
+      title: string;
+      phone: string;
+      email: string;
+      lead_status_id: number;
+      is_converted: number;
+      created_at: string;
+    }>;
+    students: Array<{
+      id: number;
+      name: string;
+      phone: string;
+      email: string;
+      status: string | number | null;
+      created_at: string;
+    }>;
+  };
+}
+
+// Compact INR formatter (Cr / L / k) so big rupee figures stay readable in the cards.
+function formatInr(amount: number): string {
+  const n = Number(amount) || 0;
+  if (n >= 1_00_00_000) return `₹${(n / 1_00_00_000).toFixed(2)}Cr`;
+  if (n >= 1_00_000) return `₹${(n / 1_00_000).toFixed(2)}L`;
+  if (n >= 1_000) return `₹${(n / 1_000).toFixed(1)}k`;
+  return `₹${n.toLocaleString("en-IN")}`;
+}
+
+function initialsOf(name: string): string {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "—";
+  return (parts[0][0] + (parts[1]?.[0] ?? "")).toUpperCase();
+}
+
+function formatDate(value: string): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// Map a student admission_status (numeric/string) to a label + tone for the badge.
+const STUDENT_STATUS: Record<string, { label: string; tone: "success" | "warn" | "info" }> = {
+  "1": { label: "Pending", tone: "info" },
+  "2": { label: "In Progress", tone: "warn" },
+  "3": { label: "Enrolled", tone: "success" },
+  "4": { label: "Dropout", tone: "warn" },
+  "5": { label: "Pass Out", tone: "success" },
+  "6": { label: "Cancelled", tone: "warn" },
+};
+
+function formatStudentStatus(status: string | number | null): { label: string; tone: "success" | "warn" | "info" } {
+  if (status === null || status === undefined || status === "") return { label: "—", tone: "info" };
+  const key = String(status);
+  return STUDENT_STATUS[key] ?? { label: key, tone: "info" };
+}
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({
@@ -27,21 +97,49 @@ export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
 });
 
-const stats = [
-  { label: "Active Students", value: "2,847", delta: "+12.4%", up: true, icon: Users, tint: "primary" },
-  { label: "New Enrollments", value: "184", delta: "+8.1%", up: true, icon: ClipboardList, tint: "accent" },
-  { label: "Fees Collected (MTD)", value: "₹1.42Cr", delta: "+18.6%", up: true, icon: Wallet, tint: "primary" },
-  { label: "Pending Commissions", value: "₹38.2L", delta: "-3.2%", up: false, icon: TrendingUp, tint: "accent" },
+type Stat = {
+  label: string;
+  value: string;
+  delta: string;
+  up: boolean;
+  icon: typeof Users;
+  tint: string;
+};
+
+// Build the four headline cards from the live dashboard payload.
+// NOTE: deltas / "vs last month" are not provided by the API, so they are omitted.
+function buildStats(d: DashboardResponse): Stat[] {
+  return [
+    { label: "Active Students", value: d.students.active.toLocaleString("en-IN"), delta: "", up: true, icon: Users, tint: "primary" },
+    { label: "Converted Leads", value: d.leads.converted.toLocaleString("en-IN"), delta: "", up: true, icon: ClipboardList, tint: "accent" },
+    { label: "Fees Collected", value: formatInr(d.income.paid_total), delta: "", up: true, icon: Wallet, tint: "primary" },
+    { label: "Pending Fees", value: formatInr(d.income.pending), delta: "", up: false, icon: TrendingUp, tint: "accent" },
+  ];
+}
+
+const statsFallback: Stat[] = [
+  { label: "Active Students", value: "—", delta: "", up: true, icon: Users, tint: "primary" },
+  { label: "Converted Leads", value: "—", delta: "", up: true, icon: ClipboardList, tint: "accent" },
+  { label: "Fees Collected", value: "—", delta: "", up: true, icon: Wallet, tint: "primary" },
+  { label: "Pending Fees", value: "—", delta: "", up: false, icon: TrendingUp, tint: "accent" },
 ];
 
-const pipeline = [
-  { stage: "New Leads", count: 412, pct: 100, color: "bg-primary" },
-  { stage: "Counselling", count: 268, pct: 65, color: "bg-primary/80" },
-  { stage: "Documentation", count: 154, pct: 37, color: "bg-accent" },
-  { stage: "Fee Payment", count: 96, pct: 23, color: "bg-accent/80" },
-  { stage: "Enrolled", count: 78, pct: 19, color: "bg-success" },
-];
+type PipelineStage = { stage: string; count: number; pct: number; color: string };
 
+// Derive the funnel from the lead/student aggregates the API returns.
+function buildPipeline(d: DashboardResponse): PipelineStage[] {
+  const stages = [
+    { stage: "Total Leads", count: d.leads.total, color: "bg-primary" },
+    { stage: "Open Leads", count: d.leads.open, color: "bg-primary/80" },
+    { stage: "Follow-up", count: d.leads.follow_up, color: "bg-accent" },
+    { stage: "Converted", count: d.leads.converted, color: "bg-accent/80" },
+    { stage: "Active Students", count: d.students.active, color: "bg-success" },
+  ];
+  const max = Math.max(1, ...stages.map((s) => s.count));
+  return stages.map((s) => ({ ...s, pct: Math.round((s.count / max) * 100) }));
+}
+
+// TODO(api): no endpoint for "My Tasks" action items — kept on mock data.
 const tasks = [
   { title: "Verify documents — Ananya Sharma", due: "Today, 4:30 PM", priority: "High", icon: FileCheck2 },
   { title: "Follow up call — Rohit Mehra (MBA)", due: "Today, 5:00 PM", priority: "Medium", icon: Phone },
@@ -49,6 +147,7 @@ const tasks = [
   { title: "Counselling slot — Priya Iyer", due: "Tomorrow, 11:00 AM", priority: "Medium", icon: GraduationCap },
 ];
 
+// TODO(api): no endpoint for a cross-team activity feed — kept on mock data.
 const activity = [
   { who: "Karan Verma", what: "completed admission to", target: "MBA — Symbiosis", time: "12m ago", status: "success" },
   { who: "Sneha Pillai", what: "uploaded documents for", target: "B.Tech CSE — Manipal", time: "38m ago", status: "info" },
@@ -57,7 +156,7 @@ const activity = [
   { who: "Rahul Bansal", what: "scheduled counselling with", target: "Megha N.", time: "3h ago", status: "info" },
 ];
 
-function StatCard({ s }: { s: (typeof stats)[number] }) {
+function StatCard({ s }: { s: Stat }) {
   const Icon = s.icon;
   const tint = s.tint === "accent" ? "bg-accent/10 text-accent" : "bg-primary/10 text-primary";
   return (
@@ -73,17 +172,29 @@ function StatCard({ s }: { s: (typeof stats)[number] }) {
       <div className="mt-5 text-[13px] font-medium text-muted-foreground">{s.label}</div>
       <div className="mt-1 flex items-baseline gap-2">
         <div className="text-2xl font-bold tracking-tight text-foreground">{s.value}</div>
-        <span className={`inline-flex items-center gap-0.5 text-xs font-semibold ${s.up ? "text-success" : "text-destructive"}`}>
-          {s.up ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
-          {s.delta}
-        </span>
+        {s.delta ? (
+          <span className={`inline-flex items-center gap-0.5 text-xs font-semibold ${s.up ? "text-success" : "text-destructive"}`}>
+            {s.up ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
+            {s.delta}
+          </span>
+        ) : null}
       </div>
-      <div className="mt-1 text-[11px] text-muted-foreground">vs. last month</div>
+      <div className="mt-1 text-[11px] text-muted-foreground">current period</div>
     </div>
   );
 }
 
 function Dashboard() {
+  const firstName = getUser()?.name?.split(" ")[0] ?? "there";
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["dashboard"],
+    queryFn: () => apiGet<DashboardResponse>("/dashboard"),
+  });
+
+  const stats = data ? buildStats(data) : statsFallback;
+  const pipeline = data ? buildPipeline(data) : [];
+  const recentStudents = data?.recent?.students ?? [];
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -91,7 +202,7 @@ function Dashboard() {
         <div>
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Overview</div>
           <h1 className="mt-1 text-2xl sm:text-3xl font-semibold tracking-tight text-foreground">
-            Welcome back, Priya 👋
+            Welcome back, {firstName} 👋
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Here's a snapshot of admissions, fees and student success today.
@@ -108,6 +219,14 @@ function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* Error banner */}
+      {isError ? (
+        <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm font-medium text-destructive">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {error instanceof Error ? error.message : "Could not load dashboard data."}
+        </div>
+      ) : null}
 
       {/* Stats */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -133,17 +252,31 @@ function Dashboard() {
               </div>
             </div>
             <div className="mt-5 space-y-3.5">
-              {pipeline.map((p) => (
-                <div key={p.stage}>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="font-medium text-foreground">{p.stage}</span>
-                    <span className="text-muted-foreground">{p.count}</span>
+              {isLoading ? (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="h-3.5 w-24 animate-pulse rounded bg-muted" />
+                      <span className="h-3.5 w-8 animate-pulse rounded bg-muted" />
+                    </div>
+                    <div className="h-2 w-full animate-pulse rounded-full bg-muted" />
                   </div>
-                  <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-muted">
-                    <div className={`h-full rounded-full ${p.color} transition-all`} style={{ width: `${p.pct}%` }} />
+                ))
+              ) : pipeline.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">No pipeline data.</p>
+              ) : (
+                pipeline.map((p) => (
+                  <div key={p.stage}>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-foreground">{p.stage}</span>
+                      <span className="text-muted-foreground">{p.count}</span>
+                    </div>
+                    <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-muted">
+                      <div className={`h-full rounded-full ${p.color} transition-all`} style={{ width: `${p.pct}%` }} />
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
 
@@ -228,49 +361,70 @@ function Dashboard() {
               <thead>
                 <tr className="border-y border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                   <th className="px-6 py-2.5 font-semibold">Student</th>
-                  <th className="px-3 py-2.5 font-semibold">Program</th>
-                  <th className="px-3 py-2.5 font-semibold">University</th>
-                  <th className="px-3 py-2.5 font-semibold">Stage</th>
+                  <th className="px-3 py-2.5 font-semibold">Added</th>
+                  <th className="px-3 py-2.5 font-semibold">Phone</th>
+                  <th className="px-3 py-2.5 font-semibold">Status</th>
                   <th className="px-6 py-2.5 font-semibold text-right">Fee</th>
                 </tr>
               </thead>
               <tbody>
-                {[
-                  { name: "Ananya Sharma", initial: "AS", program: "MBA", uni: "Symbiosis", stage: "Enrolled", tone: "success", fee: "₹2,40,000" },
-                  { name: "Karan Verma", initial: "KV", program: "B.Tech CSE", uni: "Manipal", stage: "Fee Payment", tone: "warn", fee: "₹1,85,000" },
-                  { name: "Megha Nair", initial: "MN", program: "BBA", uni: "Amity", stage: "Counselling", tone: "info", fee: "₹98,000" },
-                  { name: "Aarav Singh", initial: "AS", program: "M.Sc Data Sc.", uni: "Christ", stage: "Documentation", tone: "warn", fee: "₹2,10,000" },
-                  { name: "Sneha Pillai", initial: "SP", program: "BCA", uni: "Lovely Pro.", stage: "Enrolled", tone: "success", fee: "₹1,20,000" },
-                ].map((r) => {
-                  const stageTone =
-                    r.tone === "success" ? "bg-success/10 text-success" :
-                    r.tone === "warn" ? "bg-accent/10 text-accent" :
-                    "bg-primary/10 text-primary";
-                  return (
-                    <tr key={r.name} className="border-b border-border/70 last:border-0 transition hover:bg-muted/40">
+                {isLoading ? (
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <tr key={i} className="border-b border-border/70 last:border-0">
                       <td className="px-6 py-3.5">
                         <div className="flex items-center gap-3">
-                          <div className="grid h-9 w-9 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
-                            {r.initial}
-                          </div>
-                          <div className="min-w-0">
-                            <div className="truncate font-medium text-foreground">{r.name}</div>
-                            <div className="text-[11px] text-muted-foreground">student@upcarrera.in</div>
+                          <div className="h-9 w-9 shrink-0 animate-pulse rounded-full bg-muted" />
+                          <div className="space-y-1.5">
+                            <div className="h-3.5 w-28 animate-pulse rounded bg-muted" />
+                            <div className="h-2.5 w-36 animate-pulse rounded bg-muted" />
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3.5 text-foreground">{r.program}</td>
-                      <td className="px-3 py-3.5 text-muted-foreground">{r.uni}</td>
-                      <td className="px-3 py-3.5">
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${stageTone}`}>
-                          <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                          {r.stage}
-                        </span>
-                      </td>
-                      <td className="px-6 py-3.5 text-right font-semibold text-foreground">{r.fee}</td>
+                      <td className="px-3 py-3.5"><div className="h-3.5 w-16 animate-pulse rounded bg-muted" /></td>
+                      <td className="px-3 py-3.5"><div className="h-3.5 w-20 animate-pulse rounded bg-muted" /></td>
+                      <td className="px-3 py-3.5"><div className="h-5 w-20 animate-pulse rounded-full bg-muted" /></td>
+                      <td className="px-6 py-3.5"><div className="ml-auto h-3.5 w-16 animate-pulse rounded bg-muted" /></td>
                     </tr>
-                  );
-                })}
+                  ))
+                ) : recentStudents.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-10 text-center text-sm text-muted-foreground">
+                      No recent admissions yet.
+                    </td>
+                  </tr>
+                ) : (
+                  recentStudents.map((r) => {
+                    const stage = formatStudentStatus(r.status);
+                    const stageTone =
+                      stage.tone === "success" ? "bg-success/10 text-success" :
+                      stage.tone === "warn" ? "bg-accent/10 text-accent" :
+                      "bg-primary/10 text-primary";
+                    return (
+                      <tr key={r.id} className="border-b border-border/70 last:border-0 transition hover:bg-muted/40">
+                        <td className="px-6 py-3.5">
+                          <div className="flex items-center gap-3">
+                            <div className="grid h-9 w-9 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                              {initialsOf(r.name)}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="truncate font-medium text-foreground">{r.name || "Unnamed"}</div>
+                              <div className="truncate text-[11px] text-muted-foreground">{r.email || r.phone || "—"}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3.5 text-muted-foreground">{formatDate(r.created_at)}</td>
+                        <td className="px-3 py-3.5 text-muted-foreground">{r.phone || "—"}</td>
+                        <td className="px-3 py-3.5">
+                          <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${stageTone}`}>
+                            <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                            {stage.label}
+                          </span>
+                        </td>
+                        <td className="px-6 py-3.5 text-right font-semibold text-muted-foreground">—</td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>

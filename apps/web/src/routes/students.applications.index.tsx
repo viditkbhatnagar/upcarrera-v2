@@ -1,5 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Plus,
   Download,
@@ -184,6 +186,85 @@ function seed(n: number): Application[] {
 
 const ALL_APPS = seed(48);
 
+/* ---------------- Live API wiring (GET /api/applications) ---------------- */
+// The list endpoint returns raw applications rows. It exposes name/email/phone
+// directly, but university/course/counsellor are FOREIGN-KEY IDS only (no joined
+// titles), so we render "University #<id>"-style fallbacks for those columns.
+// admission_status is a numeric/boolean admission code (not the 7 named pipeline
+// stages this UI shows); is_converted distinguishes enrolled records. We map the
+// available signal into the existing AppStatus vocabulary so all downstream
+// markup (table, pipeline, drawer) stays byte-for-byte unchanged.
+
+interface ApiApplicationRow {
+  application_id: number | string;
+  custom_application_id: string | null;
+  name: string | null;
+  email: string | null;
+  code: string | null;
+  phone: string | null;
+  university_id: number | string | null;
+  course_id: number | string | null;
+  specialisation_id: number | string | null;
+  session_id: number | string | null;
+  whatsapp_no: string | null;
+  admission_status: number | string | boolean | null;
+  amount: number | string | null;
+  paid_date: string | null;
+  is_converted: number | string | boolean | null;
+  pipeline_user: number | string | null;
+  enrollment_date: string | null;
+  created_at: string | null;
+}
+
+function truthy(v: number | string | boolean | null | undefined): boolean {
+  return v === 1 || v === "1" || v === true || v === "true";
+}
+
+function mapApiStatus(r: ApiApplicationRow): AppStatus {
+  if (truthy(r.is_converted)) return "Enrolled";
+  if (truthy(r.admission_status)) return "Admin Verification Pending";
+  if (r.paid_date != null && String(r.paid_date).trim() !== "") return "Registration Fee Paid";
+  return "New Lead";
+}
+
+function mapApiFee(r: ApiApplicationRow): FeeStatus {
+  const amount = Number(r.amount ?? 0);
+  if (r.paid_date != null && String(r.paid_date).trim() !== "") return "Paid";
+  if (amount > 0) return "Partially Paid";
+  return "Pending";
+}
+
+function formatApiDate(value: string | null): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function mapApiApplication(r: ApiApplicationRow): Application {
+  const displayId =
+    r.custom_application_id != null && String(r.custom_application_id).trim() !== ""
+      ? String(r.custom_application_id)
+      : `APP-${r.application_id}`;
+  const name = r.name && r.name.trim() !== "" ? r.name : `Applicant #${r.application_id}`;
+  const counsellor = r.pipeline_user != null ? `Counsellor #${r.pipeline_user}` : "Unassigned";
+  return {
+    id: displayId,
+    date: formatApiDate(r.created_at ?? r.enrollment_date),
+    name,
+    email: r.email && r.email.trim() !== "" ? r.email : "—",
+    phone: [r.code, r.phone].filter((p) => p && String(p).trim() !== "").join(" ") || "—",
+    whatsapp: r.whatsapp_no != null && String(r.whatsapp_no).trim() !== "",
+    university: r.university_id != null ? `University #${r.university_id}` : "—",
+    course: r.course_id != null ? `Course #${r.course_id}` : "—",
+    batch: r.session_id != null ? `Intake #${r.session_id}` : "—",
+    counsellor,
+    counsellorInitials: counsellor === "Unassigned" ? "—" : "C",
+    feeStatus: mapApiFee(r),
+    status: mapApiStatus(r),
+  };
+}
+
 /* ---------------- Page ---------------- */
 
 function ApplicationsPage() {
@@ -202,8 +283,24 @@ function ApplicationsPage() {
   const [leadOpen, setLeadOpen] = useState(false);
   const PAGE_SIZE = 10;
 
+  // Live applications list. The endpoint paginates server-side (page/limit) but
+  // exposes no status/text filters, so we fetch the current page and apply the
+  // existing UI filters client-side over the fetched rows. Pagination is driven
+  // by the API total; pipeline stage counts are best-effort over this page only.
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["applications", { page, limit: PAGE_SIZE }],
+    queryFn: () =>
+      apiGet<{ items: ApiApplicationRow[]; total: number; page: number; limit: number }>(
+        "/applications",
+        { page, limit: PAGE_SIZE },
+      ),
+  });
+
+  const apiTotal = data?.total ?? 0;
+  const apiRows = useMemo(() => (data?.items ?? []).map(mapApiApplication), [data]);
+
   const filtered = useMemo(() => {
-    return ALL_APPS.filter((a) => {
+    return apiRows.filter((a) => {
       if (statusFilter !== "All" && a.status !== statusFilter) return false;
       if (feeFilter !== "All" && a.feeStatus !== feeFilter) return false;
       if (search && !a.name.toLowerCase().includes(search.toLowerCase())) return false;
@@ -215,11 +312,13 @@ function ApplicationsPage() {
       if (counsellor !== "All" && a.counsellor !== counsellor) return false;
       return true;
     });
-  }, [statusFilter, feeFilter, search, phone, appId, university, course, batch, counsellor]);
+  }, [apiRows, statusFilter, feeFilter, search, phone, appId, university, course, batch, counsellor]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // Server-driven pagination: the table shows the fetched (and client-filtered)
+  // page; the pager spans all pages reported by the API total.
+  const totalPages = Math.max(1, Math.ceil(apiTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const pageRows = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const pageRows = filtered;
 
   const counts = useMemo(() => {
     const map: Record<AppStatus, number> = {
@@ -231,9 +330,9 @@ function ApplicationsPage() {
       Enrolled: 0,
       Rejected: 0,
     };
-    ALL_APPS.forEach((a) => (map[a.status] += 1));
+    apiRows.forEach((a) => (map[a.status] += 1));
     return map;
-  }, []);
+  }, [apiRows]);
 
   const toggleAll = () => {
     if (pageRows.every((r) => selected.has(r.id))) {
@@ -322,7 +421,7 @@ function ApplicationsPage() {
         <div className="flex items-stretch gap-1 overflow-x-auto scrollbar-thin pb-1">
           {STATUS_ORDER.map((s, i) => {
             const active = statusFilter === s;
-            const total = ALL_APPS.length;
+            const total = Math.max(apiRows.length, 1);
             const pct = (counts[s] / total) * 100;
             return (
               <div key={s} className="flex min-w-[160px] flex-1 items-center gap-1">
@@ -433,7 +532,7 @@ function ApplicationsPage() {
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="text-sm font-semibold text-foreground">
-            {filtered.length.toLocaleString()} applications
+            {apiTotal.toLocaleString()} applications
             {statusFilter !== "All" && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                 {statusFilter}
@@ -449,7 +548,11 @@ function ApplicationsPage() {
         </div>
 
         <div className="overflow-x-auto scrollbar-thin">
-          {pageRows.length === 0 ? (
+          {isLoading ? (
+            <LoadingState />
+          ) : isError ? (
+            <ErrorState />
+          ) : pageRows.length === 0 ? (
             <EmptyState onCreate={() => {}} />
           ) : (
             <table className="w-full min-w-[1100px] text-sm">
@@ -559,8 +662,8 @@ function ApplicationsPage() {
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3">
             <div className="text-xs text-muted-foreground">
               Showing <span className="font-semibold text-foreground">{(currentPage - 1) * PAGE_SIZE + 1}</span>–
-              <span className="font-semibold text-foreground">{Math.min(currentPage * PAGE_SIZE, filtered.length)}</span> of{" "}
-              <span className="font-semibold text-foreground">{filtered.length}</span>
+              <span className="font-semibold text-foreground">{Math.min(currentPage * PAGE_SIZE, apiTotal)}</span> of{" "}
+              <span className="font-semibold text-foreground">{apiTotal}</span>
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -700,6 +803,34 @@ function BulkBtn({
       <Icon className="h-3.5 w-3.5" />
       {label}
     </button>
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+      <div className="grid h-20 w-20 place-items-center rounded-3xl bg-primary/5 text-primary">
+        <RefreshCcw className="h-10 w-10 animate-spin" />
+      </div>
+      <div className="mt-5 text-base font-semibold text-foreground">Loading applications…</div>
+      <div className="mt-1 max-w-sm text-sm text-muted-foreground">
+        Fetching the latest records from the server.
+      </div>
+    </div>
+  );
+}
+
+function ErrorState() {
+  return (
+    <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+      <div className="grid h-20 w-20 place-items-center rounded-3xl bg-red-50 text-red-500">
+        <FileText className="h-10 w-10" />
+      </div>
+      <div className="mt-5 text-base font-semibold text-foreground">Could not load applications</div>
+      <div className="mt-1 max-w-sm text-sm text-muted-foreground">
+        Something went wrong while fetching applications. Please try again.
+      </div>
+    </div>
   );
 }
 

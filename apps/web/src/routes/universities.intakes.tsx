@@ -238,6 +238,14 @@ function KpiCard({
 }
 
 function IntakesPage() {
+  // TODO(api): No admission-intake endpoint exists. This screen needs intake rows
+  // { code, name, month, year, startDate, closingDate, mappedUniversities,
+  //   mappedCourses, status } — e.g. GET/POST /api/intakes (or /api/sessions).
+  // /api/semesters is NOT a match: it returns course-bound fee rows
+  // { id, university_id, course_id, title, semester_fee } with no month/year,
+  // start/closing dates, Open/Closed/Inactive status, or mapped-entity counts.
+  // Reports reference session_id/session_title but expose no CRUD list endpoint.
+  // Leaving mock data in place until an intake endpoint is added.
   const [intakes, setIntakes] = useState<Intake[]>(INITIAL_INTAKES);
 
   const [createOpen, setCreateOpen] = useState(false);

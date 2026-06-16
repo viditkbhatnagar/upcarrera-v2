@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Download,
   Search,
@@ -11,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Building2,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,56 +78,107 @@ type FeeStructure = {
   createdDate: string; // ISO
 };
 
-const UNIVERSITIES = [
-  { name: "Manipal State University", code: "MSU", type: "Type 1" as UniversityType },
-  { name: "Amity Online University", code: "AOU", type: "Type 2" as UniversityType },
-  { name: "Jain Deemed University", code: "JDU", type: "Type 1" as UniversityType },
-  { name: "LPU Online", code: "LPU", type: "Type 2" as UniversityType },
-  { name: "NMIMS Global", code: "NMG", type: "Type 1" as UniversityType },
-  { name: "DY Patil University", code: "DYP", type: "Type 2" as UniversityType },
-];
+// --- Live API wiring -------------------------------------------------------
+// There is no dedicated "fee structures" endpoint. Each course carries its own
+// fee definition, so the fee-structure list is sourced from GET /api/courses
+// ({ items, total, page, limit }) and decorated with the owning university's
+// name/code via GET /api/universities. Fields the schema doesn't carry
+// (intake, a distinct net-payable, the Type 1/Type 2 payment model) are
+// derived with sensible fallbacks — see mapCourseToFee below.
+const PAGE_SIZE = 100;
 
-const GROUPS = ["MBA", "BBA", "MCA", "BCA", "M.Com", "B.Com"];
-const SPECS = ["Finance", "Marketing", "HR", "Operations", "IT", "Analytics", "General"];
-const INTAKES = ["January 2026 Intake", "April 2026 Intake", "July 2026 Intake", "October 2026 Intake"];
-const STATUSES: FeeStatus[] = ["Active", "Draft", "Inactive", "Expired"];
-
-function seed(): FeeStructure[] {
-  const out: FeeStructure[] = [];
-  let r = 73;
-  const rnd = () => ((r = (r * 9301 + 49297) % 233280) / 233280);
-  for (let i = 0; i < 38; i++) {
-    const u = UNIVERSITIES[Math.floor(rnd() * UNIVERSITIES.length)];
-    const g = GROUPS[Math.floor(rnd() * GROUPS.length)];
-    const s = SPECS[Math.floor(rnd() * SPECS.length)];
-    const intake = INTAKES[Math.floor(rnd() * INTAKES.length)];
-    const status = STATUSES[Math.floor(rnd() * STATUSES.length)];
-    const reg = [5000, 10000, 12000, 15000][Math.floor(rnd() * 4)];
-    const total = Math.floor(rnd() * 250000) + 80000;
-    const net = total - Math.floor(rnd() * 20000);
-    const day = Math.floor(rnd() * 28) + 1;
-    const mon = Math.floor(rnd() * 6) + 1;
-    out.push({
-      id: `FEE-${String(1450 + i).padStart(4, "0")}`,
-      university: u.name,
-      universityCode: u.code,
-      universityType: u.type,
-      course: `${g} in ${s}`,
-      specialisation: s,
-      group: g,
-      intake,
-      registrationFee: reg,
-      totalFee: total,
-      netPayable: net,
-      installmentEnabled: rnd() > 0.3,
-      status,
-      createdDate: `2026-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
-    });
-  }
-  return out;
+interface ApiCourseRow {
+  id: number | string;
+  title: string | null;
+  short_name: string | null;
+  stream: string | null;
+  level: string | null;
+  specialisations: string | null;
+  payment_mode: string | null;
+  emi_facility: number | string | boolean | null;
+  total_amount: number | string | null;
+  fee_structure: number | string | null;
+  study_mode: string | null;
+  university_id: number | string | null;
+  status: number | string | null;
+  created_at: string | null;
 }
 
-const ALL: FeeStructure[] = seed();
+interface ApiUniversityRow {
+  id: number | string;
+  title: string | null;
+  category: string | null;
+}
+
+// Pull a numeric amount out of a possibly-string / possibly-null column.
+function toAmount(value: number | string | null | undefined): number {
+  if (value === null || value === undefined) return 0;
+  const n = typeof value === "number" ? value : Number(String(value).replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Legacy course.status is typically 1 (active) / 0 (inactive); the screen has a
+// richer status vocabulary, so map what we can and bucket the rest to Draft.
+function mapCourseStatus(value: number | string | null): FeeStatus {
+  if (value === null || value === undefined) return "Draft";
+  const v = String(value).trim().toLowerCase();
+  if (v === "1" || v === "active" || v === "true") return "Active";
+  if (v === "0" || v === "inactive" || v === "false") return "Inactive";
+  if (v === "expired") return "Expired";
+  return "Draft";
+}
+
+// university.category is a free-text column; treat a "type 2"-ish label as the
+// student-pays-upCarrera model and everything else as Type 1.
+function mapUniversityType(category: string | null | undefined): UniversityType {
+  return category && category.toLowerCase().includes("2") ? "Type 2" : "Type 1";
+}
+
+// Build an MSU-style 3-letter code from a university title.
+function deriveCode(title: string | null | undefined, id: number | string): string {
+  if (!title?.trim()) return `U${String(id).padStart(2, "0")}`;
+  const words = title.trim().split(/\s+/).filter(Boolean);
+  const letters = (words.length >= 2 ? words.map((w) => w[0]).join("") : title.trim())
+    .replace(/[^A-Za-z]/g, "")
+    .toUpperCase();
+  return letters.slice(0, 3) || `U${String(id).padStart(2, "0")}`;
+}
+
+function mapCourseToFee(
+  r: ApiCourseRow,
+  uni: ApiUniversityRow | undefined,
+): FeeStructure {
+  const total = toAmount(r.total_amount) || toAmount(r.fee_structure);
+  // payment_mode often encodes the registration/booking amount; fall back to
+  // fee_structure when it isn't a parseable number.
+  const reg = toAmount(r.payment_mode) || toAmount(r.fee_structure);
+  // No separate net-payable column exists; net payable == total fee.
+  const net = total;
+  const uniTitle = uni?.title?.trim() ? String(uni.title) : `University #${r.university_id ?? "—"}`;
+  const installment =
+    r.emi_facility === true ||
+    String(r.emi_facility ?? "").trim().toLowerCase() === "1" ||
+    String(r.emi_facility ?? "").trim().toLowerCase() === "yes" ||
+    String(r.emi_facility ?? "").trim().toLowerCase() === "true";
+  return {
+    id: r.short_name?.trim() ? String(r.short_name) : `FEE-${String(r.id).padStart(4, "0")}`,
+    university: uniTitle,
+    universityCode: deriveCode(uni?.title, r.university_id ?? r.id),
+    universityType: mapUniversityType(uni?.category),
+    course: r.title?.trim() ? String(r.title) : `Course #${r.id}`,
+    specialisation: r.specialisations?.trim() ? String(r.specialisations) : "—",
+    // No "group" column on courses; reuse the stream/level as the group label.
+    group: r.stream?.trim() ? String(r.stream) : r.level?.trim() ? String(r.level) : "—",
+    // No intake/session is attached to a course's fee definition.
+    intake: r.study_mode?.trim() ? String(r.study_mode) : "—",
+    registrationFee: reg,
+    totalFee: total,
+    netPayable: net,
+    installmentEnabled: installment,
+    status: mapCourseStatus(r.status),
+    createdDate: r.created_at ? String(r.created_at).slice(0, 10) : "",
+  };
+}
 
 const STATUS_STYLES: Record<FeeStatus, string> = {
   Active: "bg-emerald-100 text-emerald-700 ring-emerald-200",
@@ -143,10 +197,15 @@ const TYPE_LABEL: Record<UniversityType, string> = {
   "Type 2": "Type 2 · Student Pays upCarrera",
 };
 
+// Status vocabulary is a fixed enum on this screen (not sourced from the API).
+const STATUSES: FeeStatus[] = ["Active", "Draft", "Inactive", "Expired"];
+
 const inr = (n: number) => "₹" + n.toLocaleString("en-IN");
 
 const fmtDate = (iso: string) => {
+  if (!iso) return "—";
   const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
   return `${String(d.getDate()).padStart(2, "0")} ${d.toLocaleString("en-US", { month: "short" })} ${d.getFullYear()}`;
 };
 
@@ -200,6 +259,51 @@ function FeeStructuresPage() {
   });
   const [viewing, setViewing] = useState<FeeStructure | null>(null);
 
+  // Each course IS a fee structure; universities are fetched to resolve names.
+  const coursesQuery = useQuery({
+    queryKey: ["fee-structures-courses", { page: 1, limit: PAGE_SIZE }],
+    queryFn: () =>
+      apiGet<{ items: ApiCourseRow[]; total: number; page: number; limit: number }>("/courses", {
+        page: 1,
+        limit: PAGE_SIZE,
+      }),
+  });
+  const universitiesQuery = useQuery({
+    queryKey: ["fee-structures-universities", { page: 1, limit: PAGE_SIZE }],
+    queryFn: () =>
+      apiGet<{ items: ApiUniversityRow[]; total: number; page: number; limit: number }>(
+        "/universities",
+        { page: 1, limit: PAGE_SIZE },
+      ),
+  });
+
+  const isLoading = coursesQuery.isLoading || universitiesQuery.isLoading;
+  const isError = coursesQuery.isError;
+
+  const ALL = useMemo<FeeStructure[]>(() => {
+    const uniById = new Map<string, ApiUniversityRow>(
+      (universitiesQuery.data?.items ?? []).map((u) => [String(u.id), u]),
+    );
+    return (coursesQuery.data?.items ?? []).map((c) =>
+      mapCourseToFee(c, uniById.get(String(c.university_id))),
+    );
+  }, [coursesQuery.data, universitiesQuery.data]);
+
+  // Filter option lists derived from the live rows (the API has no static
+  // enums for course group / specialisation / intake).
+  const GROUPS = useMemo(
+    () => Array.from(new Set(ALL.map((f) => f.group).filter((g) => g && g !== "—"))).sort(),
+    [ALL],
+  );
+  const SPECS = useMemo(
+    () => Array.from(new Set(ALL.map((f) => f.specialisation).filter((s) => s && s !== "—"))).sort(),
+    [ALL],
+  );
+  const INTAKES = useMemo(
+    () => Array.from(new Set(ALL.map((f) => f.intake).filter((i) => i && i !== "—"))).sort(),
+    [ALL],
+  );
+
   const filtered = useMemo(() => {
     let rows = ALL.filter((f) => {
       if (q && !f.id.toLowerCase().includes(q.toLowerCase())) return false;
@@ -242,7 +346,7 @@ function FeeStructuresPage() {
       return 0;
     });
     return rows;
-  }, [q, uniQ, course, spec, intake, type, status, feeMin, feeMax, sortKey, sortDir]);
+  }, [ALL, q, uniQ, course, spec, intake, type, status, feeMin, feeMax, sortKey, sortDir]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
@@ -432,7 +536,24 @@ function FeeStructuresPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {pageRows.map((f) => (
+              {isLoading && (
+                <TableRow>
+                  <TableCell colSpan={12} className="text-center text-muted-foreground py-12">
+                    Loading…
+                  </TableCell>
+                </TableRow>
+              )}
+              {!isLoading && isError && (
+                <TableRow>
+                  <TableCell colSpan={12} className="text-center py-12">
+                    <span className="inline-flex items-center gap-2 text-rose-600">
+                      <AlertTriangle className="h-4 w-4" />
+                      Couldn’t load fee structures. Please try again.
+                    </span>
+                  </TableCell>
+                </TableRow>
+              )}
+              {!isLoading && !isError && pageRows.map((f) => (
                 <TableRow key={f.id}>
                   {visibleCols.id && <TableCell className="font-medium">{f.id}</TableCell>}
                   {visibleCols.university && (
@@ -477,7 +598,7 @@ function FeeStructuresPage() {
                   )}
                 </TableRow>
               ))}
-              {pageRows.length === 0 && (
+              {!isLoading && !isError && pageRows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={12} className="text-center text-muted-foreground py-12">
                     No fee structures match your filters.

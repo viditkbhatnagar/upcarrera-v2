@@ -75,6 +75,14 @@ export const Route = createFileRoute("/students/students/$id")({
 });
 
 function StudentDetailPage() {
+  // TODO(api): No catalog endpoint supplies this screen's data. The route param is a
+  // synthetic display id (STU-2026-NNNNNN), while GET /api/students/:id keys on the
+  // numeric students PK and returns only the raw students row (course_id/consultant_id/
+  // session_id FKs + JSON progress blobs) — no name/email/phone/university name/course
+  // title/batch/total fee/paid/overdue/coordinator that every card and tab here renders.
+  // Wiring it would 404 on the current id format and leave the UI undefined. Needs a
+  // decorated student-detail endpoint (users join + university/course names + fee/
+  // installments + coordinator) before this can be wired. Keeping mock data for now.
   const { student } = Route.useLoaderData() as { student: Student };
 
   return (

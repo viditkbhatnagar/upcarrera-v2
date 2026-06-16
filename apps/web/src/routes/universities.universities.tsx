@@ -1,5 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Building2,
   Download,
@@ -57,10 +59,12 @@ export const Route = createFileRoute("/universities/universities")({
   component: UniversitiesPage,
 });
 
+type UniType = "Private" | "Deemed" | "State" | "Central" | "Foreign";
+
 type UniRow = {
   code: string;
   name: string;
-  type: "Private" | "Deemed" | "State" | "Central" | "Foreign";
+  type: UniType;
   location: string;
   courses: number;
   intakes: number;
@@ -68,21 +72,6 @@ type UniRow = {
   initials: string;
   color: string;
 };
-
-const UNIVERSITIES: UniRow[] = [
-  { code: "UNI-001", name: "Amity University Online", type: "Private", location: "Noida, Uttar Pradesh", courses: 24, intakes: 4, status: "Active", initials: "AU", color: "bg-rose-100 text-rose-700" },
-  { code: "UNI-002", name: "Manipal University Jaipur", type: "Private", location: "Jaipur, Rajasthan", courses: 18, intakes: 3, status: "Active", initials: "MU", color: "bg-amber-100 text-amber-700" },
-  { code: "UNI-003", name: "Lovely Professional University", type: "Private", location: "Phagwara, Punjab", courses: 22, intakes: 4, status: "Active", initials: "LP", color: "bg-emerald-100 text-emerald-700" },
-  { code: "UNI-004", name: "Chandigarh University Online", type: "Private", location: "Mohali, Punjab", courses: 16, intakes: 3, status: "Active", initials: "CU", color: "bg-sky-100 text-sky-700" },
-  { code: "UNI-005", name: "Jain (Deemed-to-be University)", type: "Deemed", location: "Bengaluru, Karnataka", courses: 14, intakes: 2, status: "Active", initials: "JU", color: "bg-violet-100 text-violet-700" },
-  { code: "UNI-006", name: "NMIMS Global Access", type: "Deemed", location: "Mumbai, Maharashtra", courses: 12, intakes: 2, status: "Active", initials: "NM", color: "bg-indigo-100 text-indigo-700" },
-  { code: "UNI-007", name: "Symbiosis Centre for Distance Learning", type: "Deemed", location: "Pune, Maharashtra", courses: 10, intakes: 2, status: "Active", initials: "SC", color: "bg-pink-100 text-pink-700" },
-  { code: "UNI-008", name: "IGNOU", type: "Central", location: "New Delhi", courses: 32, intakes: 2, status: "Active", initials: "IG", color: "bg-teal-100 text-teal-700" },
-  { code: "UNI-009", name: "Dr. D.Y. Patil Vidyapeeth", type: "Deemed", location: "Pune, Maharashtra", courses: 9, intakes: 2, status: "Inactive", initials: "DY", color: "bg-orange-100 text-orange-700" },
-  { code: "UNI-010", name: "Sikkim Manipal University", type: "State", location: "Gangtok, Sikkim", courses: 11, intakes: 3, status: "Active", initials: "SM", color: "bg-fuchsia-100 text-fuchsia-700" },
-  { code: "UNI-011", name: "Andhra University Online", type: "State", location: "Visakhapatnam, AP", courses: 8, intakes: 2, status: "Inactive", initials: "AU", color: "bg-lime-100 text-lime-700" },
-  { code: "UNI-012", name: "UPES Online", type: "Private", location: "Dehradun, Uttarakhand", courses: 15, intakes: 3, status: "Active", initials: "UP", color: "bg-cyan-100 text-cyan-700" },
-];
 
 const TYPE_STYLE: Record<UniRow["type"], string> = {
   Private: "bg-sky-50 text-sky-700 ring-sky-200",
@@ -92,7 +81,95 @@ const TYPE_STYLE: Record<UniRow["type"], string> = {
   Foreign: "bg-rose-50 text-rose-700 ring-rose-200",
 };
 
+// ---- Live API wiring (GET /api/universities) ----
+
+interface ApiUniversity {
+  id: number;
+  title: string | null;
+  country_id?: string | null;
+  category?: string | null;
+  website?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  year_established?: string | null;
+  ranking?: string | null;
+  intakes?: string | null;
+  address?: string | null;
+  state?: string | null;
+  status?: string | number | null;
+}
+
+const AVATAR_COLORS = [
+  "bg-rose-100 text-rose-700",
+  "bg-amber-100 text-amber-700",
+  "bg-emerald-100 text-emerald-700",
+  "bg-sky-100 text-sky-700",
+  "bg-violet-100 text-violet-700",
+  "bg-indigo-100 text-indigo-700",
+  "bg-pink-100 text-pink-700",
+  "bg-teal-100 text-teal-700",
+  "bg-orange-100 text-orange-700",
+  "bg-fuchsia-100 text-fuchsia-700",
+  "bg-lime-100 text-lime-700",
+  "bg-cyan-100 text-cyan-700",
+];
+
+const VALID_TYPES: UniType[] = ["Private", "Deemed", "State", "Central", "Foreign"];
+
+function deriveInitials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "UN";
+  return words
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("")
+    .slice(0, 2) || "UN";
+}
+
+function deriveType(category: string | null | undefined): UniType {
+  if (!category) return "Private";
+  const match = VALID_TYPES.find((t) => category.toLowerCase().includes(t.toLowerCase()));
+  return match ?? "Private";
+}
+
+function deriveLocation(state: string | null | undefined, address: string | null | undefined): string {
+  return state?.trim() || address?.trim() || "—";
+}
+
+function deriveStatus(status: string | number | null | undefined): "Active" | "Inactive" {
+  const normalized = String(status ?? "").toLowerCase().trim();
+  if (normalized === "0" || normalized === "inactive" || normalized === "false") return "Inactive";
+  return "Active";
+}
+
+// Count active intakes from the comma/line-separated intakes blob.
+function countIntakes(intakes: string | null | undefined): number {
+  if (!intakes) return 0;
+  return intakes
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean).length;
+}
+
+function mapApiUniversity(u: ApiUniversity): UniRow {
+  const name = u.title?.trim() || `University #${u.id}`;
+  return {
+    code: `UNI-${String(u.id).padStart(3, "0")}`,
+    name,
+    type: deriveType(u.category),
+    location: deriveLocation(u.state, u.address),
+    // No per-university course count is exposed by the list endpoint.
+    courses: 0,
+    intakes: countIntakes(u.intakes),
+    status: deriveStatus(u.status),
+    initials: deriveInitials(name),
+    color: AVATAR_COLORS[u.id % AVATAR_COLORS.length],
+  };
+}
+
 function UniversitiesPage() {
+  // TODO(api): no endpoint returns a per-university tagged-course count; the
+  // "Tagged Courses" column + KPI render 0 until /api/universities exposes it
+  // (or /api/courses is aggregated by university_id client-side).
   const [query, setQuery] = useState("");
   const [type, setType] = useState<string>("all");
   const [status, setStatus] = useState<string>("all");
@@ -100,8 +177,22 @@ function UniversitiesPage() {
   const [addOpen, setAddOpen] = useState(false);
   const pageSize = 10;
 
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["universities", { page: 1, limit: 100 }],
+    queryFn: () =>
+      apiGet<{ items: ApiUniversity[]; total: number; page: number; limit: number }>(
+        "/universities",
+        { page: 1, limit: 100 },
+      ),
+  });
+
+  const universities = useMemo<UniRow[]>(
+    () => (data?.items ?? []).map(mapApiUniversity),
+    [data],
+  );
+
   const filtered = useMemo(() => {
-    return UNIVERSITIES.filter((u) => {
+    return universities.filter((u) => {
       if (type !== "all" && u.type !== type) return false;
       if (status !== "all" && u.status !== status) return false;
       if (query) {
@@ -115,15 +206,15 @@ function UniversitiesPage() {
       }
       return true;
     });
-  }, [query, type, status]);
+  }, [universities, query, type, status]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const current = filtered.slice((page - 1) * pageSize, page * pageSize);
 
-  const activeCount = UNIVERSITIES.filter((u) => u.status === "Active").length;
-  const inactiveCount = UNIVERSITIES.length - activeCount;
-  const totalCourses = UNIVERSITIES.reduce((a, u) => a + u.courses, 0);
-  const totalIntakes = UNIVERSITIES.reduce((a, u) => a + u.intakes, 0);
+  const activeCount = universities.filter((u) => u.status === "Active").length;
+  const inactiveCount = universities.length - activeCount;
+  const totalCourses = universities.reduce((a, u) => a + u.courses, 0);
+  const totalIntakes = universities.reduce((a, u) => a + u.intakes, 0);
 
   return (
     <div className="space-y-6">
@@ -155,7 +246,7 @@ function UniversitiesPage() {
       {/* KPI cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { label: "Total Universities", value: UNIVERSITIES.length, hint: "Onboarded partners" },
+          { label: "Total Universities", value: data?.total ?? universities.length, hint: "Onboarded partners" },
           { label: "Active", value: activeCount, hint: `${inactiveCount} inactive` },
           { label: "Tagged Courses", value: totalCourses, hint: "Across all universities" },
           { label: "Active Intakes", value: totalIntakes, hint: "Currently open" },
@@ -232,7 +323,19 @@ function UniversitiesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {current.length === 0 ? (
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                    Loading universities…
+                  </TableCell>
+                </TableRow>
+              ) : isError ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="py-10 text-center text-sm text-red-500">
+                    Failed to load universities. Please try again.
+                  </TableCell>
+                </TableRow>
+              ) : current.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
                     No universities match your filters.

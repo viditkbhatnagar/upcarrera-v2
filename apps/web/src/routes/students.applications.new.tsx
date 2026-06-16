@@ -1,5 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { apiPost, ApiError } from "@/lib/api";
 import {
   ArrowLeft,
   ArrowRight,
@@ -201,7 +203,32 @@ function NewApplicationPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [submitted, setSubmitted] = useState<{ id: string } | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const photoRef = useRef<HTMLInputElement>(null);
+
+  // POST /applications — only the bio/contact fields the create endpoint accepts
+  // are sent. Course/academic/employment/document data are captured later via
+  // the academic + qualifications + documents endpoints, not at create time.
+  const createApplication = useMutation({
+    mutationFn: (payload: Record<string, unknown>) =>
+      apiPost<{ application_id: number; custom_application_id: string | null }>(
+        "/applications",
+        payload,
+      ),
+    onSuccess: (row) => {
+      const id =
+        row.custom_application_id && String(row.custom_application_id).trim() !== ""
+          ? String(row.custom_application_id)
+          : `APP-${row.application_id}`;
+      setSubmitError(null);
+      setSubmitted({ id });
+    },
+    onError: (err) => {
+      setSubmitError(
+        err instanceof ApiError ? err.message : "Failed to submit application. Please try again.",
+      );
+    },
+  });
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -320,8 +347,20 @@ function NewApplicationPage() {
 
   const submit = () => {
     if (!validateStep(5)) return;
-    const id = `APP-2026-${String(Math.floor(100000 + Math.random() * 900000)).slice(0, 6)}`;
-    setSubmitted({ id });
+    // Map the form's bio/contact fields onto the create-application DTO. Empty
+    // values are dropped so the API's NOT-NULL defaults / optional handling apply.
+    const payload: Record<string, unknown> = {};
+    if (form.fullName.trim()) payload.name = form.fullName.trim();
+    if (form.email.trim()) payload.email = form.email.trim();
+    if (form.mobile.trim()) payload.phone = form.mobile.trim();
+    if (form.dob) payload.dob = form.dob;
+    if (form.gender) payload.gender = form.gender;
+    if (form.whatsapp.trim()) payload.whatsapp_no = form.whatsapp.trim();
+    if (form.altNumber.trim()) payload.second_phone = form.altNumber.trim();
+    if (form.state.trim()) payload.state = form.state.trim();
+    if (form.city.trim()) payload.district = form.city.trim();
+    if (form.address.trim()) payload.address = form.address.trim();
+    createApplication.mutate(payload);
   };
 
   const saveDraft = () => setSavedAt(new Date());
@@ -414,10 +453,11 @@ function NewApplicationPage() {
           </button>
           <button
             onClick={() => (stepIdx === STEPS.length - 1 ? submit() : next())}
-            className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-accent-foreground shadow-card transition hover:bg-accent-hover"
+            disabled={createApplication.isPending}
+            className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-accent-foreground shadow-card transition hover:bg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <Send className="h-4 w-4" />
-            Submit Application
+            {createApplication.isPending ? "Submitting…" : "Submit Application"}
           </button>
         </div>
       </div>
@@ -516,6 +556,13 @@ function NewApplicationPage() {
         {stepIdx === 4 && <StepDocuments form={form} uploadDoc={uploadDoc} removeDoc={removeDoc} />}
         {stepIdx === 5 && <StepReview form={form} errors={errors} set={set} goTo={setStepIdx} />}
 
+        {submitError && (
+          <div className="mx-6 mb-2 flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>{submitError}</span>
+          </div>
+        )}
+
         {/* Footer Nav */}
         <div className="flex items-center justify-between border-t border-border px-6 py-4">
           <button
@@ -540,10 +587,11 @@ function NewApplicationPage() {
           ) : (
             <button
               onClick={submit}
-              className="inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
+              disabled={createApplication.isPending}
+              className="inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed"
             >
               <Send className="h-4 w-4" />
-              Submit Application
+              {createApplication.isPending ? "Submitting…" : "Submit Application"}
             </button>
           )}
         </div>

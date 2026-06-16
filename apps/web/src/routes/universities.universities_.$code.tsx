@@ -1,5 +1,7 @@
-import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   ArrowLeft,
   Building2,
@@ -23,6 +25,7 @@ import {
   Lock,
   ChevronLeft,
   ChevronRight,
+  AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -94,13 +97,98 @@ export const Route = createFileRoute("/universities/universities_/$code")({
   head: ({ params }) => ({
     meta: [{ title: `${params.code} — Universities — upCarrera` }],
   }),
-  loader: ({ params }) => {
-    const uni = UNIVERSITIES.find((u) => u.code === params.code);
-    if (!uni) throw notFound();
-    return { uni };
-  },
   component: UniversityProfilePage,
 });
+
+// --- Live API wiring (GET /api/universities/:id) -------------------------
+// The route param ($code) is passed as the university id. The detail endpoint
+// returns a single university row of raw columns; we map it into the UniRow
+// shape the existing header/overview UI consumes. Fields the endpoint does not
+// provide (courses/intakes counts, deterministic avatar color) are derived.
+interface ApiUniversity {
+  id: number | string;
+  title: string | null;
+  country_id: string | null;
+  accreditation: string | null;
+  website: string | null;
+  phone: string | null;
+  email: string | null;
+  category: string | null;
+  year_established: string | null;
+  affiliations: string | null;
+  ranking: string | null;
+  intakes: string | null;
+  address: string | null;
+  state: string | null;
+  photo: string | null;
+  status: number | string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+const AVATAR_COLORS = [
+  "bg-rose-100 text-rose-700",
+  "bg-amber-100 text-amber-700",
+  "bg-emerald-100 text-emerald-700",
+  "bg-sky-100 text-sky-700",
+  "bg-violet-100 text-violet-700",
+  "bg-indigo-100 text-indigo-700",
+  "bg-pink-100 text-pink-700",
+  "bg-teal-100 text-teal-700",
+  "bg-orange-100 text-orange-700",
+  "bg-fuchsia-100 text-fuchsia-700",
+  "bg-cyan-100 text-cyan-700",
+];
+
+function deriveInitials(name: string): string {
+  const words = name
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 0 && !/^(University|College|Institute|of|the|and|&|Online)$/i.test(w));
+  const picked = words.length > 0 ? words : name.trim().split(/\s+/);
+  return picked.slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "U";
+}
+
+function pickColor(seed: string): string {
+  let sum = 0;
+  for (let i = 0; i < seed.length; i++) sum += seed.charCodeAt(i);
+  return AVATAR_COLORS[sum % AVATAR_COLORS.length];
+}
+
+// category column holds a free-form string; coerce it to the UI's narrow type.
+function mapType(category: string | null): UniRow["type"] {
+  const c = (category ?? "").toLowerCase();
+  if (c.includes("deem")) return "Deemed";
+  if (c.includes("central")) return "Central";
+  if (c.includes("state")) return "State";
+  if (c.includes("foreign") || c.includes("international")) return "Foreign";
+  return "Private";
+}
+
+// status is a numeric/string flag where 1 (or "1"/"Active") means active.
+function mapStatus(status: number | string | null): UniRow["status"] {
+  const s = String(status ?? "").toLowerCase();
+  return s === "1" || s === "active" || s === "true" ? "Active" : "Inactive";
+}
+
+function mapApiUniversity(u: ApiUniversity): UniRow {
+  const name = (u.title ?? "").trim() || `University #${u.id}`;
+  const intakesCount = u.intakes
+    ? u.intakes.split(",").filter((x) => x.trim() !== "").length
+    : 0;
+  const location = [u.address, u.state].filter((x) => x && x.trim() !== "").join(", ") || "—";
+  return {
+    code: String(u.id),
+    name,
+    type: mapType(u.category),
+    location,
+    courses: 0,
+    intakes: intakesCount,
+    status: mapStatus(u.status),
+    initials: deriveInitials(name),
+    color: pickColor(name),
+  };
+}
 
 /* ---- Mock supporting data ---- */
 
@@ -177,7 +265,41 @@ const ACTIVITY_META: Record<ActivityItem["type"], { icon: typeof Tag; color: str
 };
 
 function UniversityProfilePage() {
-  const { uni } = Route.useLoaderData() as { uni: UniRow };
+  // The $code route param is the university id; pass it straight to /universities/:id.
+  const { code } = Route.useParams();
+  const {
+    data: apiUni,
+    isLoading,
+    isError,
+    error,
+  } = useQuery({
+    queryKey: ["university", code],
+    queryFn: () => apiGet<ApiUniversity>(`/universities/${code}`),
+  });
+
+  // TODO(api): no per-university endpoints for tagged courses, fee structures,
+  // the course library used by the Tag-Course dialog, or the activity timeline
+  // that match these table columns — those tabs stay on mock data.
+
+  // Derived view-model from the live row; placeholder keeps hooks unconditional
+  // while the request is in flight (real loading/error UI is rendered below).
+  const uni: UniRow = useMemo(
+    () =>
+      apiUni
+        ? mapApiUniversity(apiUni)
+        : {
+            code: String(code),
+            name: "",
+            type: "Private",
+            location: "—",
+            courses: 0,
+            intakes: 0,
+            status: "Inactive",
+            initials: "U",
+            color: AVATAR_COLORS[0],
+          },
+    [apiUni, code],
+  );
 
   const [tagCourseOpen, setTagCourseOpen] = useState(false);
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
@@ -306,23 +428,82 @@ function UniversityProfilePage() {
     );
   };
 
-  const basicInfo = useMemo(
-    () => ({
+  const basicInfo = useMemo(() => {
+    const dash = (v: string | null | undefined) =>
+      v && String(v).trim() !== "" ? String(v).trim() : "—";
+    return {
       name: uni.name,
       code: uni.code,
       type: uni.type === "Private" ? "Type 2 – Student Pays upCarrera" : "Type 1 – Student Pays University",
-      category: `${uni.type} University`,
-      country: "India",
-      state: uni.location.split(",").pop()?.trim() ?? "—",
-      city: uni.location.split(",")[0]?.trim() ?? "—",
-      website: `www.${uni.code.toLowerCase().replace(/[^a-z0-9]/g, "")}.edu.in`,
-      email: `admissions@${uni.code.toLowerCase().replace(/[^a-z0-9]/g, "")}.edu.in`,
-      phone: "+91 98765 43210",
-      address: `${uni.name}, ${uni.location}, India`,
+      category: dash(apiUni?.category) === "—" ? `${uni.type} University` : (apiUni?.category as string),
+      country: dash(apiUni?.country_id),
+      state: dash(apiUni?.state),
+      city: dash(apiUni?.address),
+      website: dash(apiUni?.website),
+      email: dash(apiUni?.email),
+      phone: dash(apiUni?.phone),
+      address: dash(apiUni?.address),
       status: uni.status,
-    }),
-    [uni],
+    };
+  }, [uni, apiUni]);
+
+  const backLink = (
+    <div>
+      <Button asChild variant="ghost" size="sm" className="gap-2 -ml-2 text-muted-foreground hover:text-foreground">
+        <Link to="/universities/universities">
+          <ArrowLeft className="h-4 w-4" />
+          Back to Universities
+        </Link>
+      </Button>
+    </div>
   );
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        {backLink}
+        <div className="rounded-2xl border bg-card p-6 shadow-sm">
+          <div className="flex items-start gap-4">
+            <div className="h-16 w-16 shrink-0 animate-pulse rounded-xl bg-muted" />
+            <div className="space-y-2">
+              <div className="h-6 w-64 animate-pulse rounded bg-muted" />
+              <div className="h-4 w-40 animate-pulse rounded bg-muted" />
+            </div>
+          </div>
+        </div>
+        <div className="rounded-2xl border bg-card p-6 shadow-sm">
+          <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 9 }).map((_, i) => (
+              <div key={i} className="space-y-2">
+                <div className="h-3 w-24 animate-pulse rounded bg-muted" />
+                <div className="h-4 w-36 animate-pulse rounded bg-muted" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isError || !apiUni) {
+    const notFound = error instanceof Error && /404|not found/i.test(error.message);
+    return (
+      <div className="space-y-6">
+        {backLink}
+        <div className="rounded-2xl border bg-card p-12 text-center shadow-sm">
+          <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-amber-100 text-amber-700">
+            <AlertTriangle className="h-6 w-6" />
+          </div>
+          <h2 className="text-base font-semibold text-foreground">
+            {notFound ? "University not found" : "Couldn’t load this university"}
+          </h2>
+          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+            {error instanceof Error ? error.message : "Please try again in a moment."}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
