@@ -82,6 +82,12 @@ interface Application {
   counsellorInitials: string;
   feeStatus: FeeStatus;
   status: AppStatus;
+  /** Real lifecycle label from the API (Active / Converted / Archived / Inactive). */
+  statusLabel: string;
+  /** Real fee amount recorded on the application row (₹), 0 when none. */
+  amount: number;
+  /** Real registration-fee paid date, formatted; "—" when unpaid. */
+  paidDate: string;
 }
 
 const STATUS_ORDER: AppStatus[] = [
@@ -121,83 +127,23 @@ const FEE_STYLES: Record<FeeStatus, string> = {
   Refunded: "bg-slate-100 text-slate-700 ring-slate-200",
 };
 
-const UNIVERSITIES = [
-  "Amity University Online",
-  "Manipal University",
-  "Jain University",
-  "LPU Online",
-  "NMIMS Global",
-  "DY Patil University",
-];
-const COURSES = ["MBA", "BBA", "MCA", "BCA", "M.Com", "B.Com", "MA Psychology"];
-const BATCHES = ["Jan 2026", "Apr 2026", "Jul 2026", "Oct 2026"];
-const COUNSELLORS = [
-  { name: "Priya Sharma", initials: "PS" },
-  { name: "Rahul Verma", initials: "RV" },
-  { name: "Aisha Khan", initials: "AK" },
-  { name: "Karan Mehta", initials: "KM" },
-  { name: "Neha Iyer", initials: "NI" },
-];
-
-const FIRST = ["Aarav", "Vivaan", "Aditya", "Ishaan", "Krishna", "Ananya", "Diya", "Saanvi", "Aanya", "Myra", "Riya", "Kabir", "Arjun", "Reyansh", "Dhruv", "Sai", "Tara", "Zara", "Nikhil", "Pooja"];
-const LAST = ["Sharma", "Verma", "Patel", "Reddy", "Iyer", "Nair", "Kapoor", "Singh", "Gupta", "Mehta", "Joshi", "Khan", "Das", "Bose", "Mishra"];
-
-function seed(n: number): Application[] {
-  const apps: Application[] = [];
-  let r = 42;
-  const rand = () => {
-    r = (r * 9301 + 49297) % 233280;
-    return r / 233280;
-  };
-  for (let i = 0; i < n; i++) {
-    const first = FIRST[Math.floor(rand() * FIRST.length)];
-    const last = LAST[Math.floor(rand() * LAST.length)];
-    const status = STATUS_ORDER[Math.floor(rand() * STATUS_ORDER.length)];
-    const fee: FeeStatus =
-      status === "New Lead" || status === "Registration Fee Pending"
-        ? "Pending"
-        : status === "Rejected"
-          ? (rand() > 0.5 ? "Refunded" : "Pending")
-          : status === "Registration Fee Paid"
-            ? "Paid"
-            : rand() > 0.4 ? "Paid" : "Partially Paid";
-    const c = COUNSELLORS[Math.floor(rand() * COUNSELLORS.length)];
-    const day = Math.floor(rand() * 28) + 1;
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"];
-    const month = months[Math.floor(rand() * months.length)];
-    apps.push({
-      id: `APP-2026-${String(245 + i).padStart(6, "0")}`,
-      date: `${String(day).padStart(2, "0")} ${month} 2026`,
-      name: `${first} ${last}`,
-      email: `${first.toLowerCase()}.${last.toLowerCase()}@gmail.com`,
-      phone: `+91 9${Math.floor(rand() * 900000000 + 100000000)}`,
-      whatsapp: rand() > 0.25,
-      university: UNIVERSITIES[Math.floor(rand() * UNIVERSITIES.length)],
-      course: COURSES[Math.floor(rand() * COURSES.length)],
-      batch: BATCHES[Math.floor(rand() * BATCHES.length)],
-      counsellor: c.name,
-      counsellorInitials: c.initials,
-      feeStatus: fee,
-      status,
-    });
-  }
-  return apps;
-}
-
-const ALL_APPS = seed(48);
-
 /* ---------------- Live API wiring (GET /api/applications) ---------------- */
-// The list endpoint returns raw applications rows. It exposes name/email/phone
-// directly, but university/course/counsellor are FOREIGN-KEY IDS only (no joined
-// titles), so we render "University #<id>"-style fallbacks for those columns.
-// admission_status is a numeric/boolean admission code (not the 7 named pipeline
-// stages this UI shows); is_converted distinguishes enrolled records. We map the
-// available signal into the existing AppStatus vocabulary so all downstream
-// markup (table, pipeline, drawer) stays byte-for-byte unchanged.
+// The list endpoint now decorates each row with its joined display fields:
+// applicant_name/email/phone (applicant identity), course_title, university_title,
+// consultant_name and a human status_label (Active / Converted / Archived /
+// Inactive). The raw FK ids are still present but no longer surfaced in the UI.
+// admission_status / is_converted / paid_date are mapped into the richer 7-stage
+// pipeline vocabulary this UI renders; status_label is shown verbatim as the
+// real lifecycle tag. All option lists are derived from the live rows — there is
+// no mock data on this screen.
 
 interface ApiApplicationRow {
   application_id: number | string;
   custom_application_id: string | null;
+  // Decorated applicant identity (joined from users, falls back to the row).
+  applicant_name: string | null;
+  applicant_email: string | null;
+  applicant_phone: string | null;
   name: string | null;
   email: string | null;
   code: string | null;
@@ -214,6 +160,12 @@ interface ApiApplicationRow {
   pipeline_user: number | string | null;
   enrollment_date: string | null;
   created_at: string | null;
+  // Decorated display fields resolved server-side (no N+1).
+  course_title: string | null;
+  university_title: string | null;
+  consultant_id: number | string | null;
+  consultant_name: string | null;
+  status_label: string | null;
 }
 
 function truthy(v: number | string | boolean | null | undefined): boolean {
@@ -241,27 +193,57 @@ function formatApiDate(value: string | null): string {
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+function formatINR(amount: number): string {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function firstNonEmpty(...values: (string | null | undefined)[]): string {
+  for (const v of values) {
+    if (v != null && String(v).trim() !== "") return String(v).trim();
+  }
+  return "";
+}
+
+function initialsFromName(name: string): string {
+  const parts = name.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "—";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 function mapApiApplication(r: ApiApplicationRow): Application {
   const displayId =
     r.custom_application_id != null && String(r.custom_application_id).trim() !== ""
       ? String(r.custom_application_id)
       : `APP-${r.application_id}`;
-  const name = r.name && r.name.trim() !== "" ? r.name : `Applicant #${r.application_id}`;
-  const counsellor = r.pipeline_user != null ? `Counsellor #${r.pipeline_user}` : "Unassigned";
+  // Prefer the decorated applicant identity; fall back to the raw row columns.
+  const name = firstNonEmpty(r.applicant_name, r.name) || `Applicant #${r.application_id}`;
+  const consultantName = firstNonEmpty(r.consultant_name);
+  const counsellor = consultantName || "Unassigned";
   return {
     id: displayId,
     date: formatApiDate(r.created_at ?? r.enrollment_date),
     name,
-    email: r.email && r.email.trim() !== "" ? r.email : "—",
-    phone: [r.code, r.phone].filter((p) => p && String(p).trim() !== "").join(" ") || "—",
+    email: firstNonEmpty(r.applicant_email, r.email) || "—",
+    phone:
+      firstNonEmpty(r.applicant_phone) ||
+      [r.code, r.phone].filter((p) => p && String(p).trim() !== "").join(" ") ||
+      "—",
     whatsapp: r.whatsapp_no != null && String(r.whatsapp_no).trim() !== "",
-    university: r.university_id != null ? `University #${r.university_id}` : "—",
-    course: r.course_id != null ? `Course #${r.course_id}` : "—",
+    university: firstNonEmpty(r.university_title) || "—",
+    course: firstNonEmpty(r.course_title) || "—",
     batch: r.session_id != null ? `Intake #${r.session_id}` : "—",
     counsellor,
-    counsellorInitials: counsellor === "Unassigned" ? "—" : "C",
+    counsellorInitials: consultantName ? initialsFromName(consultantName) : "—",
     feeStatus: mapApiFee(r),
     status: mapApiStatus(r),
+    statusLabel: firstNonEmpty(r.status_label) || "—",
+    amount: Number(r.amount ?? 0) || 0,
+    paidDate: formatApiDate(r.paid_date),
   };
 }
 
@@ -298,6 +280,20 @@ function ApplicationsPage() {
 
   const apiTotal = data?.total ?? 0;
   const apiRows = useMemo(() => (data?.items ?? []).map(mapApiApplication), [data]);
+
+  // Filter dropdown options derived from the live page rows (no mock arrays).
+  const distinct = (values: string[]): string[] =>
+    [...new Set(values.filter((v) => v && v !== "—"))].sort((a, b) => a.localeCompare(b));
+  const universityOptions = useMemo(
+    () => distinct(apiRows.map((a) => a.university)),
+    [apiRows],
+  );
+  const courseOptions = useMemo(() => distinct(apiRows.map((a) => a.course)), [apiRows]);
+  const counsellorOptions = useMemo(
+    () => distinct(apiRows.map((a) => a.counsellor)),
+    [apiRows],
+  );
+  const batchOptions = useMemo(() => distinct(apiRows.map((a) => a.batch)), [apiRows]);
 
   const filtered = useMemo(() => {
     return apiRows.filter((a) => {
@@ -474,10 +470,10 @@ function ApplicationsPage() {
           <FilterInput icon={Search} placeholder="Student name" value={search} onChange={setSearch} />
           <FilterInput icon={Phone} placeholder="Phone number" value={phone} onChange={setPhone} />
           <FilterInput icon={FileText} placeholder="Application ID" value={appId} onChange={setAppId} />
-          <FilterSelect value={university} onChange={setUniversity} options={["All", ...UNIVERSITIES]} placeholder="University" />
-          <FilterSelect value={course} onChange={setCourse} options={["All", ...COURSES]} placeholder="Course" />
-          <FilterSelect value={batch} onChange={setBatch} options={["All", ...BATCHES]} placeholder="Batch" />
-          <FilterSelect value={counsellor} onChange={setCounsellor} options={["All", ...COUNSELLORS.map((c) => c.name)]} placeholder="Counsellor" />
+          <FilterSelect value={university} onChange={setUniversity} options={["All", ...universityOptions]} placeholder="University" />
+          <FilterSelect value={course} onChange={setCourse} options={["All", ...courseOptions]} placeholder="Course" />
+          <FilterSelect value={batch} onChange={setBatch} options={["All", ...batchOptions]} placeholder="Batch" />
+          <FilterSelect value={counsellor} onChange={setCounsellor} options={["All", ...counsellorOptions]} placeholder="Counsellor" />
           <FilterSelect
             value={feeFilter}
             onChange={(v) => setFeeFilter(v as FeeStatus | "All")}
@@ -629,19 +625,24 @@ function ApplicationsPage() {
                       </span>
                     </td>
                     <td className="px-3 py-3">
-                      <button
-                        onClick={() => {
-                          setStatusFilter(a.status);
-                          setPage(1);
-                        }}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 transition hover:opacity-80",
-                          STATUS_STYLES[a.status],
-                        )}
-                      >
-                        <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[a.status])} />
-                        {a.status}
-                      </button>
+                      <div className="flex flex-col items-start gap-1">
+                        <button
+                          onClick={() => {
+                            setStatusFilter(a.status);
+                            setPage(1);
+                          }}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 transition hover:opacity-80",
+                            STATUS_STYLES[a.status],
+                          )}
+                        >
+                          <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[a.status])} />
+                          {a.status}
+                        </button>
+                        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                          {a.statusLabel}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex items-center justify-end gap-1">
@@ -702,7 +703,14 @@ function ApplicationsPage() {
 
       {/* Drawer */}
       {drawerApp && <DetailsDrawer app={drawerApp} onClose={() => setDrawerApp(null)} />}
-      <AddLeadDialog open={leadOpen} onClose={() => setLeadOpen(false)} />
+      <AddLeadDialog
+        open={leadOpen}
+        onClose={() => setLeadOpen(false)}
+        universityOptions={universityOptions}
+        courseOptions={courseOptions}
+        batchOptions={batchOptions}
+        counsellorOptions={counsellorOptions}
+      />
     </div>
   );
 }
@@ -892,6 +900,9 @@ function DetailsDrawer({ app, onClose }: { app: Application; onClose: () => void
                 <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[app.status])} />
                 {app.status}
               </span>
+              <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-border bg-background text-foreground">
+                {app.statusLabel}
+              </span>
               <span className={cn("inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ring-1", FEE_STYLES[app.feeStatus])}>
                 Fee: {app.feeStatus}
               </span>
@@ -917,10 +928,9 @@ function DetailsDrawer({ app, onClose }: { app: Application; onClose: () => void
           </Section>
 
           <Section title="Fee Information">
-            <div className="grid grid-cols-3 gap-2">
-              <Stat label="Total Fee" value="₹85,000" />
-              <Stat label="Paid" value="₹12,000" />
-              <Stat label="Balance" value="₹73,000" accent />
+            <div className="grid grid-cols-2 gap-2">
+              <Stat label="Recorded Amount" value={formatINR(app.amount)} accent />
+              <Stat label="Paid On" value={app.paidDate} />
             </div>
           </Section>
 
@@ -928,24 +938,20 @@ function DetailsDrawer({ app, onClose }: { app: Application; onClose: () => void
             <ol className="relative space-y-4 border-l border-border pl-5">
               {[
                 { t: "Application created", d: app.date, by: app.counsellor },
-                { t: "Registration fee initiated", d: "12 Mar 2026", by: app.counsellor },
-                { t: "Document upload pending", d: "13 Mar 2026", by: "System" },
-                { t: "Counsellor follow-up", d: "14 Mar 2026", by: app.counsellor },
-              ].map((e, i) => (
-                <li key={i} className="relative">
-                  <span className="absolute -left-[26px] top-1 grid h-3 w-3 place-items-center rounded-full bg-primary ring-4 ring-primary/15" />
-                  <div className="text-sm font-medium text-foreground">{e.t}</div>
-                  <div className="text-[11px] text-muted-foreground">{e.d} · {e.by}</div>
-                </li>
-              ))}
+                app.paidDate !== "—"
+                  ? { t: "Registration fee paid", d: app.paidDate, by: app.counsellor }
+                  : null,
+                { t: `Lifecycle: ${app.statusLabel}`, d: app.date, by: app.counsellor },
+              ]
+                .filter((e): e is { t: string; d: string; by: string } => e !== null)
+                .map((e, i) => (
+                  <li key={i} className="relative">
+                    <span className="absolute -left-[26px] top-1 grid h-3 w-3 place-items-center rounded-full bg-primary ring-4 ring-primary/15" />
+                    <div className="text-sm font-medium text-foreground">{e.t}</div>
+                    <div className="text-[11px] text-muted-foreground">{e.d} · {e.by}</div>
+                  </li>
+                ))}
             </ol>
-          </Section>
-
-          <Section title="Latest Notes">
-            <div className="rounded-xl border border-border bg-background p-3 text-sm text-foreground">
-              Student requested follow-up regarding scholarship eligibility. Documents shared via WhatsApp.
-              <div className="mt-2 text-[11px] text-muted-foreground">— {app.counsellor}, 2 hours ago</div>
-            </div>
           </Section>
         </div>
 
@@ -1017,9 +1023,20 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
 interface AddLeadDialogProps {
   open: boolean;
   onClose: () => void;
+  universityOptions: string[];
+  courseOptions: string[];
+  batchOptions: string[];
+  counsellorOptions: string[];
 }
 
-function AddLeadDialog({ open, onClose }: AddLeadDialogProps) {
+function AddLeadDialog({
+  open,
+  onClose,
+  universityOptions,
+  courseOptions,
+  batchOptions,
+  counsellorOptions,
+}: AddLeadDialogProps) {
   const [step, setStep] = useState<"form" | "success">("form");
   const [leadId, setLeadId] = useState("");
   const [leadName, setLeadName] = useState("");
@@ -1037,7 +1054,7 @@ function AddLeadDialog({ open, onClose }: AddLeadDialogProps) {
     source: "",
     referredBy: "",
     remarks: "",
-    counsellor: "Priya Sharma",
+    counsellor: "",
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -1059,7 +1076,7 @@ function AddLeadDialog({ open, onClose }: AddLeadDialogProps) {
       source: "",
       referredBy: "",
       remarks: "",
-      counsellor: "Priya Sharma",
+      counsellor: "",
     });
     setErrors({});
   };
@@ -1165,9 +1182,13 @@ function AddLeadDialog({ open, onClose }: AddLeadDialogProps) {
                       <SelectValue placeholder="Select university" />
                     </SelectTrigger>
                     <SelectContent>
-                      {UNIVERSITIES.map((u) => (
-                        <SelectItem key={u} value={u}>{u}</SelectItem>
-                      ))}
+                      {universityOptions.length === 0 ? (
+                        <SelectItem value="__none" disabled>No universities available</SelectItem>
+                      ) : (
+                        universityOptions.map((u) => (
+                          <SelectItem key={u} value={u}>{u}</SelectItem>
+                        ))
+                      )}
                     </SelectContent>
                   </Select>
                   {errors.university && <p className="text-xs text-red-500">{errors.university}</p>}
@@ -1180,9 +1201,13 @@ function AddLeadDialog({ open, onClose }: AddLeadDialogProps) {
                       <SelectValue placeholder="Select course" />
                     </SelectTrigger>
                     <SelectContent>
-                      {COURSES.map((c) => (
-                        <SelectItem key={c} value={c}>{c}</SelectItem>
-                      ))}
+                      {courseOptions.length === 0 ? (
+                        <SelectItem value="__none" disabled>No courses available</SelectItem>
+                      ) : (
+                        courseOptions.map((c) => (
+                          <SelectItem key={c} value={c}>{c}</SelectItem>
+                        ))
+                      )}
                     </SelectContent>
                   </Select>
                   {errors.course && <p className="text-xs text-red-500">{errors.course}</p>}
@@ -1208,9 +1233,13 @@ function AddLeadDialog({ open, onClose }: AddLeadDialogProps) {
                       <SelectValue placeholder="Select intake" />
                     </SelectTrigger>
                     <SelectContent>
-                      {BATCHES.map((b) => (
-                        <SelectItem key={b} value={b}>{b}</SelectItem>
-                      ))}
+                      {batchOptions.length === 0 ? (
+                        <SelectItem value="__none" disabled>No intakes available</SelectItem>
+                      ) : (
+                        batchOptions.map((b) => (
+                          <SelectItem key={b} value={b}>{b}</SelectItem>
+                        ))
+                      )}
                     </SelectContent>
                   </Select>
                   {errors.intake && <p className="text-xs text-red-500">{errors.intake}</p>}
@@ -1265,12 +1294,16 @@ function AddLeadDialog({ open, onClose }: AddLeadDialogProps) {
                 <Label>Assigned Counsellor</Label>
                 <Select value={form.counsellor} onValueChange={(v) => update("counsellor", v)}>
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue placeholder="Select counsellor" />
                   </SelectTrigger>
                   <SelectContent>
-                    {COUNSELLORS.map((c) => (
-                      <SelectItem key={c.name} value={c.name}>{c.name}</SelectItem>
-                    ))}
+                    {counsellorOptions.length === 0 ? (
+                      <SelectItem value="__none" disabled>No counsellors available</SelectItem>
+                    ) : (
+                      counsellorOptions.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
               </div>

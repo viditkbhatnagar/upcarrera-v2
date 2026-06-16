@@ -47,6 +47,22 @@ interface DashboardResponse {
       created_at: string;
     }>;
   };
+  // Action items assigned to the current user (follow-ups, document checks, etc.).
+  tasks: Array<{
+    title: string;
+    due: string | null;
+    priority?: string | null;
+    type?: string | null;
+  }>;
+  // Cross-team activity feed (newest first).
+  activity: Array<{
+    type: string;
+    title: string;
+    when?: string | null;
+    created_at?: string | null;
+  }>;
+  // Daily fee collection totals for the last 14 days.
+  fee_trend: Array<{ date: string; amount: number }>;
 }
 
 // Compact INR formatter (Cr / L / k) so big rupee figures stay readable in the cards.
@@ -69,6 +85,76 @@ function formatDate(value: string): string {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// Friendly "Today, 4:30 PM" / "12 Jun" style string for a task due date.
+function formatDue(value: string | null | undefined): string {
+  if (!value) return "No due date";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const now = new Date();
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const time = d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  if (sameDay(d, now)) return `Today, ${time}`;
+  if (sameDay(d, tomorrow)) return `Tomorrow, ${time}`;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+}
+
+// Relative "12m ago" / "3h ago" / date for an activity timestamp.
+function formatRelative(value: string | null | undefined): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const diffMs = Date.now() - d.getTime();
+  const mins = Math.round(diffMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+}
+
+// Short day label ("12 Jun") for the fee-trend x-axis.
+function formatTrendDay(value: string): string {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+}
+
+// Map a task type/priority to an icon + badge tone.
+function taskVisual(t: { priority?: string | null; type?: string | null }): { Icon: typeof Users; label: string; tone: string } {
+  const priority = (t.priority ?? "").toLowerCase();
+  const type = (t.type ?? "").toLowerCase();
+  const Icon =
+    type.includes("call") || type.includes("phone") ? Phone :
+    type.includes("mail") || type.includes("email") || type.includes("receipt") ? Mail :
+    type.includes("document") || type.includes("verify") ? FileCheck2 :
+    type.includes("counsel") || type.includes("admission") ? GraduationCap :
+    ClipboardList;
+  const label = t.priority ? t.priority.charAt(0).toUpperCase() + t.priority.slice(1).toLowerCase() : "Task";
+  const tone =
+    priority === "high" ? "bg-accent/10 text-accent" :
+    priority === "medium" ? "bg-warning/15 text-warning-foreground" :
+    "bg-muted text-muted-foreground";
+  return { Icon, label, tone };
+}
+
+// Map an activity type to an icon + tone.
+function activityVisual(type: string): { Icon: typeof Users; tone: string } {
+  const t = (type ?? "").toLowerCase();
+  if (t.includes("payment") || t.includes("fee") || t.includes("admission") || t.includes("convert") || t.includes("success")) {
+    return { Icon: CheckCircle2, tone: "text-success bg-success/10" };
+  }
+  if (t.includes("escalat") || t.includes("ticket") || t.includes("alert") || t.includes("warn") || t.includes("overdue")) {
+    return { Icon: AlertCircle, tone: "text-accent bg-accent/10" };
+  }
+  return { Icon: Clock, tone: "text-primary bg-primary/10" };
 }
 
 // Map a student admission_status (numeric/string) to a label + tone for the badge.
@@ -139,23 +225,6 @@ function buildPipeline(d: DashboardResponse): PipelineStage[] {
   return stages.map((s) => ({ ...s, pct: Math.round((s.count / max) * 100) }));
 }
 
-// TODO(api): no endpoint for "My Tasks" action items — kept on mock data.
-const tasks = [
-  { title: "Verify documents — Ananya Sharma", due: "Today, 4:30 PM", priority: "High", icon: FileCheck2 },
-  { title: "Follow up call — Rohit Mehra (MBA)", due: "Today, 5:00 PM", priority: "Medium", icon: Phone },
-  { title: "Send fee receipt — Batch 2026-A", due: "Tomorrow", priority: "Low", icon: Mail },
-  { title: "Counselling slot — Priya Iyer", due: "Tomorrow, 11:00 AM", priority: "Medium", icon: GraduationCap },
-];
-
-// TODO(api): no endpoint for a cross-team activity feed — kept on mock data.
-const activity = [
-  { who: "Karan Verma", what: "completed admission to", target: "MBA — Symbiosis", time: "12m ago", status: "success" },
-  { who: "Sneha Pillai", what: "uploaded documents for", target: "B.Tech CSE — Manipal", time: "38m ago", status: "info" },
-  { who: "Finance Team", what: "received payment of ₹85,000 from", target: "Aarav Singh", time: "1h ago", status: "success" },
-  { who: "Support Desk", what: "escalated ticket", target: "#TKT-2841", time: "2h ago", status: "warn" },
-  { who: "Rahul Bansal", what: "scheduled counselling with", target: "Megha N.", time: "3h ago", status: "info" },
-];
-
 function StatCard({ s }: { s: Stat }) {
   const Icon = s.icon;
   const tint = s.tint === "accent" ? "bg-accent/10 text-accent" : "bg-primary/10 text-primary";
@@ -194,6 +263,10 @@ function Dashboard() {
   const stats = data ? buildStats(data) : statsFallback;
   const pipeline = data ? buildPipeline(data) : [];
   const recentStudents = data?.recent?.students ?? [];
+  const tasks = data?.tasks ?? [];
+  const activity = data?.activity ?? [];
+  const feeTrend = data?.fee_trend ?? [];
+  const feeTrendMax = Math.max(1, ...feeTrend.map((p) => Number(p.amount) || 0));
 
   return (
     <div className="space-y-6">
@@ -287,22 +360,47 @@ function Dashboard() {
                 <h3 className="text-base font-semibold tracking-tight text-foreground">Fee Collection Trend</h3>
                 <p className="text-xs text-muted-foreground">Daily collections — last 14 days</p>
               </div>
-              <div className="flex items-center gap-3 text-xs">
-                <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-primary" />Collected</span>
-                <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-accent" />Target</span>
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span className="h-2 w-2 rounded-full bg-primary" />Collected
+              </span>
+            </div>
+            {isLoading ? (
+              <div className="mt-6 flex h-44 items-end gap-2">
+                {Array.from({ length: 14 }).map((_, i) => (
+                  <div key={i} className="flex-1 animate-pulse rounded-md bg-muted" style={{ height: `${30 + ((i * 37) % 60)}%` }} />
+                ))}
               </div>
-            </div>
-            <div className="mt-6 flex h-44 items-end gap-2">
-              {[42, 58, 50, 70, 64, 80, 55, 72, 88, 60, 76, 92, 70, 84].map((v, i) => (
-                <div key={i} className="group relative flex flex-1 flex-col items-center gap-1">
-                  <div className="w-full rounded-md bg-accent/30" style={{ height: `${v + 10}%` }} />
-                  <div className="absolute bottom-0 w-full rounded-md bg-primary transition-all group-hover:bg-primary-hover" style={{ height: `${v}%` }} />
+            ) : feeTrend.length === 0 ? (
+              <div className="mt-6 flex h-44 flex-col items-center justify-center gap-2 text-center">
+                <Wallet className="h-7 w-7 text-muted-foreground/60" />
+                <p className="text-sm text-muted-foreground">No fee collections in the last 14 days.</p>
+              </div>
+            ) : (
+              <>
+                <div className="mt-6 flex h-44 items-end gap-2">
+                  {feeTrend.map((p) => {
+                    const amount = Number(p.amount) || 0;
+                    const pct = Math.max(amount > 0 ? 4 : 0, Math.round((amount / feeTrendMax) * 100));
+                    return (
+                      <div key={p.date} className="group relative flex flex-1 flex-col items-stretch justify-end">
+                        <div
+                          className="w-full rounded-md bg-primary transition-all group-hover:bg-primary-hover"
+                          style={{ height: `${pct}%` }}
+                        />
+                        <div className="pointer-events-none absolute -top-9 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-[10px] font-medium text-background opacity-0 shadow transition group-hover:opacity-100">
+                          {formatInr(amount)} · {formatTrendDay(p.date)}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
-            <div className="mt-3 flex justify-between text-[10px] text-muted-foreground">
-              {["1","2","3","4","5","6","7","8","9","10","11","12","13","14"].map(d => <span key={d}>{d}</span>)}
-            </div>
+                <div className="mt-3 flex justify-between text-[10px] text-muted-foreground">
+                  {feeTrend.map((p) => (
+                    <span key={p.date}>{new Date(p.date).getDate() || ""}</span>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -315,30 +413,49 @@ function Dashboard() {
             </div>
             <button className="text-xs font-semibold text-accent hover:underline">View all</button>
           </div>
-          <ul className="mt-5 space-y-3">
-            {tasks.map((t) => {
-              const Icon = t.icon;
-              const tone =
-                t.priority === "High" ? "bg-accent/10 text-accent" :
-                t.priority === "Medium" ? "bg-warning/15 text-warning-foreground" :
-                "bg-muted text-muted-foreground";
-              return (
-                <li key={t.title} className="flex items-start gap-3 rounded-xl border border-border/70 p-3 transition hover:bg-muted/50">
-                  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
-                    <Icon className="h-4 w-4" />
+          {isLoading ? (
+            <ul className="mt-5 space-y-3">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <li key={i} className="flex items-start gap-3 rounded-xl border border-border/70 p-3">
+                  <div className="h-9 w-9 shrink-0 animate-pulse rounded-lg bg-muted" />
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="h-3.5 w-40 animate-pulse rounded bg-muted" />
+                    <div className="h-2.5 w-24 animate-pulse rounded bg-muted" />
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-foreground">{t.title}</div>
-                    <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                      <Clock className="h-3 w-3" />
-                      {t.due}
-                    </div>
-                  </div>
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${tone}`}>{t.priority}</span>
+                  <div className="h-4 w-12 shrink-0 animate-pulse rounded-full bg-muted" />
                 </li>
-              );
-            })}
-          </ul>
+              ))}
+            </ul>
+          ) : tasks.length === 0 ? (
+            <div className="mt-5 flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border py-10 text-center">
+              <CheckCircle2 className="h-7 w-7 text-success/70" />
+              <p className="text-sm font-medium text-foreground">You're all caught up</p>
+              <p className="text-xs text-muted-foreground">No pending action items right now.</p>
+            </div>
+          ) : (
+            <ul className="mt-5 space-y-3">
+              {tasks.map((t, i) => {
+                const { Icon, label, tone } = taskVisual(t);
+                return (
+                  <li key={`${t.title}-${i}`} className="flex items-start gap-3 rounded-xl border border-border/70 p-3 transition hover:bg-muted/50">
+                    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-foreground">{t.title || "Untitled task"}</div>
+                      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <Clock className="h-3 w-3" />
+                        {formatDue(t.due)}
+                      </div>
+                    </div>
+                    {t.priority ? (
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${tone}`}>{label}</span>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
           <button className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border py-2.5 text-sm font-medium text-muted-foreground hover:bg-muted">
             <Plus className="h-4 w-4" /> Add task
           </button>
@@ -442,26 +559,42 @@ function Dashboard() {
               Live
             </span>
           </div>
-          <ul className="mt-5 space-y-4">
-            {activity.map((a, i) => {
-              const Icon = a.status === "success" ? CheckCircle2 : a.status === "warn" ? AlertCircle : Clock;
-              const tone = a.status === "success" ? "text-success bg-success/10" : a.status === "warn" ? "text-accent bg-accent/10" : "text-primary bg-primary/10";
-              return (
+          {isLoading ? (
+            <ul className="mt-5 space-y-4">
+              {Array.from({ length: 5 }).map((_, i) => (
                 <li key={i} className="flex gap-3">
-                  <div className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${tone}`}>
-                    <Icon className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm text-foreground">
-                      <span className="font-semibold">{a.who}</span> {a.what}{" "}
-                      <span className="font-semibold text-primary">{a.target}</span>
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-muted-foreground">{a.time}</div>
+                  <div className="h-8 w-8 shrink-0 animate-pulse rounded-full bg-muted" />
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="h-3.5 w-full animate-pulse rounded bg-muted" />
+                    <div className="h-2.5 w-16 animate-pulse rounded bg-muted" />
                   </div>
                 </li>
-              );
-            })}
-          </ul>
+              ))}
+            </ul>
+          ) : activity.length === 0 ? (
+            <div className="mt-5 flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border py-10 text-center">
+              <Clock className="h-7 w-7 text-muted-foreground/60" />
+              <p className="text-sm font-medium text-foreground">No recent activity</p>
+              <p className="text-xs text-muted-foreground">Updates across teams will appear here.</p>
+            </div>
+          ) : (
+            <ul className="mt-5 space-y-4">
+              {activity.map((a, i) => {
+                const { Icon, tone } = activityVisual(a.type);
+                return (
+                  <li key={i} className="flex gap-3">
+                    <div className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${tone}`}>
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm text-foreground">{a.title}</div>
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">{formatRelative(a.when ?? a.created_at)}</div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       </div>
     </div>

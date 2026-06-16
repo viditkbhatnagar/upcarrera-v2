@@ -97,6 +97,9 @@ interface ApiUniversity {
   address?: string | null;
   state?: string | null;
   status?: string | number | null;
+  // Server-decorated aggregates (GET /api/universities):
+  tagged_courses_count?: number | null;
+  intakes_count?: number | null;
 }
 
 const AVATAR_COLORS = [
@@ -141,15 +144,6 @@ function deriveStatus(status: string | number | null | undefined): "Active" | "I
   return "Active";
 }
 
-// Count active intakes from the comma/line-separated intakes blob.
-function countIntakes(intakes: string | null | undefined): number {
-  if (!intakes) return 0;
-  return intakes
-    .split(/[\n,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean).length;
-}
-
 function mapApiUniversity(u: ApiUniversity): UniRow {
   const name = u.title?.trim() || `University #${u.id}`;
   return {
@@ -157,9 +151,9 @@ function mapApiUniversity(u: ApiUniversity): UniRow {
     name,
     type: deriveType(u.category),
     location: deriveLocation(u.state, u.address),
-    // No per-university course count is exposed by the list endpoint.
-    courses: 0,
-    intakes: countIntakes(u.intakes),
+    // Server-decorated aggregates from GET /api/universities.
+    courses: u.tagged_courses_count ?? 0,
+    intakes: u.intakes_count ?? 0,
     status: deriveStatus(u.status),
     initials: deriveInitials(name),
     color: AVATAR_COLORS[u.id % AVATAR_COLORS.length],
@@ -167,9 +161,6 @@ function mapApiUniversity(u: ApiUniversity): UniRow {
 }
 
 function UniversitiesPage() {
-  // TODO(api): no endpoint returns a per-university tagged-course count; the
-  // "Tagged Courses" column + KPI render 0 until /api/universities exposes it
-  // (or /api/courses is aggregated by university_id client-side).
   const [query, setQuery] = useState("");
   const [type, setType] = useState<string>("all");
   const [status, setStatus] = useState<string>("all");

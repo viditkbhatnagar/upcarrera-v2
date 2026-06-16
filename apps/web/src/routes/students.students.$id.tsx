@@ -1,4 +1,6 @@
-import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet, ApiError } from "@/lib/api";
 import {
   ArrowLeft,
   Mail,
@@ -13,86 +15,182 @@ import {
   FolderOpen,
   School,
   Activity,
-  CalendarDays,
   GraduationCap,
-  Plus,
   CreditCard,
   Receipt,
-  ShieldCheck,
   CheckCircle2,
-  FileText,
-  Pencil,
-  Download,
+  RefreshCcw,
+  AlertTriangle,
+  Inbox,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import {
-  getStudentById,
-  formatINR,
-  STATUS_STYLES,
-  STATUS_DOT,
-  type Student,
-  type Installment,
-} from "@/lib/students-data";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export const Route = createFileRoute("/students/students/$id")({
   head: ({ params }) => ({
     meta: [{ title: `${params.id} — Student Profile` }],
   }),
-  loader: ({ params }) => {
-    const student = getStudentById(params.id);
-    if (!student) throw notFound();
-    return { student };
-  },
-  notFoundComponent: () => (
-    <div className="rounded-2xl border border-border bg-surface p-10 text-center">
-      <h2 className="text-lg font-semibold text-foreground">Student not found</h2>
-      <p className="mt-1 text-sm text-muted-foreground">
-        The student you are looking for does not exist.
-      </p>
-      <Link
-        to="/students/students"
-        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
-      >
-        <ArrowLeft className="h-3.5 w-3.5" />
-        Back to Students
-      </Link>
-    </div>
-  ),
-  errorComponent: ({ error, reset }) => (
-    <div className="rounded-2xl border border-border bg-surface p-10 text-center">
-      <h2 className="text-lg font-semibold text-foreground">Something went wrong</h2>
-      <p className="mt-1 text-sm text-muted-foreground">{(error as Error).message}</p>
-      <button
-        onClick={reset}
-        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
-      >
-        Retry
-      </button>
-    </div>
-  ),
   component: StudentDetailPage,
 });
 
+/* ------------------------------------------------------------------ *
+ * API shape — GET /api/students/:id (apiGet unwraps the envelope).
+ *
+ * The endpoint keys on the numeric `students` PK (ParseIntPipe) and returns
+ * the raw students row decorated with users/course/university joins plus a
+ * rolled-up `finance` block. The list screen links this route with a *display*
+ * id (enrollment_id or `STU-<student_id>`), so we extract the numeric portion
+ * of the route param to resolve the PK the API expects. The fetched row echoes
+ * its own real `id`, and every visible value below comes from this response.
+ * ------------------------------------------------------------------ */
+interface ApiInvoice {
+  id: number;
+  university_id: number | null;
+  semester_id: number | null;
+  student_id: number | null;
+  course_id: number | null;
+  payment_status: string | null;
+  total_amount: number | null;
+  discount_amount: number | null;
+  payable_amount: number | null;
+  date: string | null;
+  due_date: string | null;
+  remarks: string | null;
+  paid_amount_total: number;
+  outstanding_amount: number;
+}
+
+interface ApiPayment {
+  id: number;
+  user_id: number | null;
+  invoice_id: number | null;
+  payment_type: string | null;
+  paid_amount: number | null;
+  payment_date: string | null;
+  reference_no: string | null;
+  remark: string | null;
+}
+
+interface ApiFinance {
+  total: number;
+  paid: number;
+  outstanding: number;
+  invoice_count: number;
+  payment_count: number;
+  invoices: ApiInvoice[];
+  payments: ApiPayment[];
+}
+
+interface ApiStudentDetail {
+  id: number;
+  student_id: number;
+  enrollment_id: string | null;
+  application_id: string | null;
+  enrollment_date: string | null;
+  admission_status: number | null;
+  course_id: number | null;
+  specialisation_id: number | null;
+  session_id: number | null;
+  source: string | null;
+  consultant_id: number | null;
+  created_at: string | null;
+  // decorated joins
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  profile_picture: string | null;
+  consultant_name: string | null;
+  course_title: string | null;
+  university_id: number | null;
+  university_title: string | null;
+  admission_status_label: string | null;
+  finance: ApiFinance | null;
+}
+
+/* ---------------- formatting helpers ---------------- */
+
+const formatINR = (n: number | null | undefined) =>
+  "₹" + Number(n ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+
+function formatDate(value: string | null | undefined): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function dash(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : "—";
+}
+
+function initials(name: string | null | undefined, fallback: string): string {
+  const source = name && name.trim() !== "" ? name : fallback;
+  return source
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+// The route param is a display id (e.g. "STU-1042" or an enrollment_id). The API
+// keys on the numeric students PK, so resolve the numeric portion of the param.
+function numericIdFromParam(param: string): number | null {
+  const digits = param.match(/\d+/g);
+  if (!digits || digits.length === 0) return null;
+  // STU-<n> / plain <n> -> the (last) numeric run is the PK we link by.
+  const n = Number(digits[digits.length - 1]);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+// Pipeline-code -> badge styling. Falls back to neutral slate for unknown labels.
+const STATUS_STYLES: Record<string, string> = {
+  Pending: "bg-orange-100 text-orange-700 ring-orange-200",
+  "In Progress": "bg-sky-100 text-sky-700 ring-sky-200",
+  Enrolled: "bg-emerald-100 text-emerald-700 ring-emerald-200",
+  "Passed Out": "bg-primary/10 text-primary ring-primary/20",
+  Dropout: "bg-red-100 text-red-700 ring-red-200",
+  Cancelled: "bg-slate-100 text-slate-700 ring-slate-200",
+};
+const STATUS_DOT: Record<string, string> = {
+  Pending: "bg-orange-500",
+  "In Progress": "bg-sky-500",
+  Enrolled: "bg-emerald-500",
+  "Passed Out": "bg-primary",
+  Dropout: "bg-red-500",
+  Cancelled: "bg-slate-400",
+};
+
+function statusStyle(label: string | null | undefined): string {
+  return (label && STATUS_STYLES[label]) || "bg-slate-100 text-slate-700 ring-slate-200";
+}
+function statusDot(label: string | null | undefined): string {
+  return (label && STATUS_DOT[label]) || "bg-slate-400";
+}
+
+/* ---------------- page ---------------- */
+
 function StudentDetailPage() {
-  // TODO(api): No catalog endpoint supplies this screen's data. The route param is a
-  // synthetic display id (STU-2026-NNNNNN), while GET /api/students/:id keys on the
-  // numeric students PK and returns only the raw students row (course_id/consultant_id/
-  // session_id FKs + JSON progress blobs) — no name/email/phone/university name/course
-  // title/batch/total fee/paid/overdue/coordinator that every card and tab here renders.
-  // Wiring it would 404 on the current id format and leave the UI undefined. Needs a
-  // decorated student-detail endpoint (users join + university/course names + fee/
-  // installments + coordinator) before this can be wired. Keeping mock data for now.
-  const { student } = Route.useLoaderData() as { student: Student };
+  const { id: rawParam } = Route.useParams();
+  const numericId = numericIdFromParam(rawParam);
+
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+    queryKey: ["student-detail", numericId],
+    queryFn: () => apiGet<ApiStudentDetail>(`/students/${numericId}`),
+    enabled: numericId != null,
+  });
 
   return (
     <div className="space-y-5">
       {/* Breadcrumb / back */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Link to="/students/students" className="hover:text-foreground">Students</Link>
+          <Link to="/students/students" className="hover:text-foreground">
+            Students
+          </Link>
           <span>/</span>
-          <span className="font-mono font-semibold text-foreground">{student.id}</span>
+          <span className="font-mono font-semibold text-foreground">{rawParam}</span>
         </div>
         <div className="flex items-center gap-2">
           <Link
@@ -102,47 +200,88 @@ function StudentDetailPage() {
             <ArrowLeft className="h-3.5 w-3.5" />
             Back
           </Link>
-          <button className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted">
-            <Pencil className="h-3.5 w-3.5" />
-            Edit
-          </button>
-          <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary-hover">
-            <Download className="h-3.5 w-3.5" />
-            Export
-          </button>
+          {!isLoading && !isError && data && (
+            <button
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted disabled:opacity-50"
+            >
+              <RefreshCcw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
+              Refresh
+            </button>
+          )}
         </div>
       </div>
 
+      {numericId == null ? (
+        <NotFoundState param={rawParam} />
+      ) : isLoading ? (
+        <LoadingState />
+      ) : isError ? (
+        <ErrorState error={error} onRetry={() => refetch()} />
+      ) : !data ? (
+        <NotFoundState param={rawParam} />
+      ) : (
+        <StudentDetailContent student={data} />
+      )}
+    </div>
+  );
+}
+
+function StudentDetailContent({ student }: { student: ApiStudentDetail }) {
+  const displayName = dash(student.name);
+  const displayId = dash(student.enrollment_id ?? `STU-${student.student_id}`);
+  const finance = student.finance;
+
+  return (
+    <>
       {/* Header card */}
       <div className="rounded-2xl border border-border bg-surface p-6 shadow-card">
         <div className="flex flex-wrap items-start gap-4">
-          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-lg font-bold text-primary">
-            {student.name.split(" ").map((w) => w[0]).join("").slice(0, 2)}
-          </div>
+          {student.profile_picture ? (
+            <img
+              src={student.profile_picture}
+              alt={displayName}
+              className="h-16 w-16 shrink-0 rounded-2xl object-cover"
+            />
+          ) : (
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-lg font-bold text-primary">
+              {initials(student.name, `S${student.student_id}`)}
+            </div>
+          )}
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-semibold tracking-tight text-foreground">{student.name}</h1>
+              <h1 className="text-xl font-semibold tracking-tight text-foreground">
+                {displayName}
+              </h1>
               <span
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset",
-                  STATUS_STYLES[student.status],
+                  statusStyle(student.admission_status_label),
                 )}
               >
-                <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[student.status])} />
-                {student.status}
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    statusDot(student.admission_status_label),
+                  )}
+                />
+                {dash(student.admission_status_label)}
               </span>
             </div>
             <div className="mt-1 text-sm">
-              <span className="font-mono text-xs font-semibold text-primary">{student.id}</span>
+              <span className="font-mono text-xs font-semibold text-primary">{displayId}</span>
               <span className="mx-2 text-muted-foreground">·</span>
-              <span className="text-muted-foreground">Enrolled {student.enrollmentDate}</span>
+              <span className="text-muted-foreground">
+                Enrolled {formatDate(student.enrollment_date ?? student.created_at)}
+              </span>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Pill icon={Mail} label={student.email} />
-              <Pill icon={Phone} label={student.phone} />
-              <Pill icon={Building2} label={student.university} />
-              <Pill icon={BookOpen} label={student.course} />
-              <Pill icon={Layers} label={student.batch} />
+              <Pill icon={Mail} label={dash(student.email)} />
+              <Pill icon={Phone} label={dash(student.phone)} />
+              <Pill icon={Building2} label={dash(student.university_title)} />
+              <Pill icon={BookOpen} label={dash(student.course_title)} />
+              <Pill icon={UserIcon} label={dash(student.consultant_name)} />
             </div>
           </div>
         </div>
@@ -153,26 +292,364 @@ function StudentDetailPage() {
         <TabsList className="mb-4 flex h-auto w-full flex-wrap justify-start gap-1 bg-muted/60 p-1">
           <TabTrig value="overview" icon={UserIcon} label="Overview" />
           <TabTrig value="finance" icon={Wallet} label="Finance" />
-          <TabTrig value="followups" icon={Phone} label="Follow-ups" />
-          <TabTrig value="support" icon={HeadphonesIcon} label="Support" />
           <TabTrig value="documents" icon={FolderOpen} label="Documents" />
           <TabTrig value="university" icon={School} label="University" />
           <TabTrig value="comm" icon={MessageCircle} label="Communication" />
           <TabTrig value="timeline" icon={Activity} label="Timeline" />
         </TabsList>
 
-        <TabsContent value="overview"><OverviewTab student={student} /></TabsContent>
-        <TabsContent value="finance"><FinanceTab student={student} /></TabsContent>
-        <TabsContent value="followups"><FollowUpsTab /></TabsContent>
-        <TabsContent value="support"><SupportTab /></TabsContent>
-        <TabsContent value="documents"><DocumentsTab /></TabsContent>
-        <TabsContent value="university"><UniversityTab /></TabsContent>
-        <TabsContent value="comm"><CommunicationTab /></TabsContent>
-        <TabsContent value="timeline"><TimelineTab student={student} /></TabsContent>
+        <TabsContent value="overview">
+          <OverviewTab student={student} />
+        </TabsContent>
+        <TabsContent value="finance">
+          <FinanceTab finance={finance} />
+        </TabsContent>
+        <TabsContent value="documents">
+          <EmptyTab
+            icon={FolderOpen}
+            title="No documents available"
+            description="Student documents are not exposed by this endpoint yet."
+          />
+        </TabsContent>
+        <TabsContent value="university">
+          <UniversityTab student={student} />
+        </TabsContent>
+        <TabsContent value="comm">
+          <EmptyTab
+            icon={MessageCircle}
+            title="No communication history"
+            description="Calls, WhatsApp, and email logs are not exposed by this endpoint yet."
+          />
+        </TabsContent>
+        <TabsContent value="timeline">
+          <EmptyTab
+            icon={Activity}
+            title="No timeline activity"
+            description="Activity events are not exposed by this endpoint yet."
+          />
+        </TabsContent>
       </Tabs>
+    </>
+  );
+}
+
+/* ---------------- tabs ---------------- */
+
+function OverviewTab({ student }: { student: ApiStudentDetail }) {
+  const finance = student.finance;
+  const total = finance?.total ?? 0;
+  const paid = finance?.paid ?? 0;
+  const collection = total > 0 ? Math.round((paid / total) * 100) : 0;
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <SectionCard title="Student Information" icon={UserIcon}>
+        <InfoRow label="Full Name" value={dash(student.name)} />
+        <InfoRow label="Email" value={dash(student.email)} />
+        <InfoRow label="Phone" value={dash(student.phone)} />
+        <InfoRow
+          label="Enrollment ID"
+          value={<span className="font-mono">{dash(student.enrollment_id)}</span>}
+        />
+      </SectionCard>
+
+      <SectionCard title="Admission Information" icon={GraduationCap}>
+        <InfoRow
+          label="Application ID"
+          value={<span className="font-mono">{dash(student.application_id)}</span>}
+        />
+        <InfoRow label="Enrollment Date" value={formatDate(student.enrollment_date)} />
+        <InfoRow label="Source" value={dash(student.source)} />
+        <InfoRow label="Counsellor" value={dash(student.consultant_name)} />
+      </SectionCard>
+
+      <SectionCard title="University Information" icon={Building2}>
+        <InfoRow label="University" value={dash(student.university_title)} />
+        <InfoRow label="Course" value={dash(student.course_title)} />
+        <InfoRow
+          label="Specialisation"
+          value={student.specialisation_id != null ? `#${student.specialisation_id}` : "—"}
+        />
+        <InfoRow
+          label="Session"
+          value={student.session_id != null ? `#${student.session_id}` : "—"}
+        />
+      </SectionCard>
+
+      <SectionCard title="Current Status" icon={Activity}>
+        <InfoRow
+          label="Status"
+          value={
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
+                statusStyle(student.admission_status_label),
+              )}
+            >
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  statusDot(student.admission_status_label),
+                )}
+              />
+              {dash(student.admission_status_label)}
+            </span>
+          }
+        />
+        <InfoRow label="Fee Collection" value={total > 0 ? `${collection}%` : "—"} />
+        <InfoRow label="Outstanding" value={formatINR(finance?.outstanding)} />
+        <InfoRow label="Invoices" value={String(finance?.invoice_count ?? 0)} />
+      </SectionCard>
     </div>
   );
 }
+
+function FinanceTab({ finance }: { finance: ApiFinance | null }) {
+  if (!finance || (finance.invoice_count === 0 && finance.payment_count === 0)) {
+    return (
+      <div className="space-y-4">
+        <FinanceStats finance={finance} />
+        <EmptyTab
+          icon={Wallet}
+          title="No finance records"
+          description="This student has no invoices or payments on file yet."
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <FinanceStats finance={finance} />
+
+      <SectionCard title="Invoices" icon={CreditCard}>
+        {finance.invoices.length === 0 ? (
+          <EmptyInline label="No invoices issued." />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs uppercase text-muted-foreground">
+                  <th className="py-2 font-semibold">Invoice</th>
+                  <th className="py-2 font-semibold">Date</th>
+                  <th className="py-2 font-semibold">Due</th>
+                  <th className="py-2 font-semibold">Payable</th>
+                  <th className="py-2 font-semibold">Paid</th>
+                  <th className="py-2 font-semibold">Outstanding</th>
+                  <th className="py-2 font-semibold">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {finance.invoices.map((inv) => (
+                  <tr key={inv.id} className="border-b border-border/60 last:border-0">
+                    <td className="py-2.5 font-mono text-xs">#{inv.id}</td>
+                    <td className="py-2.5">{formatDate(inv.date)}</td>
+                    <td className="py-2.5">{formatDate(inv.due_date)}</td>
+                    <td className="py-2.5 font-semibold">{formatINR(inv.payable_amount)}</td>
+                    <td className="py-2.5 text-emerald-600">{formatINR(inv.paid_amount_total)}</td>
+                    <td className="py-2.5 text-orange-600">{formatINR(inv.outstanding_amount)}</td>
+                    <td className="py-2.5">
+                      <InvoiceStatusBadge
+                        status={inv.payment_status}
+                        outstanding={inv.outstanding_amount}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SectionCard>
+
+      <SectionCard title="Payment History" icon={Receipt}>
+        {finance.payments.length === 0 ? (
+          <EmptyInline label="No payments recorded." />
+        ) : (
+          <div className="space-y-2">
+            {finance.payments.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2.5"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+                    <CheckCircle2 className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-foreground">
+                      {formatINR(p.paid_amount)}{" "}
+                      {p.payment_type && (
+                        <span className="text-xs font-normal text-muted-foreground">
+                          via {p.payment_type}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {formatDate(p.payment_date)}
+                      {p.reference_no ? ` · Ref ${p.reference_no}` : ""}
+                      {p.invoice_id != null ? ` · Invoice #${p.invoice_id}` : ""}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
+function FinanceStats({ finance }: { finance: ApiFinance | null }) {
+  const total = finance?.total ?? 0;
+  const paid = finance?.paid ?? 0;
+  const outstanding = finance?.outstanding ?? 0;
+  const collection = total > 0 ? Math.round((paid / total) * 100) : 0;
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <FinStat label="Total Fee" value={formatINR(total)} tone="text-foreground" />
+      <FinStat label="Paid" value={formatINR(paid)} tone="text-emerald-600" />
+      <FinStat label="Outstanding" value={formatINR(outstanding)} tone="text-orange-600" />
+      <FinStat label="Invoices" value={String(finance?.invoice_count ?? 0)} tone="text-foreground" />
+      <FinStat label="Collection" value={total > 0 ? `${collection}%` : "—"} tone="text-primary" />
+    </div>
+  );
+}
+
+function InvoiceStatusBadge({
+  status,
+  outstanding,
+}: {
+  status: string | null;
+  outstanding: number;
+}) {
+  const label = status && status.trim() !== "" ? status : outstanding <= 0 ? "paid" : "pending";
+  const isPaid = label.toLowerCase() === "paid" || outstanding <= 0;
+  return (
+    <span
+      className={cn(
+        "inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold capitalize ring-1 ring-inset",
+        isPaid
+          ? "bg-emerald-100 text-emerald-700 ring-emerald-200"
+          : "bg-orange-100 text-orange-700 ring-orange-200",
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+function UniversityTab({ student }: { student: ApiStudentDetail }) {
+  return (
+    <SectionCard title="University Information" icon={School}>
+      <InfoRow label="University" value={dash(student.university_title)} />
+      <InfoRow
+        label="University ID"
+        value={student.university_id != null ? `#${student.university_id}` : "—"}
+      />
+      <InfoRow label="Course" value={dash(student.course_title)} />
+      <InfoRow
+        label="Course ID"
+        value={student.course_id != null ? `#${student.course_id}` : "—"}
+      />
+      <InfoRow
+        label="Enrollment ID"
+        value={<span className="font-mono">{dash(student.enrollment_id)}</span>}
+      />
+    </SectionCard>
+  );
+}
+
+/* ---------------- state views ---------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-5">
+      <div className="rounded-2xl border border-border bg-surface p-6 shadow-card">
+        <div className="flex items-start gap-4">
+          <Skeleton className="h-16 w-16 rounded-2xl" />
+          <div className="flex-1 space-y-3">
+            <Skeleton className="h-6 w-48" />
+            <Skeleton className="h-4 w-64" />
+            <div className="flex gap-2">
+              <Skeleton className="h-7 w-40" />
+              <Skeleton className="h-7 w-32" />
+              <Skeleton className="h-7 w-44" />
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="rounded-2xl border border-border bg-surface p-5 shadow-card">
+            <Skeleton className="mb-4 h-5 w-40" />
+            <div className="space-y-3">
+              {[0, 1, 2, 3].map((j) => (
+                <Skeleton key={j} className="h-4 w-full" />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const notFound = error instanceof ApiError && error.status === 404;
+  const message =
+    error instanceof Error ? error.message : "Something went wrong while loading this student.";
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-10 text-center shadow-card">
+      <AlertTriangle className="mx-auto h-10 w-10 text-red-500/60" />
+      <h2 className="mt-3 text-lg font-semibold text-foreground">
+        {notFound ? "Student not found" : "Couldn’t load student"}
+      </h2>
+      <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">{message}</p>
+      <div className="mt-4 flex items-center justify-center gap-2">
+        {!notFound && (
+          <button
+            onClick={onRetry}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
+          >
+            <RefreshCcw className="h-3.5 w-3.5" />
+            Retry
+          </button>
+        )}
+        <Link
+          to="/students/students"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back to Students
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function NotFoundState({ param }: { param: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-10 text-center shadow-card">
+      <Inbox className="mx-auto h-10 w-10 text-muted-foreground/50" />
+      <h2 className="mt-3 text-lg font-semibold text-foreground">Student not found</h2>
+      <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+        No numeric student id could be resolved from{" "}
+        <span className="font-mono text-foreground">{param}</span>.
+      </p>
+      <Link
+        to="/students/students"
+        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        Back to Students
+      </Link>
+    </div>
+  );
+}
+
+/* ---------------- presentational primitives ---------------- */
 
 function TabTrig({
   value,
@@ -234,146 +711,6 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function OverviewTab({ student }: { student: Student }) {
-  const collection = Math.round((student.paid / student.totalFee) * 100);
-  return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <SectionCard title="Student Information" icon={UserIcon}>
-        <InfoRow label="Full Name" value={student.name} />
-        <InfoRow label="Email" value={student.email} />
-        <InfoRow label="Phone" value={student.phone} />
-        <InfoRow label="Student ID" value={<span className="font-mono">{student.id}</span>} />
-      </SectionCard>
-
-      <SectionCard title="Admission Information" icon={GraduationCap}>
-        <InfoRow label="Application ID" value={<span className="font-mono">APP-2026-000{student.id.slice(-3)}</span>} />
-        <InfoRow label="Enrollment Date" value={student.enrollmentDate} />
-        <InfoRow label="Source" value="Direct" />
-        <InfoRow label="Counsellor" value={student.coordinator} />
-      </SectionCard>
-
-      <SectionCard title="University Information" icon={Building2}>
-        <InfoRow label="University" value={student.university} />
-        <InfoRow label="Course" value={student.course} />
-        <InfoRow label="Batch" value={student.batch} />
-        <InfoRow label="Specialisation" value="Marketing" />
-      </SectionCard>
-
-      <SectionCard title="Current Status" icon={Activity}>
-        <InfoRow
-          label="Status"
-          value={
-            <span
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                STATUS_STYLES[student.status],
-              )}
-            >
-              <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[student.status])} />
-              {student.status}
-            </span>
-          }
-        />
-        <InfoRow label="Fee Collection" value={`${collection}%`} />
-        <InfoRow label="Outstanding" value={formatINR(student.totalFee - student.paid)} />
-        <InfoRow label="Support Tickets" value="2 Open" />
-      </SectionCard>
-    </div>
-  );
-}
-
-function FinanceTab({ student }: { student: Student }) {
-  const outstanding = student.totalFee - student.paid;
-  const collection = Math.round((student.paid / student.totalFee) * 100);
-  const installments: Installment[] = [
-    { no: 1, due: "10 Jan 2026", amount: 25000, status: "Paid", paidOn: "08 Jan 2026" },
-    { no: 2, due: "10 Apr 2026", amount: 25000, status: "Paid", paidOn: "10 Apr 2026" },
-    { no: 3, due: "10 Jul 2026", amount: 25000, status: "Overdue" },
-    { no: 4, due: "10 Oct 2026", amount: 25000, status: "Pending" },
-  ];
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <FinStat label="Total Fee" value={formatINR(student.totalFee)} tone="text-foreground" />
-        <FinStat label="Paid" value={formatINR(student.paid)} tone="text-emerald-600" />
-        <FinStat label="Outstanding" value={formatINR(outstanding)} tone="text-orange-600" />
-        <FinStat label="Overdue" value={formatINR(student.overdue)} tone="text-red-600" />
-        <FinStat label="Collection" value={`${collection}%`} tone="text-primary" />
-      </div>
-
-      <SectionCard title="Installment Schedule" icon={CreditCard}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs uppercase text-muted-foreground">
-                <th className="py-2 font-semibold">#</th>
-                <th className="py-2 font-semibold">Due Date</th>
-                <th className="py-2 font-semibold">Amount</th>
-                <th className="py-2 font-semibold">Status</th>
-                <th className="py-2 font-semibold">Paid On</th>
-              </tr>
-            </thead>
-            <tbody>
-              {installments.map((i) => (
-                <tr key={i.no} className="border-b border-border/60 last:border-0">
-                  <td className="py-2.5">#{i.no}</td>
-                  <td className="py-2.5">{i.due}</td>
-                  <td className="py-2.5 font-semibold">{formatINR(i.amount)}</td>
-                  <td className="py-2.5">
-                    <span
-                      className={cn(
-                        "inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                        i.status === "Paid"
-                          ? "bg-emerald-100 text-emerald-700 ring-emerald-200"
-                          : i.status === "Overdue"
-                          ? "bg-red-100 text-red-700 ring-red-200"
-                          : "bg-orange-100 text-orange-700 ring-orange-200",
-                      )}
-                    >
-                      {i.status}
-                    </span>
-                  </td>
-                  <td className="py-2.5 text-muted-foreground">{i.paidOn ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </SectionCard>
-
-      <SectionCard title="Payment History" icon={Receipt}>
-        <div className="space-y-2">
-          {[
-            { date: "10 Apr 2026", amount: 25000, mode: "UPI", ref: "TXN20260410-9382" },
-            { date: "08 Jan 2026", amount: 25000, mode: "Net Banking", ref: "TXN20260108-2210" },
-            { date: "02 Jan 2026", amount: 5000, mode: "UPI", ref: "TXN20260102-0091" },
-          ].map((p) => (
-            <div
-              key={p.ref}
-              className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2.5"
-            >
-              <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
-                  <CheckCircle2 className="h-4 w-4" />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold text-foreground">
-                    {formatINR(p.amount)} <span className="text-xs font-normal text-muted-foreground">via {p.mode}</span>
-                  </div>
-                  <div className="text-xs text-muted-foreground">{p.date} · Ref {p.ref}</div>
-                </div>
-              </div>
-              <button className="text-xs font-semibold text-primary hover:underline">
-                Receipt
-              </button>
-            </div>
-          ))}
-        </div>
-      </SectionCard>
-    </div>
-  );
-}
-
 function FinStat({ label, value, tone }: { label: string; value: string; tone: string }) {
   return (
     <div className="rounded-xl border border-border bg-surface p-3 shadow-card">
@@ -385,290 +722,31 @@ function FinStat({ label, value, tone }: { label: string; value: string; tone: s
   );
 }
 
-function FollowUpsTab() {
-  const items = [
-    {
-      date: "12 Jun 2026",
-      exec: "Priya Sharma",
-      summary: "Discussed fee installment plan; student requested 7-day extension.",
-      next: "19 Jun 2026",
-      status: "Open",
-    },
-    {
-      date: "02 Jun 2026",
-      exec: "Rahul Verma",
-      summary: "Onboarding call completed. Course portal walkthrough done.",
-      next: "—",
-      status: "Closed",
-    },
-  ];
+function EmptyTab({
+  icon: Icon,
+  title,
+  description,
+}: {
+  icon: typeof FolderOpen;
+  title: string;
+  description: string;
+}) {
   return (
-    <SectionCard
-      title="Follow-up History"
-      icon={Phone}
-      action={
-        <button className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground hover:bg-accent-hover">
-          <Plus className="h-3.5 w-3.5" />
-          Add Follow-up
-        </button>
-      }
-    >
-      <div className="space-y-3">
-        {items.map((f, i) => (
-          <div key={i} className="rounded-xl border border-border bg-background p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs">
-                <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="font-semibold text-foreground">{f.date}</span>
-                <span className="text-muted-foreground">· {f.exec}</span>
-              </div>
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                  f.status === "Open"
-                    ? "bg-sky-100 text-sky-700 ring-sky-200"
-                    : "bg-emerald-100 text-emerald-700 ring-emerald-200",
-                )}
-              >
-                {f.status}
-              </span>
-            </div>
-            <p className="text-sm text-foreground">{f.summary}</p>
-            <div className="mt-2 text-xs text-muted-foreground">
-              Next follow-up: <span className="font-medium text-foreground">{f.next}</span>
-            </div>
-          </div>
-        ))}
+    <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-surface px-6 py-16 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+        <Icon className="h-6 w-6" />
       </div>
-    </SectionCard>
-  );
-}
-
-function SupportTab() {
-  const stats = [
-    { label: "Open", count: 2, tone: "bg-sky-100 text-sky-700" },
-    { label: "Resolved", count: 5, tone: "bg-emerald-100 text-emerald-700" },
-    { label: "Escalated", count: 1, tone: "bg-red-100 text-red-700" },
-  ];
-  const tickets = [
-    { id: "TKT-4821", title: "Unable to access university portal", status: "Open", date: "11 Jun 2026" },
-    { id: "TKT-4790", title: "ID card delivery delayed", status: "Escalated", date: "05 Jun 2026" },
-    { id: "TKT-4710", title: "Course material download issue", status: "Resolved", date: "22 May 2026" },
-  ];
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-3">
-        {stats.map((s) => (
-          <div key={s.label} className="rounded-xl border border-border bg-surface p-3 shadow-card">
-            <div className={cn("inline-flex rounded-md px-2 py-0.5 text-[11px] font-semibold", s.tone)}>
-              {s.label}
-            </div>
-            <div className="mt-2 text-2xl font-bold tracking-tight text-foreground">{s.count}</div>
-          </div>
-        ))}
-      </div>
-      <SectionCard
-        title="Support Tickets"
-        icon={HeadphonesIcon}
-        action={
-          <button className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground hover:bg-accent-hover">
-            <Plus className="h-3.5 w-3.5" />
-            New Ticket
-          </button>
-        }
-      >
-        <div className="space-y-2">
-          {tickets.map((t) => (
-            <div
-              key={t.id}
-              className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2.5"
-            >
-              <div>
-                <div className="text-sm font-semibold text-foreground">{t.title}</div>
-                <div className="text-xs text-muted-foreground">
-                  <span className="font-mono">{t.id}</span> · {t.date}
-                </div>
-              </div>
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                  t.status === "Open"
-                    ? "bg-sky-100 text-sky-700 ring-sky-200"
-                    : t.status === "Escalated"
-                    ? "bg-red-100 text-red-700 ring-red-200"
-                    : "bg-emerald-100 text-emerald-700 ring-emerald-200",
-                )}
-              >
-                {t.status}
-              </span>
-            </div>
-          ))}
-        </div>
-      </SectionCard>
+      <div className="text-sm font-semibold text-foreground">{title}</div>
+      <p className="max-w-sm text-xs text-muted-foreground">{description}</p>
     </div>
   );
 }
 
-function DocumentsTab() {
-  const docs = [
-    { name: "Aadhaar Card", category: "ID Proof", status: "Verified" },
-    { name: "PAN Card", category: "ID Proof", status: "Verified" },
-    { name: "10th Marksheet", category: "Qualification", status: "Verified" },
-    { name: "12th Marksheet", category: "Qualification", status: "Verified" },
-    { name: "Graduation Certificate", category: "Qualification", status: "Pending" },
-    { name: "Payment Receipt - Jan", category: "Payment Proof", status: "Verified" },
-    { name: "Admission Letter", category: "Admission", status: "Issued" },
-    { name: "Enrollment Confirmation", category: "Enrollment", status: "Issued" },
-  ];
+function EmptyInline({ label }: { label: string }) {
   return (
-    <SectionCard title="Student Documents" icon={FolderOpen}>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {docs.map((d) => (
-          <div
-            key={d.name}
-            className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2.5"
-          >
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <FileText className="h-4 w-4" />
-              </div>
-              <div>
-                <div className="text-sm font-semibold text-foreground">{d.name}</div>
-                <div className="text-xs text-muted-foreground">{d.category}</div>
-              </div>
-            </div>
-            <span
-              className={cn(
-                "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                d.status === "Verified" || d.status === "Issued"
-                  ? "bg-emerald-100 text-emerald-700 ring-emerald-200"
-                  : "bg-orange-100 text-orange-700 ring-orange-200",
-              )}
-            >
-              {d.status}
-            </span>
-          </div>
-        ))}
-      </div>
-    </SectionCard>
-  );
-}
-
-function UniversityTab() {
-  const items: Array<[string, "Done" | "Pending" | "In Progress"]> = [
-    ["Enrollment Submitted", "Done"],
-    ["Enrollment Approved", "Done"],
-    ["Student ID Received", "Done"],
-    ["Portal Access Received", "Done"],
-    ["Certificate Request Status", "In Progress"],
-    ["Certificate Received", "Pending"],
-  ];
-  return (
-    <div className="space-y-4">
-      <SectionCard title="University Coordination" icon={School}>
-        <div className="space-y-2">
-          {items.map(([label, status]) => (
-            <div
-              key={label}
-              className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2.5"
-            >
-              <div className="flex items-center gap-3">
-                <ShieldCheck
-                  className={cn(
-                    "h-4 w-4",
-                    status === "Done"
-                      ? "text-emerald-600"
-                      : status === "In Progress"
-                      ? "text-sky-600"
-                      : "text-muted-foreground",
-                  )}
-                />
-                <div className="text-sm font-medium text-foreground">{label}</div>
-              </div>
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                  status === "Done"
-                    ? "bg-emerald-100 text-emerald-700 ring-emerald-200"
-                    : status === "In Progress"
-                    ? "bg-sky-100 text-sky-700 ring-sky-200"
-                    : "bg-slate-100 text-slate-700 ring-slate-200",
-                )}
-              >
-                {status}
-              </span>
-            </div>
-          ))}
-        </div>
-      </SectionCard>
-      <SectionCard title="University Remarks" icon={FileText}>
-        <p className="rounded-lg border border-border bg-background p-3 text-sm text-muted-foreground">
-          Enrollment confirmed. Awaiting final certificate dispatch from university registrar's
-          office. ETA: 30 days.
-        </p>
-      </SectionCard>
+    <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-background px-4 py-8 text-center">
+      <HeadphonesIcon className="h-4 w-4 text-muted-foreground/50" />
+      <span className="text-xs text-muted-foreground">{label}</span>
     </div>
-  );
-}
-
-function CommunicationTab() {
-  const logs = [
-    { type: "Call", icon: Phone, who: "Priya Sharma", date: "12 Jun 2026 · 10:42 AM", note: "Outbound · 4m 12s · Discussed fee extension." },
-    { type: "WhatsApp", icon: MessageCircle, who: "Auto-bot", date: "11 Jun 2026 · 09:00 AM", note: "Sent installment reminder template." },
-    { type: "Email", icon: Mail, who: "Operations", date: "08 Jun 2026 · 06:30 PM", note: "Receipt for installment #2 emailed." },
-    { type: "Call", icon: Phone, who: "Rahul Verma", date: "02 Jun 2026 · 03:10 PM", note: "Onboarding · 12m 04s." },
-  ];
-  return (
-    <SectionCard title="Communication Timeline" icon={MessageCircle}>
-      <div className="space-y-2">
-        {logs.map((l, i) => (
-          <div key={i} className="flex gap-3 rounded-lg border border-border bg-background p-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <l.icon className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-foreground">{l.type}</div>
-                <div className="text-xs text-muted-foreground">{l.date}</div>
-              </div>
-              <div className="text-xs text-muted-foreground">{l.who}</div>
-              <div className="mt-1 text-sm text-foreground">{l.note}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </SectionCard>
-  );
-}
-
-function TimelineTab({ student }: { student: Student }) {
-  const events = [
-    { title: "Certificate request raised", date: "10 Jun 2026", icon: ShieldCheck, tone: "bg-sky-100 text-sky-700" },
-    { title: "Payment received — ₹25,000", date: "10 Apr 2026", icon: Wallet, tone: "bg-emerald-100 text-emerald-700" },
-    { title: "Support ticket TKT-4710 resolved", date: "22 May 2026", icon: HeadphonesIcon, tone: "bg-emerald-100 text-emerald-700" },
-    { title: "Portal access received from university", date: "20 Jan 2026", icon: School, tone: "bg-primary/10 text-primary" },
-    { title: "Enrollment confirmed", date: "15 Jan 2026", icon: GraduationCap, tone: "bg-primary/10 text-primary" },
-    { title: "Student created", date: student.enrollmentDate, icon: UserIcon, tone: "bg-muted text-foreground" },
-    { title: "Application approved", date: "05 Jan 2026", icon: CheckCircle2, tone: "bg-emerald-100 text-emerald-700" },
-  ];
-  return (
-    <SectionCard title="Activity Timeline" icon={Activity}>
-      <ol className="relative ml-3 space-y-4 border-l border-border pl-5">
-        {events.map((e, i) => (
-          <li key={i} className="relative">
-            <span
-              className={cn(
-                "absolute -left-[27px] flex h-6 w-6 items-center justify-center rounded-full ring-4 ring-surface",
-                e.tone,
-              )}
-            >
-              <e.icon className="h-3 w-3" />
-            </span>
-            <div className="text-sm font-semibold text-foreground">{e.title}</div>
-            <div className="text-xs text-muted-foreground">{e.date}</div>
-          </li>
-        ))}
-      </ol>
-    </SectionCard>
   );
 }

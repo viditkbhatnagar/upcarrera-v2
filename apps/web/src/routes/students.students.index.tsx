@@ -15,8 +15,6 @@ import {
   X,
   CalendarDays,
   Users,
-  ArrowUpRight,
-  ArrowDownRight,
   ChevronLeft,
   ChevronRight,
   Hash,
@@ -32,16 +30,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  ALL_STUDENTS,
-  BATCHES,
-  COORDINATORS,
-  COURSES,
   STATUS_DOT,
   STATUS_ICONS,
   STATUS_ORDER,
   STATUS_STYLES,
-  UNIVERSITIES,
-  type Student,
   type StudentStatus,
 } from "@/lib/students-data";
 
@@ -51,74 +43,120 @@ export const Route = createFileRoute("/students/students/")({
 });
 
 // --- Live API wiring (GET /api/students) ---------------------------------
-// The list endpoint returns raw students rows (ids + raw fields). It does NOT
-// join the users table, so display name/email/phone and university/course/
-// coordinator *titles* are not available from this endpoint. We render what the
-// endpoint gives us and derive sensible display fallbacks for the rest.
-// admission_status is a numeric code; map it to the UI's StudentStatus label.
+// Each list item is the raw `students` row decorated by the API with its joined
+// display fields: name/email/phone/profile_picture (from users), consultant_name
+// (from users), course_title + university_title (course -> university) and a
+// human admission_status_label. We render those real values directly — no #id
+// fallbacks. The list response also carries `counts.by_status`, which drives the
+// KPI cards (live, no mock seed).
 interface ApiStudentRow {
   id: number | string;
   student_id: number | string | null;
   enrollment_id: string | null;
   application_id: number | string | null;
   admission_status: number | string | null;
+  admission_status_label: string | null;
   course_id: number | string | null;
   consultant_id: number | string | null;
   enrollment_date: string | null;
   created_at: string | null;
+  // Decorated display fields (joined server-side).
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  profile_picture: string | null;
+  consultant_name: string | null;
+  course_title: string | null;
+  university_title: string | null;
 }
 
-const ADMISSION_STATUS_LABEL: Record<string, StudentStatus> = {
-  "1": "Pending",
-  "2": "In Progress",
-  "3": "Enrolled",
-  "4": "Dropout",
-  "5": "Passed Out",
-  "6": "Cancelled",
-};
-
-function mapAdmissionStatus(code: number | string | null): StudentStatus {
-  if (code === null || code === undefined) return "Pending";
-  return ADMISSION_STATUS_LABEL[String(code)] ?? "Pending";
+interface StatusCounts {
+  total: number;
+  by_status: Record<string, number>;
 }
 
-// admission_status query value the API expects for a given UI status label.
+interface StudentsListResponse {
+  items: ApiStudentRow[];
+  total: number;
+  page: number;
+  limit: number;
+  counts: StatusCounts;
+}
+
+// students.admission_status (Int code) -> UI status label. Source of truth is the
+// API's ADMISSION_STATUS_LABELS (apps/api/src/students/students.service.ts):
+// 0:Pending 1:In Progress 2:Enrolled 3:Passed Out 4:Dropout 5:Cancelled.
 const STATUS_TO_CODE: Record<StudentStatus, string> = {
-  Pending: "1",
-  "In Progress": "2",
-  Enrolled: "3",
+  Pending: "0",
+  "In Progress": "1",
+  Enrolled: "2",
+  "Passed Out": "3",
   Dropout: "4",
-  "Passed Out": "5",
-  Cancelled: "6",
+  Cancelled: "5",
 };
+
+// A decorated row, normalised for rendering (real values, blank-safe).
+interface StudentRow {
+  rowId: string;
+  displayId: string;
+  name: string;
+  email: string;
+  phone: string;
+  profilePicture: string | null;
+  university: string;
+  course: string;
+  enrollmentDate: string;
+  coordinator: string;
+  status: StudentStatus;
+}
+
+const EMPTY = "—";
+
+function asText(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return parts
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+// admission_status_label is already a human label; coerce to a known UI status so
+// the badge styling/order resolves. Falls back to "Pending" for unmapped codes.
+function toStudentStatus(label: string | null | undefined): StudentStatus {
+  const match = STATUS_ORDER.find((s) => s === label);
+  return match ?? "Pending";
+}
 
 function formatDate(value: string | null): string {
-  if (!value) return "—";
+  if (!value) return EMPTY;
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-function mapApiRow(r: ApiStudentRow): Student {
+function mapApiRow(r: ApiStudentRow): StudentRow {
   const displayId =
     r.enrollment_id != null && String(r.enrollment_id).trim() !== ""
       ? String(r.enrollment_id)
       : `STU-${r.student_id ?? r.id}`;
   return {
-    id: displayId,
-    name: r.student_id != null ? `Student #${r.student_id}` : `Record #${r.id}`,
-    email: "—",
-    phone: "",
-    university: "—",
-    course: r.course_id != null ? `Course #${r.course_id}` : "—",
-    batch: "—",
+    rowId: String(r.id),
+    displayId,
+    name: asText(r.name),
+    email: asText(r.email),
+    phone: r.phone != null ? String(r.phone) : "",
+    profilePicture: r.profile_picture && String(r.profile_picture).trim() !== "" ? String(r.profile_picture) : null,
+    university: asText(r.university_title),
+    course: asText(r.course_title),
     enrollmentDate: formatDate(r.enrollment_date ?? r.created_at),
-    coordinator: r.consultant_id != null ? `Consultant #${r.consultant_id}` : "—",
-    coordinatorInitials: "C",
-    status: mapAdmissionStatus(r.admission_status),
-    totalFee: 0,
-    paid: 0,
-    overdue: 0,
+    coordinator: asText(r.consultant_name),
+    status: toStudentStatus(r.admission_status_label),
   };
 }
 
@@ -127,21 +165,16 @@ function StudentsPage() {
   const [search, setSearch] = useState("");
   const [stuId, setStuId] = useState("");
   const [phone, setPhone] = useState("");
-  const [university, setUniversity] = useState("All");
-  const [course, setCourse] = useState("All");
-  const [batch, setBatch] = useState("All");
-  const [coordinator, setCoordinator] = useState("All");
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
 
-  // Live students list. The API supports server-side page/limit + admission_status
-  // (+ course_id/referred_by) filters; we drive those from state. The remaining
-  // text/university/batch/coordinator filters are applied client-side over the
-  // fetched page (the endpoint does not join those label columns — see mapApiRow).
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["students", { page, limit: PAGE_SIZE, statusFilter }],
+  // Live students list. The API supports server-side page/limit + admission_status.
+  // The remaining text filters (name / id / phone) refine the fetched page
+  // client-side over the real decorated values.
+  const { data, isLoading, isError, error, isFetching } = useQuery({
+    queryKey: ["students", "list", { page, limit: PAGE_SIZE, statusFilter }],
     queryFn: () =>
-      apiGet<{ items: ApiStudentRow[]; total: number; page: number; limit: number }>("/students", {
+      apiGet<StudentsListResponse>("/students", {
         page,
         limit: PAGE_SIZE,
         admission_status: statusFilter === "All" ? undefined : STATUS_TO_CODE[statusFilter],
@@ -151,26 +184,26 @@ function StudentsPage() {
   const apiTotal = data?.total ?? 0;
   const allRows = useMemo(() => (data?.items ?? []).map(mapApiRow), [data]);
 
-  // Client-side refinement of the current page (best-effort: most label columns
-  // are not returned by the list endpoint, so these mostly act on derived values).
+  // Client-side text refinement of the current page over the real joined values.
   const pageRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const idQ = stuId.trim().toLowerCase();
+    const phoneQ = phone.trim();
     return allRows.filter((s) => {
-      if (search && !s.name.toLowerCase().includes(search.toLowerCase())) return false;
-      if (stuId && !s.id.toLowerCase().includes(stuId.toLowerCase())) return false;
-      if (phone && !s.phone.includes(phone)) return false;
-      if (university !== "All" && s.university !== university) return false;
-      if (course !== "All" && s.course !== course) return false;
-      if (batch !== "All" && s.batch !== batch) return false;
-      if (coordinator !== "All" && s.coordinator !== coordinator) return false;
+      if (q && !`${s.name} ${s.email}`.toLowerCase().includes(q)) return false;
+      if (idQ && !s.displayId.toLowerCase().includes(idQ)) return false;
+      if (phoneQ && !s.phone.includes(phoneQ)) return false;
       return true;
     });
-  }, [allRows, search, stuId, phone, university, course, batch, coordinator]);
+  }, [allRows, search, stuId, phone]);
 
   const totalPages = Math.max(1, Math.ceil(apiTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
 
-  // KPI status counts are not available as aggregates from /students, so the
-  // cards stay on the seeded mock counts for now.
+  // Live KPI-card counts come straight from the list response's counts.by_status,
+  // computed server-side over the same filtered set (no mock seed).
+  const byStatus = data?.counts?.by_status;
+  const countsTotal = data?.counts?.total ?? apiTotal;
   const counts = useMemo(() => {
     const m: Record<StudentStatus, number> = {
       Pending: 0,
@@ -180,21 +213,21 @@ function StudentsPage() {
       Dropout: 0,
       Cancelled: 0,
     };
-    ALL_STUDENTS.forEach((s) => (m[s.status] += 1));
+    if (byStatus) {
+      for (const s of STATUS_ORDER) m[s] = byStatus[s] ?? 0;
+    }
     return m;
-  }, []);
+  }, [byStatus]);
 
   const resetFilters = () => {
     setStatusFilter("All");
     setSearch("");
     setStuId("");
     setPhone("");
-    setUniversity("All");
-    setCourse("All");
-    setBatch("All");
-    setCoordinator("All");
     setPage(1);
   };
+
+  const countsLoading = isLoading;
 
   return (
     <div className="space-y-6">
@@ -224,8 +257,8 @@ function StudentsPage() {
         <KpiCard
           icon={Users}
           label="Total Students"
-          value={ALL_STUDENTS.length}
-          trend={+8.2}
+          value={countsTotal}
+          loading={countsLoading}
           active={statusFilter === "All"}
           onClick={() => {
             setStatusFilter("All");
@@ -241,13 +274,13 @@ function StudentsPage() {
               icon={Icon}
               label={s}
               value={counts[s]}
-              trend={(((counts[s] / ALL_STUDENTS.length) * 100) % 20) - 5}
+              loading={countsLoading}
               active={statusFilter === s}
               onClick={() => {
                 setStatusFilter(statusFilter === s ? "All" : s);
                 setPage(1);
               }}
-              accent={cn(STATUS_DOT[s].replace("bg-", "bg-") + "/15", "text-foreground")}
+              accent={cn(STATUS_DOT[s] + "/15", "text-foreground")}
               dot={STATUS_DOT[s]}
             />
           );
@@ -261,29 +294,23 @@ function StudentsPage() {
           Filters
         </div>
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-          <FilterInput icon={Search} placeholder="Student name" value={search} onChange={setSearch} />
+          <FilterInput icon={Search} placeholder="Name or email" value={search} onChange={setSearch} />
           <FilterInput icon={Hash} placeholder="Student ID" value={stuId} onChange={setStuId} />
           <FilterInput icon={Phone} placeholder="Mobile number" value={phone} onChange={setPhone} />
-          <FilterSelect value={university} onChange={setUniversity} options={["All", ...UNIVERSITIES]} placeholder="University" />
-          <FilterSelect value={course} onChange={setCourse} options={["All", ...COURSES]} placeholder="Course" />
-          <FilterSelect value={batch} onChange={setBatch} options={["All", ...BATCHES]} placeholder="Intake" />
           <FilterSelect
             value={statusFilter}
-            onChange={(v) => setStatusFilter(v as StudentStatus | "All")}
+            onChange={(v) => {
+              setStatusFilter(v as StudentStatus | "All");
+              setPage(1);
+            }}
             options={["All", ...STATUS_ORDER]}
             placeholder="Status"
-          />
-          <FilterSelect
-            value={coordinator}
-            onChange={setCoordinator}
-            options={["All", ...COORDINATORS.map((c) => c.name)]}
-            placeholder="Student Coordinator"
           />
         </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <CalendarDays className="h-3.5 w-3.5" />
-            Date range: <span className="font-medium text-foreground">Last 90 days</span>
+            Status filter runs server-side · name / ID / phone refine the page
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -297,9 +324,6 @@ function StudentsPage() {
               <Bookmark className="h-3.5 w-3.5" />
               Save view
             </button>
-            <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary-hover">
-              Apply filters
-            </button>
           </div>
         </div>
       </div>
@@ -312,14 +336,22 @@ function StudentsPage() {
             {statusFilter !== "All" && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                 {statusFilter}
-                <button onClick={() => setStatusFilter("All")}>
+                <button
+                  onClick={() => {
+                    setStatusFilter("All");
+                    setPage(1);
+                  }}
+                >
                   <X className="h-3 w-3" />
                 </button>
               </span>
             )}
+            {isFetching && !isLoading && (
+              <RefreshCcw className="ml-2 inline h-3.5 w-3.5 animate-spin text-muted-foreground/60 align-text-bottom" />
+            )}
           </div>
           <div className="text-xs text-muted-foreground">
-            Sorted by <span className="font-medium text-foreground">Enrollment Date</span> · Newest first
+            Sorted by <span className="font-medium text-foreground">Newest</span> first
           </div>
         </div>
 
@@ -346,16 +378,15 @@ function StudentsPage() {
               </div>
             </div>
           ) : (
-            <table className="w-full min-w-[1100px] border-collapse text-sm">
+            <table className="w-full min-w-[1000px] border-collapse text-sm">
               <thead className="sticky top-0 z-10 bg-muted/60 backdrop-blur">
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5 font-semibold">Student ID</th>
                   <th className="px-4 py-2.5 font-semibold">Student</th>
                   <th className="px-4 py-2.5 font-semibold">University</th>
                   <th className="px-4 py-2.5 font-semibold">Course</th>
-                  <th className="px-4 py-2.5 font-semibold">Batch</th>
                   <th className="px-4 py-2.5 font-semibold">Enrolled</th>
-                  <th className="px-4 py-2.5 font-semibold">Support</th>
+                  <th className="px-4 py-2.5 font-semibold">Consultant</th>
                   <th className="px-4 py-2.5 font-semibold">Status</th>
                   <th className="px-4 py-2.5 text-right font-semibold">Actions</th>
                 </tr>
@@ -363,23 +394,21 @@ function StudentsPage() {
               <tbody>
                 {pageRows.map((s) => (
                   <tr
-                    key={s.id}
+                    key={s.rowId}
                     className="group border-b border-border last:border-0 transition hover:bg-muted/40"
                   >
                     <td className="px-4 py-3">
                       <Link
                         to="/students/students/$id"
-                        params={{ id: s.id }}
+                        params={{ id: s.rowId }}
                         className="font-mono text-xs font-semibold text-primary hover:underline"
                       >
-                        {s.id}
+                        {s.displayId}
                       </Link>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                          {s.name.split(" ").map((w) => w[0]).join("").slice(0, 2)}
-                        </div>
+                        <Avatar name={s.name} src={s.profilePicture} />
                         <div className="min-w-0">
                           <div className="truncate text-sm font-semibold text-foreground">{s.name}</div>
                           <div className="truncate text-xs text-muted-foreground">{s.email}</div>
@@ -388,12 +417,11 @@ function StudentsPage() {
                     </td>
                     <td className="px-4 py-3 text-sm text-foreground">{s.university}</td>
                     <td className="px-4 py-3 text-sm text-foreground">{s.course}</td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">{s.batch}</td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">{s.enrollmentDate}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-muted text-[10px] font-bold text-foreground">
-                          {s.coordinatorInitials}
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-bold text-foreground">
+                          {s.coordinator === EMPTY ? "—" : initials(s.coordinator)}
                         </div>
                         <span className="text-xs text-foreground">{s.coordinator}</span>
                       </div>
@@ -413,7 +441,7 @@ function StudentsPage() {
                       <div className="flex items-center justify-end gap-1">
                         <Link
                           to="/students/students/$id"
-                          params={{ id: s.id }}
+                          params={{ id: s.rowId }}
                           title="View"
                           className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-foreground"
                         >
@@ -471,11 +499,30 @@ function StudentsPage() {
 
 /* ---------------- Helpers ---------------- */
 
+function Avatar({ name, src }: { name: string; src: string | null }) {
+  const [broken, setBroken] = useState(false);
+  if (src && !broken) {
+    return (
+      <img
+        src={src}
+        alt={name}
+        onError={() => setBroken(true)}
+        className="h-9 w-9 shrink-0 rounded-full object-cover"
+      />
+    );
+  }
+  return (
+    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+      {initials(name)}
+    </div>
+  );
+}
+
 function KpiCard({
   icon: Icon,
   label,
   value,
-  trend,
+  loading,
   active,
   onClick,
   accent,
@@ -484,13 +531,12 @@ function KpiCard({
   icon: typeof Users;
   label: string;
   value: number;
-  trend: number;
+  loading?: boolean;
   active?: boolean;
   onClick?: () => void;
   accent?: string;
   dot?: string;
 }) {
-  const up = trend >= 0;
   return (
     <button
       onClick={onClick}
@@ -514,18 +560,13 @@ function KpiCard({
         {label}
       </div>
       <div className="flex items-end justify-between">
-        <div className="text-xl font-bold tracking-tight text-foreground">
-          {value.toLocaleString()}
-        </div>
-        <div
-          className={cn(
-            "inline-flex items-center gap-0.5 text-[11px] font-semibold",
-            up ? "text-emerald-600" : "text-red-600",
-          )}
-        >
-          {up ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
-          {Math.abs(trend).toFixed(1)}%
-        </div>
+        {loading ? (
+          <div className="h-6 w-10 animate-pulse rounded bg-muted" />
+        ) : (
+          <div className="text-xl font-bold tracking-tight text-foreground">
+            {value.toLocaleString()}
+          </div>
+        )}
       </div>
     </button>
   );
