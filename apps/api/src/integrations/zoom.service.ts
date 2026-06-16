@@ -20,6 +20,27 @@ const VALID_SDK_ROLES = [0, 1] as const;
 
 const ZOOM_OAUTH_URL = 'https://zoom.us/oauth/token';
 
+// Base URL for the Zoom REST API v2 (users management).
+const ZOOM_API_BASE = 'https://api.zoom.us/v2';
+
+// Zoom caps page_size at 300; the legacy lib used 30. Use 300 to minimise
+// round-trips while staying within the documented maximum.
+const ZOOM_USERS_PAGE_SIZE = 300;
+
+// Safety cap so a misbehaving API can never spin the pagination loop forever.
+const ZOOM_USERS_MAX_PAGES = 50;
+
+/** Minimal shape of a Zoom user as returned by GET /users. */
+export interface ZoomUser {
+  id: string;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  status?: string;
+  type?: number;
+  [key: string]: unknown;
+}
+
 // Zoom S2S tokens live 1 hour; refresh a little early to avoid edge expiry.
 const TOKEN_TTL_MS = 55 * 60 * 1000;
 
@@ -164,6 +185,112 @@ export class ZoomService {
       .replace(/=+$/, '');
 
     return `${signingInput}.${signature}`;
+  }
+
+  /**
+   * List Zoom users, following pagination until exhausted. Ports
+   * Zoom.php::listUsers / listPendingUsers — pass status='pending' for the
+   * pending-invite roster (omit for active users).
+   */
+  async listUsers(status?: 'active' | 'pending' | 'inactive'): Promise<ZoomUser[]> {
+    const all: ZoomUser[] = [];
+
+    for (let page = 1; page <= ZOOM_USERS_MAX_PAGES; page++) {
+      const params = new URLSearchParams({
+        page_size: String(ZOOM_USERS_PAGE_SIZE),
+        page_number: String(page),
+      });
+      if (status) params.set('status', status);
+
+      const data = (await this.zoomFetch(`/users?${params.toString()}`, {
+        method: 'GET',
+      })) as { users?: ZoomUser[] };
+
+      const users = data.users ?? [];
+      all.push(...users);
+
+      // A short page means we've reached the end.
+      if (users.length < ZOOM_USERS_PAGE_SIZE) break;
+    }
+
+    return all;
+  }
+
+  /**
+   * Invite/create a Zoom user (action=create, type=1 basic). Ports
+   * Zoom.php::addUser. Returns the created Zoom user payload (incl. its id).
+   */
+  async addUser(
+    email: string,
+    firstName: string,
+    lastName: string,
+  ): Promise<ZoomUser> {
+    return (await this.zoomFetch('/users', {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'create',
+        user_info: {
+          email,
+          type: 1,
+          first_name: firstName,
+          last_name: lastName,
+        },
+      }),
+    })) as ZoomUser;
+  }
+
+  /**
+   * Delete a Zoom user by id or email. Ports Zoom.php::deleteUser. Zoom returns
+   * 204 No Content on success, so there is no body to parse.
+   */
+  async deleteUser(userId: string): Promise<void> {
+    await this.zoomFetch(`/users/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * Authenticated Zoom REST call. Acquires/reuses the S2S OAuth token, then
+   * issues the request. Parses JSON when present (DELETE returns 204/empty) and
+   * raises ServiceUnavailableException on any transport/HTTP failure so the
+   * controller surfaces a clean 503 rather than leaking Zoom internals.
+   */
+  private async zoomFetch(
+    path: string,
+    init: { method: string; body?: string },
+  ): Promise<unknown> {
+    const token = await this.getAccessToken();
+
+    let response: Response;
+    try {
+      response = await fetch(`${ZOOM_API_BASE}${path}`, {
+        method: init.method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: init.body,
+      });
+    } catch (err) {
+      this.logger.error(`Zoom API request failed: ${(err as Error).message}`);
+      throw new ServiceUnavailableException('Zoom request failed');
+    }
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      this.logger.error(`Zoom API ${init.method} ${path} ${response.status}: ${body}`);
+      throw new ServiceUnavailableException('Zoom request failed');
+    }
+
+    if (response.status === 204) return null;
+
+    const text = await response.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return null;
+    }
   }
 
   private base64UrlEncode(value: string): string {
