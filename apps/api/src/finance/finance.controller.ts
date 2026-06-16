@@ -16,6 +16,7 @@ import { PdfService } from './pdf.service';
 import { CreateInvoiceDto, UpdateInvoiceDto } from './dto/invoice.dto';
 import { CreatePaymentDto } from './dto/payment.dto';
 import { CreateFeeTypeDto } from './dto/fee-type.dto';
+import { UpdateDueDateDto } from './dto/due-date.dto';
 import {
   CreateRazorpayOrderDto,
   VerifyRazorpayPaymentDto,
@@ -83,6 +84,13 @@ export class FinanceController {
     return this.finance.listInvoices(query);
   }
 
+  // Literal sub-path — MUST stay above 'invoices/:id'.
+  @Get('invoices/students-by-course')
+  @ResponseMessage('Students fetched')
+  studentsByCourse(@Query('course_id', ParseIntPipe) courseId: number) {
+    return this.finance.studentsByCourse(courseId);
+  }
+
   @Get('invoices/:id')
   @ResponseMessage('Invoice fetched')
   getInvoice(@Param('id', ParseIntPipe) id: number) {
@@ -110,6 +118,17 @@ export class FinanceController {
     return this.finance.deleteInvoice(id);
   }
 
+  // Sets due_date and (re)builds the invoice_crone_job reminder/due rows.
+  @Patch('invoices/:id/due-date')
+  @ResponseMessage('Invoice due date updated')
+  updateInvoiceDueDate(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateDueDateDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.finance.updateInvoiceDueDate(id, dto, userId);
+  }
+
   // Lists all payments recorded against a single invoice.
   @Get('invoices/:id/payments')
   @ResponseMessage('Invoice payments fetched')
@@ -132,10 +151,17 @@ export class FinanceController {
   }
 
   // Records a manual payment row (cash/cheque/bank). Does NOT call Razorpay.
+  // Also computes referral/university commission amounts from course context.
   @Post('payments')
   @ResponseMessage('Payment recorded')
   createPayment(@Body() dto: CreatePaymentDto) {
     return this.finance.createPayment(dto);
+  }
+
+  @Delete('payments/:id')
+  @ResponseMessage('Payment deleted')
+  deletePayment(@Param('id', ParseIntPipe) id: number) {
+    return this.finance.deletePayment(id);
   }
 
   // ---- razorpay ------------------------------------------------------------
@@ -169,6 +195,21 @@ export class FinanceController {
   @ResponseMessage('Fee type created')
   createFeeType(@Body() dto: CreateFeeTypeDto) {
     return this.finance.createFeeType(dto);
+  }
+
+  @Patch('fee-types/:id')
+  @ResponseMessage('Fee type updated')
+  updateFeeType(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateFeeTypeDto,
+  ) {
+    return this.finance.updateFeeType(id, dto);
+  }
+
+  @Delete('fee-types/:id')
+  @ResponseMessage('Fee type deleted')
+  deleteFeeType(@Param('id', ParseIntPipe) id: number) {
+    return this.finance.deleteFeeType(id);
   }
 
   // ---- commission plans ----------------------------------------------------
