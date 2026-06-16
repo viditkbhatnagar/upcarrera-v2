@@ -1784,4 +1784,32 @@ export class ReportsService {
       },
     };
   }
+
+  /**
+   * Call-log summary. Port of App\Controllers\Api\Report::index()'s
+   * call_overview block (incoming/outgoing/missed/declined counts + distinct
+   * contacts).
+   *
+   * TODO(prod-table): the `call_log` table is NOT present in schema.prisma, so
+   * there is nothing to aggregate here. We return a well-formed zeroed summary
+   * (HTTP 200) rather than referencing a non-existent prisma model. When the
+   * production `call_log` table is added, aggregate by `type`
+   * (1=incoming, 2=outgoing, 3=missed, 0=declined) over the optional date /
+   * telecaller window and count distinct phone numbers for unique_contacts.
+   */
+  calls(): {
+    incoming: number;
+    outgoing: number;
+    missed: number;
+    declined: number;
+    unique_contacts: number;
+  } {
+    return {
+      incoming: 0,
+      outgoing: 0,
+      missed: 0,
+      declined: 0,
+      unique_contacts: 0,
+    };
+  }
 }

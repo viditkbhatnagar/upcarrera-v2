@@ -103,6 +103,19 @@ export class FinanceController {
     return this.finance.createInvoice(dto);
   }
 
+  /**
+   * Cron-triggered: process today's invoice_crone_job rows (send reminder/due
+   * emails via EmailService when configured, then retire each processed row).
+   * Port of Invoice::process_invoice_crone_jobs(). Literal path — there is no
+   * `@Post('invoices/:id')`, so it stays unambiguous. Behind the global
+   * JwtAuthGuard like the rest (a scheduler calls it with a service token).
+   */
+  @Post('invoices/process-due-reminders')
+  @ResponseMessage('Invoice due reminders processed')
+  processDueReminders() {
+    return this.finance.processDueReminders();
+  }
+
   @Patch('invoices/:id')
   @ResponseMessage('Invoice updated')
   updateInvoice(

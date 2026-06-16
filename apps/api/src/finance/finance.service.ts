@@ -10,6 +10,7 @@ import {
   invoice_crone_job_type,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { EmailService } from '../integrations/email.service';
 import { CreateInvoiceDto, UpdateInvoiceDto } from './dto/invoice.dto';
 import { CreatePaymentDto } from './dto/payment.dto';
 import { CreateFeeTypeDto } from './dto/fee-type.dto';
@@ -56,6 +57,7 @@ export class FinanceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly razorpay: RazorpayProvider,
+    private readonly email: EmailService,
   ) {}
 
   // ---- helpers -------------------------------------------------------------
@@ -232,6 +234,140 @@ export class FinanceService {
         },
       });
     }
+  }
+
+  /**
+   * Cron-triggered: process today's invoice_crone_job rows. Port of
+   * Invoice::process_invoice_crone_jobs() + send_reminder_email():
+   *   - select every live cron row whose due_date is today;
+   *   - for each, load its (live) invoice + student contact + paid total;
+   *   - send the reminder/due email via EmailService (when configured);
+   *   - soft-delete the processed cron row so it never fires twice.
+   *
+   * EmailService is env-gated: when Brevo creds are absent it throws, which we
+   * catch per-row so a missing email config does NOT block the cron run — the
+   * row is still marked processed and the failure is reported in the summary.
+   */
+  async processDueReminders() {
+    const now = new Date();
+    const today = new Date(`${this.toDateString(now)}T00:00:00.000Z`);
+
+    const jobs = await this.prisma.invoice_crone_job.findMany({
+      where: { due_date: today, deleted_at: null },
+      orderBy: { id: 'asc' },
+    });
+
+    let processed = 0;
+    let emailsSent = 0;
+    let emailsFailed = 0;
+
+    for (const job of jobs) {
+      if (job.invoice_id == null) {
+        // Orphaned cron row — nothing to remind on; retire it.
+        await this.prisma.invoice_crone_job.update({
+          where: { id: job.id },
+          data: { deleted_at: now },
+        });
+        processed += 1;
+        continue;
+      }
+
+      const invoice = await this.prisma.invoice.findFirst({
+        where: { id: job.invoice_id, deleted_at: null },
+      });
+
+      // Invoice gone/deleted — retire the cron row without emailing.
+      if (invoice) {
+        const sent = await this.sendReminderEmail(invoice, job.type);
+        if (sent === true) emailsSent += 1;
+        else if (sent === false) emailsFailed += 1;
+      }
+
+      // Retire the cron row (matches the legacy permanent delete) so it never
+      // double-fires. Soft-delete keeps an audit trail.
+      await this.prisma.invoice_crone_job.update({
+        where: { id: job.id },
+        data: { deleted_at: now },
+      });
+      processed += 1;
+    }
+
+    return {
+      date: this.toDateString(now),
+      jobs_found: jobs.length,
+      processed,
+      emails_sent: emailsSent,
+      emails_failed: emailsFailed,
+    };
+  }
+
+  /**
+   * Sends a single payment reminder/due email for an invoice. Returns:
+   *   true  -> email sent,
+   *   false -> send attempted but failed (e.g. Email not configured),
+   *   null  -> skipped (no recipient email on the student).
+   * Never throws — the caller catches nothing.
+   */
+  private async sendReminderEmail(
+    invoice: { id: number; student_id: number | null; payable_amount: number | null; due_date: Date | null },
+    type: invoice_crone_job_type | null,
+  ): Promise<boolean | null> {
+    let recipientEmail: string | null = null;
+    let recipientName = '';
+    if (invoice.student_id != null) {
+      const student = await this.prisma.users.findFirst({
+        where: { id: invoice.student_id },
+        select: { name: true, email: true },
+      });
+      recipientEmail = student?.email ?? null;
+      recipientName = student?.name ?? '';
+    }
+    if (!recipientEmail) return null;
+
+    const dueLabel = invoice.due_date
+      ? this.toDateString(invoice.due_date)
+      : '';
+    const isReminder = type !== invoice_crone_job_type.due;
+    const subject = isReminder
+      ? `Payment Reminder: Due on ${dueLabel}`
+      : `Invoice Payment Due Today: ${dueLabel}`;
+    const messageType = isReminder
+      ? `This is a reminder that your payment is due on <strong>${dueLabel}</strong>. Please make the payment to avoid any late fees.`
+      : 'Your payment for the invoice is due today. Please make the payment to avoid any penalties.';
+
+    const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;background:#f5f5f5;color:#333;padding:20px;">
+  <div style="max-width:600px;margin:0 auto;padding:20px;background:#fff;border-radius:8px;">
+    <h1 style="color:#3498db;font-size:24px;">Payment ${isReminder ? 'Reminder' : 'Due'}</h1>
+    <p>Dear ${recipientName || 'Student'},</p>
+    <p>${messageType}</p>
+    <div style="padding:15px;border-radius:5px;margin:20px 0;background:#e9ecef;border-left:4px solid #3498db;">
+      <p><strong>Invoice #:</strong> ${invoice.id}</p>
+      <p><strong>Payable Amount:</strong> ${invoice.payable_amount ?? 0}</p>
+      <p><strong>Due Date:</strong> ${dueLabel}</p>
+    </div>
+  </div>
+</body></html>`;
+
+    try {
+      await this.email.sendEmail({
+        to: recipientEmail,
+        name: recipientName || recipientEmail,
+        subject,
+        html,
+      });
+      return true;
+    } catch {
+      // EmailService throws ServiceUnavailableException when not configured.
+      return false;
+    }
+  }
+
+  /** ISO 'YYYY-MM-DD' for a Date (server-local calendar day). */
+  private toDateString(date: Date): string {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }
 
   async getInvoice(id: number) {

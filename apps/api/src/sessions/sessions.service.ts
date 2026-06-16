@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   NotFoundException,
   NotImplementedException,
@@ -17,6 +18,8 @@ import { ListDemoSessionsDto } from './dto/list-demo-sessions.dto';
 import { ListSessionRequestsDto } from './dto/list-session-requests.dto';
 import { UpdateSessionRequestDto } from './dto/update-session-request.dto';
 import { SessionReportQueryDto } from './dto/session-report-query.dto';
+import { RescheduleSessionDto } from './dto/reschedule-session.dto';
+import { RescheduleDemoSessionDto } from './dto/reschedule-demo-session.dto';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -261,6 +264,95 @@ export class SessionsService {
     return { session_id: id, students, teachers };
   }
 
+  /**
+   * Reschedule a session. Port of the legacy reschedule action which set
+   * scheduled_date / from_time / to_time on the sessions row.
+   *
+   * TODO(prod-table): the v2 `sessions` table is thin (PK session_id +
+   * session_title only) — it has NO scheduled_date / from_time / to_time
+   * columns. So we cannot persist the requested schedule here. We bump the only
+   * mutable column that exists (updated_at) to record that a change was
+   * attempted, and echo the requested schedule back so the client retains it.
+   * When the production schedule columns are added to `sessions`, persist them
+   * here (mirroring rescheduleDemoSession below).
+   */
+  async rescheduleSession(id: number, dto: RescheduleSessionDto) {
+    await this.getSession(id);
+
+    // Only updated_at exists to touch on the thin table.
+    const session = await this.prisma.sessions.update({
+      where: { session_id: id },
+      data: { updated_at: new Date() },
+    });
+
+    return {
+      session,
+      // Echoed for parity — these columns do not exist on the thin sessions
+      // table yet (see TODO(prod-table) above).
+      requested_schedule: {
+        scheduled_date: dto.scheduled_date ?? null,
+        from_time: dto.from_time ?? null,
+        to_time: dto.to_time ?? null,
+      },
+      persisted: false,
+    };
+  }
+
+  /**
+   * Student attendance check-in. Port of Student\Sessions::session_attendance():
+   * insert a session_attendance row (date = today, start_time = now) for the
+   * authenticated student, but only if one does not already exist for this
+   * (student, session) pair — the legacy guard returned "Already Taken".
+   */
+  async checkinAttendance(sessionId: number, studentId: number) {
+    const now = new Date();
+    const existing = await this.prisma.session_attendance.findFirst({
+      where: { student_id: studentId, session_id: sessionId, deleted_at: null },
+    });
+    if (existing) {
+      throw new ConflictException('Attendance already taken for this session!');
+    }
+
+    return this.prisma.session_attendance.create({
+      data: {
+        student_id: studentId,
+        session_id: sessionId,
+        // @db.Date — store at UTC midnight for the calendar day.
+        date: new Date(`${this.toDateString(now)}T00:00:00.000Z`),
+        // @db.Time — store the wall-clock time on the 1970 epoch date.
+        start_time: new Date(`1970-01-01T${this.toClockString(now)}Z`),
+        created_by: studentId,
+        created_at: now,
+        updated_by: studentId,
+        updated_at: now,
+      },
+    });
+  }
+
+  /**
+   * Student attendance check-out. Port of
+   * Student\Sessions::session_attendance_update(): set end_time = now on the
+   * authenticated student's existing attendance row for this session.
+   */
+  async checkoutAttendance(sessionId: number, studentId: number) {
+    const now = new Date();
+    const row = await this.prisma.session_attendance.findFirst({
+      where: { student_id: studentId, session_id: sessionId, deleted_at: null },
+    });
+    if (!row) {
+      throw new NotFoundException('No attendance check-in found for this session!');
+    }
+
+    return this.prisma.session_attendance.update({
+      where: { id: row.id },
+      data: {
+        end_time: new Date(`1970-01-01T${this.toClockString(now)}Z`),
+        updated_by: studentId,
+        updated_at: now,
+      },
+    });
+  }
+
   // ----------------------------------------------------------------------- //
   // demo_sessions                                                           //
   // ----------------------------------------------------------------------- //
@@ -380,6 +472,46 @@ export class SessionsService {
     }
 
     return this.prisma.demo_sessions.update({ where: { id }, data });
+  }
+
+  /**
+   * Reschedule a demo session — update ONLY the schedule fields (scheduled_date
+   * / from_time / to_time), which all exist on demo_sessions. Any subset may be
+   * supplied; omitted fields are left untouched. Mirrors the legacy reschedule
+   * action that touched only date/time (distinct from the broader edit()).
+   */
+  async rescheduleDemoSession(
+    id: number,
+    dto: RescheduleDemoSessionDto,
+    userId?: number,
+  ) {
+    await this.getDemoSession(id);
+
+    const data: Prisma.demo_sessionsUpdateInput = { updated_at: new Date() };
+    if (userId !== undefined) data.updated_by = userId;
+
+    if (dto.scheduled_date !== undefined) {
+      data.scheduled_date = dto.scheduled_date
+        ? new Date(`${dto.scheduled_date}T00:00:00.000Z`)
+        : null;
+    }
+    if (dto.from_time !== undefined) {
+      data.from_time = dto.from_time
+        ? new Date(`1970-01-01T${this.normalizeTime(dto.from_time)}Z`)
+        : null;
+    }
+    if (dto.to_time !== undefined) {
+      data.to_time = dto.to_time
+        ? new Date(`1970-01-01T${this.normalizeTime(dto.to_time)}Z`)
+        : null;
+    }
+
+    return this.prisma.demo_sessions.update({ where: { id }, data });
+  }
+
+  /** Pads an 'HH:mm' to 'HH:mm:ss' so it parses as a @db.Time value. */
+  private normalizeTime(value: string): string {
+    return value.length === 5 ? `${value}:00` : value;
   }
 
   async removeDemoSession(id: number) {
@@ -680,6 +812,18 @@ export class SessionsService {
   /** 'HH:mm:ss' for a @db.Time value. */
   private toTimeString(time: Date): string {
     return time.toISOString().slice(11, 19);
+  }
+
+  /**
+   * Local wall-clock 'HH:mm:ss' for a Date (used when recording attendance
+   * start/end times, mirroring the legacy date('H:i:s')). Uses the server's
+   * local timezone, like the PHP date() the legacy controller relied on.
+   */
+  private toClockString(date: Date): string {
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
   }
 
   // ----------------------------------------------------------------------- //

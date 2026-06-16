@@ -16,6 +16,7 @@ import { CreateDemoSessionDto } from './dto/create-demo-session.dto';
 import { UpdateDemoSessionDto } from './dto/update-demo-session.dto';
 import { ShareDemoSessionDto } from './dto/share-demo-session.dto';
 import { ListDemoSessionsDto } from './dto/list-demo-sessions.dto';
+import { RescheduleDemoSessionDto } from './dto/reschedule-demo-session.dto';
 
 /**
  * Staff-only endpoints for demo sessions. Protected by the global JwtAuthGuard
@@ -46,6 +47,18 @@ export class DemoSessionsController {
     @Body() dto: ShareDemoSessionDto,
   ) {
     return this.sessions.shareDemoSession(id, dto);
+  }
+
+  // 3-segment literal — declared before the 2-segment `:id` PATCH so it is
+  // never swallowed by it.
+  @Patch(':id/reschedule')
+  @ResponseMessage('Demo session rescheduled successfully!')
+  reschedule(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RescheduleDemoSessionDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.sessions.rescheduleDemoSession(id, dto, userId);
   }
 
   @Patch(':id')

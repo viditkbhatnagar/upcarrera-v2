@@ -81,6 +81,18 @@ export class ReportsController {
   }
 
   /**
+   * Call-log summary (incoming/outgoing/missed/declined + unique contacts).
+   * Port of Report::index()'s call_overview. The `call_log` table is absent from
+   * the schema, so this returns a zeroed summary (see ReportsService.calls +
+   * its TODO(prod-table)). Literal path; no `/reports/:id` catch-all.
+   */
+  @Get('calls')
+  @ResponseMessage('Call report')
+  calls() {
+    return this.reports.calls();
+  }
+
+  /**
    * Invoice report — invoice rows in the date window with paid totals + grand
    * totals. Ports Invoice.php::index() (the Invoice_report view's row set).
    * `?from_date=&to_date=&course_id=&student_id=` filter; `?format=csv` downloads.
