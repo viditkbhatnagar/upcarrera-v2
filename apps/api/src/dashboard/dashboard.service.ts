@@ -42,6 +42,13 @@ export class DashboardService {
   // Legacy lead_status_id used for the "follow up" bucket (index()).
   private static readonly LEAD_STATUS_FOLLOW_UP = 3;
 
+  // Window (in days) for the fee_trend daily collection chart.
+  private static readonly FEE_TREND_DAYS = 14;
+
+  // How many upcoming follow-up tasks / recent activity rows to surface.
+  private static readonly TASKS_LIMIT = 10;
+  private static readonly ACTIVITY_LIMIT = 15;
+
   // ===========================================================================
   // Helpers
   // ===========================================================================
@@ -119,6 +126,9 @@ export class DashboardService {
       income,
       recentLeads,
       recentStudents,
+      tasks,
+      activity,
+      feeTrend,
     ] = await Promise.all([
       // Lead totals split by converted/open in one grouped query.
       this.prisma.leads.groupBy({
@@ -163,6 +173,12 @@ export class DashboardService {
           created_at: true,
         },
       }),
+      // (a) upcoming follow-up reminders, (b) recent activity feed, (c) the
+      // 14-day daily fee-collection trend. Each is scoped to the same lead /
+      // student scope used above, and each falls back to [] on no data.
+      this.computeUpcomingTasks(leadWhere),
+      this.computeRecentActivity(leadWhere, studentUserWhere),
+      this.computeFeeTrend(),
     ]);
 
     const totalLeads = leadGroups.reduce((s, g) => s + g._count._all, 0);
@@ -191,6 +207,12 @@ export class DashboardService {
         leads: recentLeads,
         students: recentStudents,
       },
+      // Upcoming follow-up reminders sourced from lead_activity.followup_date.
+      tasks,
+      // Newest-first merged feed of recent leads + students + payments.
+      activity,
+      // Last 14 days of daily collected amounts (payment.paid_amount).
+      fee_trend: feeTrend,
     };
   }
 
@@ -241,6 +263,274 @@ export class DashboardService {
       payable_total: payableTotal,
       pending,
     };
+  }
+
+  // ===========================================================================
+  // GET /dashboard — tasks / activity / fee_trend decorators
+  //
+  // All three use the bulk-findMany + in-memory-merge pattern (no per-row
+  // queries). Each returns [] when its source genuinely has no rows. The
+  // follow-up source is the live lead_activity.followup_date column (the same
+  // funnel column Leads::update_lead_status writes); there is no separate
+  // reminders/tasks table in this schema, so upcoming tasks are derived from it.
+  // ===========================================================================
+
+  /**
+   * (a) Upcoming follow-up reminders. Sourced from `lead_activity` — the lead
+   * funnel's history table whose `followup_date` (a @db.Date) is the scheduled
+   * next-contact date written by Leads::update_lead_status. A "task" is the most
+   * recent activity row per lead whose followup_date is today or later.
+   *
+   * lead_activity has no telecaller/owner column, so scope is inherited from the
+   * caller's lead scope: we first resolve the in-scope lead ids (one query using
+   * the same `leadWhere` getOverview built), then pull their future follow-ups
+   * and decorate each with the lead title + status title. Two extra bulk queries
+   * (leads-in-scope already resolved, statuses) — no N+1.
+   *
+   * Returns [] when no in-scope lead has a future follow-up.
+   */
+  private async computeUpcomingTasks(leadWhere: Prisma.leadsWhereInput) {
+    const today = new Date();
+    const dayStart = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+    );
+
+    // 1. In-scope leads carrying a future follow-up, with the title we display.
+    const scopedLeads = await this.prisma.leads.findMany({
+      where: { ...leadWhere, followup_date: { gte: dayStart } },
+      select: {
+        id: true,
+        title: true,
+        phone: true,
+        lead_status_id: true,
+        followup_date: true,
+      },
+    });
+    if (scopedLeads.length === 0) return [];
+
+    const leadIds = scopedLeads.map((l) => l.id);
+    const leadById = new Map(scopedLeads.map((l) => [l.id, l]));
+
+    // 2. Future follow-up activity rows for those leads (the actual reminders).
+    const activities = await this.prisma.lead_activity.findMany({
+      where: {
+        deleted_at: null,
+        lead_id: { in: leadIds },
+        followup_date: { gte: dayStart },
+      },
+      orderBy: { followup_date: 'asc' },
+      take: DashboardService.TASKS_LIMIT,
+      select: {
+        id: true,
+        lead_id: true,
+        lead_status_id: true,
+        remarks: true,
+        followup_date: true,
+        action_by: true,
+      },
+    });
+    if (activities.length === 0) return [];
+
+    // 3. Resolve lead_status titles in one bulk query (no FK relation modelled).
+    const statusIds = [
+      ...new Set(
+        activities
+          .map((a) => a.lead_status_id ?? null)
+          .concat(scopedLeads.map((l) => l.lead_status_id ?? null))
+          .filter((s): s is number => s != null),
+      ),
+    ];
+    const statuses =
+      statusIds.length > 0
+        ? await this.prisma.lead_status.findMany({
+            where: { id: { in: statusIds } },
+            select: { id: true, title: true },
+          })
+        : [];
+    const statusTitleById = new Map(statuses.map((s) => [s.id, s.title]));
+
+    return activities.map((a) => {
+      const lead = a.lead_id != null ? leadById.get(a.lead_id) : undefined;
+      const statusId = a.lead_status_id ?? lead?.lead_status_id ?? null;
+      return {
+        id: a.id,
+        type: 'follow_up' as const,
+        lead_id: a.lead_id,
+        lead_title: lead?.title ?? null,
+        lead_phone: lead?.phone ?? null,
+        status_id: statusId,
+        status_title:
+          statusId != null ? (statusTitleById.get(statusId) ?? null) : null,
+        remarks: a.remarks ?? null,
+        due_date: a.followup_date,
+        assigned_to: a.action_by ?? null,
+      };
+    });
+  }
+
+  /**
+   * (b) Recent activity feed — newest-first merge of three live sources:
+   *   - leads created (scoped by the caller's leadWhere),
+   *   - students created (users role 4, scoped by studentUserWhere),
+   *   - payments collected (payment.paid_amount, decorated with the payer name).
+   *
+   * Each source is one bulk findMany; payer names are resolved in a single extra
+   * users.findMany (no N+1). The three streams are merged and sorted desc by
+   * their event timestamp, then truncated to ACTIVITY_LIMIT. Returns [] only
+   * when all three sources are empty.
+   */
+  private async computeRecentActivity(
+    leadWhere: Prisma.leadsWhereInput,
+    studentUserWhere: Prisma.usersWhereInput,
+  ) {
+    const limit = DashboardService.ACTIVITY_LIMIT;
+
+    const [recentLeads, recentStudents, recentPayments] = await Promise.all([
+      this.prisma.leads.findMany({
+        where: leadWhere,
+        orderBy: { id: 'desc' },
+        take: limit,
+        select: { id: true, title: true, created_at: true },
+      }),
+      this.prisma.users.findMany({
+        where: studentUserWhere,
+        orderBy: { id: 'desc' },
+        take: limit,
+        select: { id: true, name: true, created_at: true },
+      }),
+      // Payments are unscoped here (mirrors computeIncome, which is org-wide):
+      // the legacy finance figures on this dashboard are not telecaller-scoped.
+      this.prisma.payment.findMany({
+        where: { deleted_at: null },
+        orderBy: { id: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          user_id: true,
+          paid_amount: true,
+          payment_date: true,
+          created_on: true,
+        },
+      }),
+    ]);
+
+    // Resolve payer names in one bulk query (no per-payment lookup).
+    const payerIds = [
+      ...new Set(
+        recentPayments
+          .map((p) => p.user_id)
+          .filter((u): u is number => u != null),
+      ),
+    ];
+    const payers =
+      payerIds.length > 0
+        ? await this.prisma.users.findMany({
+            where: { id: { in: payerIds } },
+            select: { id: true, name: true },
+          })
+        : [];
+    const payerNameById = new Map(payers.map((u) => [u.id, u.name]));
+
+    type ActivityEvent = {
+      type: 'lead' | 'student' | 'payment';
+      id: number;
+      title: string;
+      amount: number | null;
+      at: Date | null;
+    };
+
+    const events: ActivityEvent[] = [
+      ...recentLeads.map((l) => ({
+        type: 'lead' as const,
+        id: l.id,
+        title: l.title ?? 'New lead',
+        amount: null,
+        at: l.created_at ?? null,
+      })),
+      ...recentStudents.map((s) => ({
+        type: 'student' as const,
+        id: s.id,
+        title: s.name ?? 'New student',
+        amount: null,
+        at: s.created_at ?? null,
+      })),
+      ...recentPayments.map((p) => ({
+        type: 'payment' as const,
+        id: p.id,
+        title:
+          (p.user_id != null ? payerNameById.get(p.user_id) : null) ??
+          'Payment received',
+        amount: this.toNumber(p.paid_amount),
+        at: p.payment_date ?? p.created_on ?? null,
+      })),
+    ];
+
+    // Newest first; rows without a timestamp sink to the bottom.
+    events.sort((a, b) => {
+      const at = a.at ? new Date(a.at).getTime() : -Infinity;
+      const bt = b.at ? new Date(b.at).getTime() : -Infinity;
+      return bt - at;
+    });
+
+    return events.slice(0, limit);
+  }
+
+  /**
+   * (c) Last 14 days of daily collected amounts (SUM payment.paid_amount grouped
+   * by payment.payment_date, a @db.Date). One findMany over the window, bucketed
+   * in memory into an ordered 14-element series (oldest -> newest). Days with no
+   * collection are emitted with amount 0 (so the series is always 14 long).
+   *
+   * Always returns 14 rows; amounts are all 0 when the payment table is empty
+   * for the window.
+   */
+  private async computeFeeTrend() {
+    const days = DashboardService.FEE_TREND_DAYS;
+    const now = new Date();
+    const todayStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
+    // Inclusive lower bound: 13 days back so today is the 14th bucket.
+    const windowStart = new Date(todayStart);
+    windowStart.setDate(windowStart.getDate() - (days - 1));
+    const windowEnd = new Date(todayStart);
+    windowEnd.setDate(windowEnd.getDate() + 1); // exclusive (end of today)
+
+    const payments = await this.prisma.payment.findMany({
+      where: {
+        deleted_at: null,
+        payment_date: { gte: windowStart, lt: windowEnd },
+      },
+      select: { paid_amount: true, payment_date: true },
+    });
+
+    // Local YYYY-MM-DD key so bucketing matches the @db.Date semantics.
+    const keyOf = (d: Date): string => {
+      const y = d.getFullYear();
+      const m = `${d.getMonth() + 1}`.padStart(2, '0');
+      const day = `${d.getDate()}`.padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
+    const sumByDay = new Map<string, number>();
+    for (const p of payments) {
+      if (!p.payment_date) continue;
+      const key = keyOf(new Date(p.payment_date));
+      sumByDay.set(key, (sumByDay.get(key) ?? 0) + this.toNumber(p.paid_amount));
+    }
+
+    const series: { date: string; amount: number }[] = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(windowStart);
+      d.setDate(d.getDate() + i);
+      const key = keyOf(d);
+      series.push({ date: key, amount: sumByDay.get(key) ?? 0 });
+    }
+    return series;
   }
 
   // ===========================================================================

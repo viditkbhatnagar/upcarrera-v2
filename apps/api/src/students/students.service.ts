@@ -33,6 +33,66 @@ const ADMISSION_STATUS_DROPOUT = 4;
 /** role_id for students in the users table (legacy convention). */
 const STUDENT_ROLE_ID = 4;
 
+/**
+ * students.admission_status (Int code) -> human label.
+ *
+ * Source of truth is the legacy admin_dashboard $map (0-indexed), ported in
+ * DashboardService.ADMISSION_STATUS_LABELS, and the live seed
+ * (database/ci-seed.sql seeds admission_status = 2 -> "Enrolled"). Wording is
+ * normalised to the exact KPI-card labels the web client renders
+ * (apps/web/src/lib/students-data.ts): "In Progress" / "Passed Out".
+ */
+const ADMISSION_STATUS_LABELS: Record<number, string> = {
+  0: 'Pending',
+  1: 'In Progress',
+  2: 'Enrolled',
+  3: 'Passed Out',
+  4: 'Dropout',
+  5: 'Cancelled',
+};
+
+/**
+ * The KPI-card status keys, in display order. Drives the GET /students/stats
+ * `by_status` breakdown so every card always has a (possibly zero) count.
+ */
+const ADMISSION_STATUS_ORDER = [
+  'Pending',
+  'In Progress',
+  'Enrolled',
+  'Passed Out',
+  'Dropout',
+  'Cancelled',
+] as const;
+
+/** Maps an admission_status Int code to its human label ('Unknown' when unmapped). */
+function admissionStatusLabel(code: number | null | undefined): string {
+  if (code == null) return 'Unknown';
+  return ADMISSION_STATUS_LABELS[code] ?? 'Unknown';
+}
+
+/**
+ * Human status label for an admission *application* row (NOT a student row).
+ *
+ * The `applications` table has no Int pipeline code — `admission_status` is a
+ * Boolean? flag and the catalog ci-seed never maps it, so the meaningful
+ * lifecycle stage is derived from the application's own lifecycle columns,
+ * matching the legacy App\Application list view ordering:
+ *   - is_converted = 1            -> "Converted"   (already became a student)
+ *   - is_archived  = true         -> "Archived"
+ *   - status       = false        -> "Inactive"
+ *   - otherwise                   -> "Active"      (open application)
+ */
+function applicationStatusLabel(application: {
+  is_converted: number | null;
+  is_archived: boolean;
+  status: boolean | null;
+}): string {
+  if (application.is_converted === 1) return 'Converted';
+  if (application.is_archived) return 'Archived';
+  if (application.status === false) return 'Inactive';
+  return 'Active';
+}
+
 /** bcrypt cost factor, matching the rest of the codebase. */
 const BCRYPT_ROUNDS = 10;
 
@@ -62,7 +122,13 @@ export class StudentsService {
     const studentIdFilter = await this.resolveEnrolmentStudentIds(query);
     // An enrolment filter was requested but matched no enrolments -> empty page.
     if (studentIdFilter !== undefined && studentIdFilter.length === 0) {
-      return { items: [], total: 0, page, limit };
+      return {
+        items: [],
+        total: 0,
+        page,
+        limit,
+        counts: this.emptyAdmissionStatusCounts(),
+      };
     }
 
     const where = {
@@ -78,7 +144,7 @@ export class StudentsService {
         : {}),
     };
 
-    const [items, total] = await Promise.all([
+    const [rows, total, counts] = await Promise.all([
       this.prisma.students.findMany({
         where,
         skip,
@@ -86,9 +152,173 @@ export class StudentsService {
         orderBy: { id: 'desc' },
       }),
       this.prisma.students.count({ where }),
+      // Live KPI-card counts. Computed over the same filtered set (minus
+      // pagination) so the cards reconcile with the rows the UI is showing.
+      this.admissionStatusCounts(where),
     ]);
 
-    return { items, total, page, limit };
+    const items = await this.decorateStudents(rows);
+
+    return { items, total, page, limit, counts };
+  }
+
+  /**
+   * Decorate raw `students` rows with their joined display fields, resolving every
+   * related table in ONE bulk query each (no N+1):
+   *   - name / email / phone / profile_picture <- users (students.student_id)
+   *   - consultant_name                        <- users (students.consultant_id)
+   *   - course_title + university_id           <- course (students.course_id)
+   *   - university_title                       <- university (course.university_id)
+   *   - admission_status_label                 <- ADMISSION_STATUS_LABELS
+   *
+   * The student-user and consultant ids both point at `users`, so they share a
+   * single findMany. Returns plain objects (raw row + decorated fields); no
+   * existing field is removed or renamed.
+   */
+  private async decorateStudents<
+    T extends {
+      student_id: number;
+      consultant_id: number;
+      course_id: number | null;
+      admission_status: number | null;
+    },
+  >(rows: T[]) {
+    if (rows.length === 0) return [];
+
+    // Collect the related id sets.
+    const userIds = [
+      ...new Set(
+        rows.flatMap((r) => [r.student_id, r.consultant_id]),
+      ),
+    ];
+    const courseIds = [
+      ...new Set(
+        rows.map((r) => r.course_id).filter((c): c is number => c != null),
+      ),
+    ];
+
+    // ONE bulk query per related table.
+    const [users, courses] = await Promise.all([
+      userIds.length > 0
+        ? this.prisma.users.findMany({
+            where: { id: { in: userIds } },
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+              profile_picture: true,
+            },
+          })
+        : Promise.resolve([]),
+      courseIds.length > 0
+        ? this.prisma.course.findMany({
+            where: { id: { in: courseIds } },
+            select: { id: true, title: true, university_id: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    // Resolve the universities referenced by the page's courses (one more bulk query).
+    const universityIds = [
+      ...new Set(
+        courses
+          .map((c) => c.university_id)
+          .filter((u): u is number => u != null),
+      ),
+    ];
+    const universities =
+      universityIds.length > 0
+        ? await this.prisma.university.findMany({
+            where: { id: { in: universityIds } },
+            select: { id: true, title: true },
+          })
+        : [];
+
+    // Build id -> row Maps and merge.
+    const userById = new Map(users.map((u) => [u.id, u]));
+    const courseById = new Map(courses.map((c) => [c.id, c]));
+    const universityTitleById = new Map(
+      universities.map((u) => [u.id, u.title ?? null]),
+    );
+
+    return rows.map((row) => {
+      const studentUser = userById.get(row.student_id);
+      const consultant = userById.get(row.consultant_id);
+      const course = row.course_id != null ? courseById.get(row.course_id) : undefined;
+      const universityId = course?.university_id ?? null;
+
+      return {
+        ...row,
+        name: studentUser?.name ?? null,
+        email: studentUser?.email ?? null,
+        phone: studentUser?.phone ?? null,
+        profile_picture: studentUser?.profile_picture ?? null,
+        consultant_name: consultant?.name ?? null,
+        course_title: course?.title ?? null,
+        university_id: universityId,
+        university_title:
+          universityId != null
+            ? (universityTitleById.get(universityId) ?? null)
+            : null,
+        admission_status_label: admissionStatusLabel(row.admission_status),
+      };
+    });
+  }
+
+  /**
+   * Per-status counts for the given students where-clause, keyed by the exact
+   * KPI-card labels (in display order) so every card has a count (0 when none).
+   * One prisma groupBy over admission_status (no per-status round trips).
+   */
+  /** A zeroed counts object (total 0, every KPI label at 0) for empty pages. */
+  private emptyAdmissionStatusCounts() {
+    const byStatus: Record<string, number> = {};
+    for (const label of ADMISSION_STATUS_ORDER) {
+      byStatus[label] = 0;
+    }
+    return { total: 0, by_status: byStatus };
+  }
+
+  private async admissionStatusCounts(where: {
+    deleted_at: null;
+    admission_status?: number;
+    referred_by?: number;
+    student_id?: { in: number[] };
+  }) {
+    const groups = await this.prisma.students.groupBy({
+      by: ['admission_status'],
+      where,
+      _count: { _all: true },
+    });
+
+    const byStatus: Record<string, number> = {};
+    for (const label of ADMISSION_STATUS_ORDER) {
+      byStatus[label] = 0;
+    }
+    let total = 0;
+    for (const g of groups) {
+      const n = g._count._all;
+      total += n;
+      const label = admissionStatusLabel(g.admission_status);
+      // Only fold mapped labels into the keyed buckets; unknown codes still
+      // count toward `total` but never invent a card.
+      if (label in byStatus) {
+        byStatus[label] += n;
+      }
+    }
+
+    return { total, by_status: byStatus };
+  }
+
+  /**
+   * GET /students/stats — live KPI counters for the students list.
+   * Returns { total, by_status: { Pending, "In Progress", Enrolled,
+   * "Passed Out", Dropout, Cancelled } } via a single prisma groupBy over
+   * admission_status across all non-deleted students.
+   */
+  async studentStats() {
+    return this.admissionStatusCounts({ deleted_at: null });
   }
 
   /**
@@ -162,7 +392,9 @@ export class StudentsService {
     return [...ids];
   }
 
-  // GET /students/:id
+  // GET /students/:id (bare row). Internal 404-guard for the ~15 callers that
+  // only need the raw `students` columns; the route handler returns the
+  // decorated detail via getStudentDetail() instead.
   async getStudent(id: number) {
     const student = await this.prisma.students.findFirst({
       where: { id, deleted_at: null },
@@ -171,6 +403,139 @@ export class StudentsService {
       throw new NotFoundException('Student not found!');
     }
     return student;
+  }
+
+  /**
+   * GET /students/:id — the student row decorated with everything the detail
+   * screen renders, resolved via MANUAL bulk joins (the schema has no Prisma
+   * relations). A fixed set of bulk queries, never a per-row query (no N+1):
+   *
+   *   - name / email / phone / profile_picture <- users (students.student_id)
+   *   - consultant_name                        <- users (students.consultant_id)
+   *   - course_title + university_id/title     <- course -> university
+   *   - admission_status_label                 <- student_status / ADMISSION_STATUS_LABELS
+   *   - finance                                <- invoice + payment roll-up
+   *
+   * The join fields reuse decorateStudents() (same single-row contract as the
+   * list), then the invoice/payment finance block is layered on top. Every key is
+   * additive: the row keeps its original `id` and all `students` columns, so the
+   * { message:'Student fetched', data.id } contract the e2e asserts is preserved.
+   */
+  async getStudentDetail(id: number) {
+    const student = await this.getStudent(id); // 404 if missing/soft-deleted
+
+    // Reuse the list decoration (users + course + university bulk joins) so the
+    // detail and list rows expose the exact same joined fields.
+    const [decorated] = await this.decorateStudents([student]);
+
+    // Prefer the data-driven student_status lookup for the label; fall back to
+    // the inferred code map (decorated.admission_status_label) when unseeded.
+    const admissionStatusLabel = await this.resolveAdmissionStatusLabel(
+      student.admission_status ?? null,
+      decorated.admission_status_label,
+    );
+
+    const finance = await this.buildStudentFinance(student.student_id);
+
+    return {
+      ...decorated,
+      admission_status_label: admissionStatusLabel,
+      finance,
+    };
+  }
+
+  /**
+   * Resolves a students.admission_status Int code to a human label. The
+   * authoritative source is the `student_status` lookup table (id -> title); when
+   * a row is missing (the v2 DB has no seed yet) we fall back to the inferred
+   * pipeline label already computed by decorateStudents().
+   */
+  private async resolveAdmissionStatusLabel(
+    code: number | null,
+    fallback: string,
+  ): Promise<string> {
+    if (code == null) return fallback;
+    const row = await this.prisma.student_status.findFirst({
+      where: { id: code, deleted_at: null },
+      select: { title: true },
+    });
+    return row?.title ?? fallback;
+  }
+
+  /**
+   * Builds the finance block for one student from the invoice + payment tables.
+   * invoice.student_id is the student's user id (= students.student_id). Payable
+   * totals come from the live invoices; paid totals from the live payments tied
+   * to those invoices. Two bulk queries only (invoices, then their payments) —
+   * no per-invoice query.
+   *
+   * Returns:
+   *   total       — SUM(invoice.payable_amount) across live invoices
+   *   paid        — SUM(payment.paid_amount) across those invoices' live payments
+   *   outstanding — max(total - paid, 0) (overpayment never reads as negative)
+   *   invoices    — each invoice + its paid_amount_total / outstanding_amount
+   *   payments    — flat payment history, newest first
+   */
+  private async buildStudentFinance(studentUserId: number) {
+    const invoices = await this.prisma.invoice.findMany({
+      where: { student_id: studentUserId, deleted_at: null },
+      orderBy: { id: 'desc' },
+    });
+
+    const invoiceIds = invoices.map((inv) => inv.id);
+    const payments = invoiceIds.length
+      ? await this.prisma.payment.findMany({
+          where: { invoice_id: { in: invoiceIds }, deleted_at: null },
+          orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
+        })
+      : [];
+
+    // Roll the payments up by invoice for the per-invoice paid total.
+    const paidByInvoice = new Map<number, number>();
+    let paid = 0;
+    for (const pay of payments) {
+      const amount = this.toMoney(pay.paid_amount);
+      paid += amount;
+      if (pay.invoice_id != null) {
+        paidByInvoice.set(
+          pay.invoice_id,
+          (paidByInvoice.get(pay.invoice_id) ?? 0) + amount,
+        );
+      }
+    }
+
+    let total = 0;
+    const invoiceRows = invoices.map((inv) => {
+      const payable = this.toMoney(inv.payable_amount);
+      total += payable;
+      const invPaid = paidByInvoice.get(inv.id) ?? 0;
+      return {
+        ...inv,
+        paid_amount_total: invPaid,
+        outstanding_amount: Math.max(payable - invPaid, 0),
+      };
+    });
+
+    return {
+      total,
+      paid,
+      outstanding: Math.max(total - paid, 0),
+      invoice_count: invoices.length,
+      payment_count: payments.length,
+      invoices: invoiceRows,
+      payments,
+    };
+  }
+
+  /**
+   * Coerces a mixed Float/Decimal/null money value to a finite number, returning
+   * 0 for null/blank/NaN so finance aggregation stays safe. Mirrors the finance
+   * module's toMoney() so totals reconcile across surfaces.
+   */
+  private toMoney(value: unknown): number {
+    if (value === null || value === undefined || value === '') return 0;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
   }
 
   // POST /students
@@ -232,6 +597,133 @@ export class StudentsService {
   }
 
   // GET /applications — paginate.
+  /**
+   * Decorate raw `applications` rows with their joined display fields, resolving
+   * every related table in ONE bulk query each (no N+1) — mirrors
+   * decorateStudents()/AcademicsService knowledge_base:
+   *   - applicant_name / applicant_email / applicant_phone <- users (applications.student_id)
+   *     (falls back to the row's own name/email/phone, which the legacy form also
+   *      stores directly on the application before conversion)
+   *   - profile_picture                                    <- users / row.cropped_image
+   *   - consultant_name / consultant_id                    <- users (pipeline_user ?? created_by)
+   *   - course_title + university_id                       <- course (applications.course_id)
+   *   - university_title                                   <- university (course.university_id)
+   *   - status_label                                       <- applicationStatusLabel()
+   *
+   * The applicant-user id and the consultant id both point at `users`, so they
+   * share a single findMany. Existing fields are preserved; only new display
+   * fields are added.
+   *
+   * NOTE: the `applications` model has no student_id column (the applicant is not
+   * yet a user until conversion), so the applicant identity comes from the row
+   * itself; the consultant is the pipeline_user (the assigned consultant),
+   * falling back to created_by — exactly the ids the convert() saga uses.
+   */
+  private async decorateApplications<
+    T extends {
+      pipeline_user: number | null;
+      created_by: number | null;
+      course_id: number | null;
+      name: string | null;
+      email: string | null;
+      phone: string | null;
+      cropped_image: string | null;
+      is_converted: number | null;
+      is_archived: boolean;
+      status: boolean | null;
+    },
+  >(rows: T[]) {
+    if (rows.length === 0) return [];
+
+    // Resolve each application's consultant: the assigned pipeline_user, else
+    // the creator (the convert() saga uses the same fallback for consultant_id).
+    const consultantIdFor = (r: T): number | null =>
+      r.pipeline_user ?? r.created_by ?? null;
+
+    // Collect the related id sets.
+    const userIds = [
+      ...new Set(
+        rows
+          .map((r) => consultantIdFor(r))
+          .filter((u): u is number => u != null),
+      ),
+    ];
+    const courseIds = [
+      ...new Set(
+        rows.map((r) => r.course_id).filter((c): c is number => c != null),
+      ),
+    ];
+
+    // ONE bulk query per related table.
+    const [users, courses] = await Promise.all([
+      userIds.length > 0
+        ? this.prisma.users.findMany({
+            where: { id: { in: userIds } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+      courseIds.length > 0
+        ? this.prisma.course.findMany({
+            where: { id: { in: courseIds } },
+            select: { id: true, title: true, university_id: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    // Resolve the universities referenced by the page's courses (one more bulk query).
+    const universityIds = [
+      ...new Set(
+        courses
+          .map((c) => c.university_id)
+          .filter((u): u is number => u != null),
+      ),
+    ];
+    const universities =
+      universityIds.length > 0
+        ? await this.prisma.university.findMany({
+            where: { id: { in: universityIds } },
+            select: { id: true, title: true },
+          })
+        : [];
+
+    // Build id -> row Maps and merge.
+    const userNameById = new Map(users.map((u) => [u.id, u.name ?? null]));
+    const courseById = new Map(courses.map((c) => [c.id, c]));
+    const universityTitleById = new Map(
+      universities.map((u) => [u.id, u.title ?? null]),
+    );
+
+    return rows.map((row) => {
+      const consultantId = consultantIdFor(row);
+      const course = row.course_id != null ? courseById.get(row.course_id) : undefined;
+      const universityId = course?.university_id ?? null;
+
+      return {
+        ...row,
+        // Applicant identity (stored on the application row itself pre-conversion).
+        applicant_name: row.name ?? null,
+        applicant_email: row.email ?? null,
+        applicant_phone: row.phone ?? null,
+        profile_picture: row.cropped_image ?? null,
+        // Assigned consultant / counsellor.
+        consultant_id: consultantId,
+        consultant_name:
+          consultantId != null
+            ? (userNameById.get(consultantId) ?? null)
+            : null,
+        // Resolved course + university titles (UI no longer shows raw #ids).
+        course_title: course?.title ?? null,
+        university_id: universityId,
+        university_title:
+          universityId != null
+            ? (universityTitleById.get(universityId) ?? null)
+            : null,
+        // Human lifecycle label.
+        status_label: applicationStatusLabel(row),
+      };
+    });
+  }
+
   async listApplications(query: ListApplicationsDto) {
     const page = query.page ?? DEFAULT_PAGE;
     const limit = query.limit ?? DEFAULT_LIMIT;
@@ -239,7 +731,7 @@ export class StudentsService {
 
     const where = { deleted_at: null };
 
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.applications.findMany({
         where,
         skip,
@@ -248,6 +740,8 @@ export class StudentsService {
       }),
       this.prisma.applications.count({ where }),
     ]);
+
+    const items = await this.decorateApplications(rows);
 
     return { items, total, page, limit };
   }
