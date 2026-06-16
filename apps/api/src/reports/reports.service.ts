@@ -7,6 +7,10 @@ import {
 } from './dto/report-query.dto';
 import { EnrollmentReportQueryDto } from './dto/enrollment-report-query.dto';
 import { TeacherSalaryReportQueryDto } from './dto/teacher-salary-report-query.dto';
+import { InvoiceReportQueryDto } from './dto/invoice-report-query.dto';
+import { FeePaymentReportQueryDto } from './dto/fee-payment-report-query.dto';
+import { CourseReportQueryDto } from './dto/course-report-query.dto';
+import { ConsultantPerformanceReportQueryDto } from './dto/consultant-performance-report-query.dto';
 import { CsvRow } from './reports.csv';
 
 /**
@@ -57,6 +61,34 @@ const STUDENT_ROLE_ID = 4;
 
 /** Role id of teacher/instructor users (legacy `users.role_id => 3`). */
 const TEACHER_ROLE_ID = 3;
+
+/** Role id of consultant users (legacy `users.role_id => 6`). */
+const CONSULTANT_ROLE_ID = 6;
+
+/** Stable CSV column order for the fee-payment report (header-only on empty). */
+const FEE_PAYMENT_CSV_HEADERS = [
+  'student_id',
+  'student_name',
+  'email',
+  'university_id',
+  'finance_id',
+  'tuition_fees',
+  'exam_fees',
+  'misc_fees',
+  'scholarship_details',
+  'payment_status',
+] as const;
+
+/** Stable CSV column order for the consultant-performance report. */
+const CONSULTANT_PERF_CSV_HEADERS = [
+  'consultant_id',
+  'name',
+  'email',
+  'phone',
+  'status',
+  'total_students',
+  'total_revenue',
+] as const;
 
 /**
  * Duration-band thresholds for the teacher-salary report — identical rule to
@@ -1199,6 +1231,556 @@ export class ReportsService {
           'total_paid',
           'balance',
         ],
+      },
+    };
+  }
+
+  // ---- invoice report ------------------------------------------------------
+
+  /**
+   * GET /reports/invoices — invoice rows in the date window with per-invoice
+   * paid totals, plus grand totals. Ports CI4 Invoice.php::index() (the row set
+   * the Invoice_report view rendered): filter on invoice.date and optional
+   * course_id / student_id, join the student name (users) and course title, and
+   * fold each invoice's payments into total_paid + payment_count.
+   *
+   * Money columns are mixed types app-wide, so every amount is coerced via
+   * toNumber. Student names, course titles, and payments are batch-resolved to
+   * avoid the legacy N+1 (one payment query per invoice).
+   */
+  async invoices(query: InvoiceReportQueryDto): Promise<ReportResult<{
+    rows: Array<{
+      id: number;
+      student_id: number | null;
+      student_name: string | null;
+      course_id: number | null;
+      course_name: string | null;
+      date: string | null;
+      due_date: string | null;
+      total_amount: number;
+      discount_amount: number;
+      payable_amount: number;
+      total_paid: number;
+      payment_count: number;
+    }>;
+    totals: {
+      total_amount: number;
+      discount_amount: number;
+      payable_amount: number;
+      total_paid: number;
+      count: number;
+    };
+  }>> {
+    const where: Prisma.invoiceWhereInput = { deleted_at: null };
+    const range = this.dateRange(query.from_date, query.to_date);
+    if (range) {
+      where.date = range;
+    }
+    if (query.course_id !== undefined) {
+      where.course_id = query.course_id;
+    }
+    if (query.student_id !== undefined) {
+      where.student_id = query.student_id;
+    }
+
+    const invoiceRows = await this.prisma.invoice.findMany({
+      where,
+      orderBy: { id: 'desc' },
+    });
+
+    // Batch-resolve student users, course titles, and payments (avoid N+1).
+    const studentIds = [
+      ...new Set(invoiceRows.map((i) => i.student_id).filter((id) => id != null)),
+    ] as number[];
+    const courseIds = [
+      ...new Set(invoiceRows.map((i) => i.course_id).filter((id) => id != null)),
+    ] as number[];
+    const invoiceIds = invoiceRows.map((i) => i.id);
+
+    const [students, courses, payments] = await Promise.all([
+      studentIds.length
+        ? this.prisma.users.findMany({
+            where: { id: { in: studentIds } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([] as Array<{ id: number; name: string | null }>),
+      courseIds.length
+        ? this.prisma.course.findMany({
+            where: { id: { in: courseIds } },
+            select: { id: true, title: true },
+          })
+        : Promise.resolve([] as Array<{ id: number; title: string | null }>),
+      invoiceIds.length
+        ? this.prisma.payment.findMany({
+            where: { invoice_id: { in: invoiceIds }, deleted_at: null },
+            select: { invoice_id: true, paid_amount: true },
+          })
+        : Promise.resolve(
+            [] as Array<{ invoice_id: number | null; paid_amount: number | null }>,
+          ),
+    ]);
+
+    const studentNameById = new Map(students.map((s) => [s.id, s.name]));
+    const courseTitleById = new Map(courses.map((c) => [c.id, c.title]));
+
+    // Fold payments into per-invoice paid total + count.
+    const paidByInvoice = new Map<number, { total: number; count: number }>();
+    for (const p of payments) {
+      if (p.invoice_id == null) continue;
+      const acc = paidByInvoice.get(p.invoice_id) ?? { total: 0, count: 0 };
+      acc.total += this.toNumber(p.paid_amount);
+      acc.count += 1;
+      paidByInvoice.set(p.invoice_id, acc);
+    }
+
+    const rows = invoiceRows.map((inv) => {
+      const paid = paidByInvoice.get(inv.id) ?? { total: 0, count: 0 };
+      return {
+        id: inv.id,
+        student_id: inv.student_id,
+        student_name:
+          inv.student_id != null
+            ? studentNameById.get(inv.student_id) ?? null
+            : null,
+        course_id: inv.course_id,
+        course_name:
+          inv.course_id != null
+            ? courseTitleById.get(inv.course_id) ?? null
+            : null,
+        date: inv.date ? inv.date.toISOString().slice(0, 10) : null,
+        due_date: inv.due_date ? inv.due_date.toISOString().slice(0, 10) : null,
+        total_amount: this.toNumber(inv.total_amount),
+        discount_amount: this.toNumber(inv.discount_amount),
+        payable_amount: this.toNumber(inv.payable_amount),
+        total_paid: paid.total,
+        payment_count: paid.count,
+      };
+    });
+
+    const totals = rows.reduce(
+      (acc, r) => ({
+        total_amount: acc.total_amount + r.total_amount,
+        discount_amount: acc.discount_amount + r.discount_amount,
+        payable_amount: acc.payable_amount + r.payable_amount,
+        total_paid: acc.total_paid + r.total_paid,
+        count: acc.count + 1,
+      }),
+      {
+        total_amount: 0,
+        discount_amount: 0,
+        payable_amount: 0,
+        total_paid: 0,
+        count: 0,
+      },
+    );
+
+    return {
+      data: { rows, totals },
+      csv: {
+        rows: rows.map((r) => ({
+          id: r.id,
+          student_name: r.student_name ?? '',
+          course_name: r.course_name ?? '',
+          date: r.date ?? '',
+          due_date: r.due_date ?? '',
+          total_amount: r.total_amount,
+          discount_amount: r.discount_amount,
+          payable_amount: r.payable_amount,
+          total_paid: r.total_paid,
+          payment_count: r.payment_count,
+        })),
+        headers: [
+          'id',
+          'student_name',
+          'course_name',
+          'date',
+          'due_date',
+          'total_amount',
+          'discount_amount',
+          'payable_amount',
+          'total_paid',
+          'payment_count',
+        ],
+      },
+    };
+  }
+
+  // ---- fee-payment report --------------------------------------------------
+
+  /**
+   * GET /reports/fee-payment (and the GET /reports/fee variant) — student-role
+   * users joined to their `finance` row, filtered by users.created_at range,
+   * users.university_id, and finance.payment_status. Ports
+   * Fee_payment_report.php::fee_report() / Reports.php::fee_report() (same body).
+   *
+   * Schema notes (verified): finance.student_id = users.id; finance carries
+   * tuitionFees / examFees / miscFees (Int?), scholarship_details, payment_status
+   * (VarChar(20)). There is no Prisma relation between users and finance, so the
+   * two are batch-joined in code (no N+1). Fee columns are coerced to number.
+   */
+  async feePayment(query: FeePaymentReportQueryDto): Promise<ReportResult<{
+    rows: Array<{
+      student_id: number;
+      student_name: string | null;
+      email: string | null;
+      university_id: number | null;
+      finance_id: number | null;
+      tuition_fees: number;
+      exam_fees: number;
+      misc_fees: number;
+      scholarship_details: string | null;
+      payment_status: string | null;
+    }>;
+    totals: { tuition_fees: number; exam_fees: number; misc_fees: number; count: number };
+  }>> {
+    const userWhere: Prisma.usersWhereInput = {
+      role_id: STUDENT_ROLE_ID,
+      deleted_at: null,
+    };
+    const range = this.dateRange(query.from_date, query.to_date);
+    if (range) {
+      userWhere.created_at = range;
+    }
+    if (query.university_id !== undefined) {
+      userWhere.university_id = query.university_id;
+    }
+
+    const studentUsers = await this.prisma.users.findMany({
+      where: userWhere,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        university_id: true,
+      },
+      orderBy: { id: 'desc' },
+    });
+
+    if (studentUsers.length === 0) {
+      return {
+        data: {
+          rows: [],
+          totals: { tuition_fees: 0, exam_fees: 0, misc_fees: 0, count: 0 },
+        },
+        csv: { rows: [], headers: FEE_PAYMENT_CSV_HEADERS.slice() },
+      };
+    }
+
+    // Finance rows for those students (inner-join semantics: the legacy used a
+    // plain join on finance, so only students WITH a finance row appear).
+    const financeWhere: Prisma.financeWhereInput = {
+      student_id: { in: studentUsers.map((u) => u.id) },
+      deleted_at: null,
+    };
+    if (query.payment_status !== undefined) {
+      financeWhere.payment_status = query.payment_status;
+    }
+    const financeRows = await this.prisma.finance.findMany({
+      where: financeWhere,
+    });
+
+    const userById = new Map(studentUsers.map((u) => [u.id, u]));
+
+    const rows = financeRows.map((f) => {
+      const user = userById.get(f.student_id);
+      return {
+        student_id: f.student_id,
+        student_name: user?.name ?? null,
+        email: user?.email ?? null,
+        university_id: user?.university_id ?? null,
+        finance_id: f.id,
+        tuition_fees: this.toNumber(f.tuitionFees),
+        exam_fees: this.toNumber(f.examFees),
+        misc_fees: this.toNumber(f.miscFees),
+        scholarship_details: f.scholarship_details,
+        payment_status: f.payment_status,
+      };
+    });
+
+    const totals = rows.reduce(
+      (acc, r) => ({
+        tuition_fees: acc.tuition_fees + r.tuition_fees,
+        exam_fees: acc.exam_fees + r.exam_fees,
+        misc_fees: acc.misc_fees + r.misc_fees,
+        count: acc.count + 1,
+      }),
+      { tuition_fees: 0, exam_fees: 0, misc_fees: 0, count: 0 },
+    );
+
+    return {
+      data: { rows, totals },
+      csv: {
+        rows: rows.map((r) => ({
+          student_id: r.student_id,
+          student_name: r.student_name ?? '',
+          email: r.email ?? '',
+          university_id: r.university_id ?? '',
+          finance_id: r.finance_id ?? '',
+          tuition_fees: r.tuition_fees,
+          exam_fees: r.exam_fees,
+          misc_fees: r.misc_fees,
+          scholarship_details: r.scholarship_details ?? '',
+          payment_status: r.payment_status ?? '',
+        })),
+        headers: FEE_PAYMENT_CSV_HEADERS.slice(),
+      },
+    };
+  }
+
+  // ---- course report -------------------------------------------------------
+
+  /**
+   * GET /reports/courses — courses in the created_at window (optionally filtered
+   * by level), with active/inactive counts. Ports
+   * Fee_payment_report.php::course_wise_report(): the view rendered the course
+   * list plus the count of status=1 (active) vs not (inactive).
+   *
+   * course.status is an Int? (1 = active in the legacy view); anything other
+   * than 1 — including NULL — is counted inactive, matching the legacy
+   * `if (status == 1) active else inactive` branch.
+   */
+  async courses(query: CourseReportQueryDto): Promise<ReportResult<{
+    active_count: number;
+    inactive_count: number;
+    total: number;
+    rows: Array<{
+      id: number;
+      title: string | null;
+      level: string | null;
+      stream: string | null;
+      university_id: number | null;
+      status: number | null;
+      created_at: string | null;
+    }>;
+  }>> {
+    const where: Prisma.courseWhereInput = { deleted_at: null };
+    const range = this.dateRange(query.from_date, query.to_date);
+    if (range) {
+      where.created_at = range;
+    }
+    if (query.level !== undefined) {
+      where.level = query.level;
+    }
+
+    const courseRows = await this.prisma.course.findMany({
+      where,
+      select: {
+        id: true,
+        title: true,
+        level: true,
+        stream: true,
+        university_id: true,
+        status: true,
+        created_at: true,
+      },
+      orderBy: { id: 'desc' },
+    });
+
+    let activeCount = 0;
+    let inactiveCount = 0;
+    const rows = courseRows.map((c) => {
+      if (c.status === 1) {
+        activeCount += 1;
+      } else {
+        inactiveCount += 1;
+      }
+      return {
+        id: c.id,
+        title: c.title,
+        level: c.level,
+        stream: c.stream,
+        university_id: c.university_id,
+        status: c.status,
+        created_at: c.created_at ? c.created_at.toISOString() : null,
+      };
+    });
+
+    return {
+      data: {
+        active_count: activeCount,
+        inactive_count: inactiveCount,
+        total: rows.length,
+        rows,
+      },
+      csv: {
+        rows: rows.map((r) => ({
+          id: r.id,
+          title: r.title ?? '',
+          level: r.level ?? '',
+          stream: r.stream ?? '',
+          university_id: r.university_id ?? '',
+          status: r.status ?? '',
+          created_at: r.created_at ?? '',
+        })),
+        headers: [
+          'id',
+          'title',
+          'level',
+          'stream',
+          'university_id',
+          'status',
+          'created_at',
+        ],
+      },
+    };
+  }
+
+  // ---- consultant performance report ---------------------------------------
+
+  /**
+   * GET /reports/consultant-performance — every consultant (role_id = 6) with
+   * their student count and revenue. Ports Reports.php::consultant_performance_
+   * report(): filter consultants by search_key (name/phone/email LIKE) and
+   * status, then for each count their students and sum a revenue figure.
+   *
+   * ADAPTATION: the legacy summed `students.fee`, but this migration's `students`
+   * model has NO `fee` column. Revenue is therefore the sum of PAID amounts on
+   * the consultant's students' invoices (invoice.student_id = the student user's
+   * id; payment.invoice_id; non-deleted), which is the faithful "revenue"
+   * reading and uses only real columns. The per-consultant student count is the
+   * number of non-deleted `students` rows with that consultant_id.
+   *
+   * Avoids the legacy N+1 (one students query per consultant): students are
+   * grouped by consultant_id once, and all relevant invoices/payments are loaded
+   * in two queries and folded in memory.
+   */
+  async consultantPerformance(
+    query: ConsultantPerformanceReportQueryDto,
+  ): Promise<ReportResult<{
+    rows: Array<{
+      consultant_id: number;
+      name: string | null;
+      email: string | null;
+      phone: string | null;
+      status: number | null;
+      total_students: number;
+      total_revenue: number;
+    }>;
+    totals: { total_students: number; total_revenue: number; consultants: number };
+  }>> {
+    const where: Prisma.usersWhereInput = {
+      role_id: CONSULTANT_ROLE_ID,
+      deleted_at: null,
+    };
+    if (query.search_key) {
+      const key = query.search_key;
+      where.OR = [
+        { name: { contains: key } },
+        { phone: { contains: key } },
+        { email: { contains: key } },
+      ];
+    }
+    if (query.status !== undefined) {
+      where.status = query.status;
+    }
+
+    const consultants = await this.prisma.users.findMany({
+      where,
+      select: { id: true, name: true, email: true, phone: true, status: true },
+      orderBy: { id: 'asc' },
+    });
+
+    if (consultants.length === 0) {
+      return {
+        data: {
+          rows: [],
+          totals: { total_students: 0, total_revenue: 0, consultants: 0 },
+        },
+        csv: { rows: [], headers: CONSULTANT_PERF_CSV_HEADERS.slice() },
+      };
+    }
+
+    const consultantIds = consultants.map((c) => c.id);
+
+    // All non-deleted students attached to these consultants, in one pass. We
+    // keep both the per-consultant count and the student->consultant map (the
+    // latter to attribute invoice revenue back to the right consultant).
+    const studentRows = await this.prisma.students.findMany({
+      where: { consultant_id: { in: consultantIds }, deleted_at: null },
+      select: { student_id: true, consultant_id: true },
+    });
+
+    const studentCountByConsultant = new Map<number, number>();
+    const consultantByStudentUser = new Map<number, number>();
+    for (const s of studentRows) {
+      studentCountByConsultant.set(
+        s.consultant_id,
+        (studentCountByConsultant.get(s.consultant_id) ?? 0) + 1,
+      );
+      // student_id is the student's users.id; map it to its consultant so we can
+      // attribute invoice/payment revenue. If a student user is shared across
+      // consultants (shouldn't happen), the last write wins — acceptable here.
+      consultantByStudentUser.set(s.student_id, s.consultant_id);
+    }
+
+    // Revenue: paid amounts on these students' invoices. Resolve invoices for
+    // the student users, then their payments, and fold paid -> consultant.
+    const studentUserIds = [...consultantByStudentUser.keys()];
+    const revenueByConsultant = new Map<number, number>();
+    if (studentUserIds.length > 0) {
+      const invoices = await this.prisma.invoice.findMany({
+        where: { student_id: { in: studentUserIds }, deleted_at: null },
+        select: { id: true, student_id: true },
+      });
+      const invoiceConsultant = new Map<number, number>();
+      for (const inv of invoices) {
+        if (inv.student_id == null) continue;
+        const consultantId = consultantByStudentUser.get(inv.student_id);
+        if (consultantId !== undefined) {
+          invoiceConsultant.set(inv.id, consultantId);
+        }
+      }
+      const invoiceIds = [...invoiceConsultant.keys()];
+      if (invoiceIds.length > 0) {
+        const payments = await this.prisma.payment.findMany({
+          where: { invoice_id: { in: invoiceIds }, deleted_at: null },
+          select: { invoice_id: true, paid_amount: true },
+        });
+        for (const p of payments) {
+          if (p.invoice_id == null) continue;
+          const consultantId = invoiceConsultant.get(p.invoice_id);
+          if (consultantId === undefined) continue;
+          revenueByConsultant.set(
+            consultantId,
+            (revenueByConsultant.get(consultantId) ?? 0) +
+              this.toNumber(p.paid_amount),
+          );
+        }
+      }
+    }
+
+    const rows = consultants.map((c) => ({
+      consultant_id: c.id,
+      name: c.name,
+      email: c.email,
+      phone: c.phone,
+      status: c.status,
+      total_students: studentCountByConsultant.get(c.id) ?? 0,
+      total_revenue: revenueByConsultant.get(c.id) ?? 0,
+    }));
+
+    const totals = rows.reduce(
+      (acc, r) => ({
+        total_students: acc.total_students + r.total_students,
+        total_revenue: acc.total_revenue + r.total_revenue,
+        consultants: acc.consultants + 1,
+      }),
+      { total_students: 0, total_revenue: 0, consultants: 0 },
+    );
+
+    return {
+      data: { rows, totals },
+      csv: {
+        rows: rows.map((r) => ({
+          consultant_id: r.consultant_id,
+          name: r.name ?? '',
+          email: r.email ?? '',
+          phone: r.phone ?? '',
+          status: r.status ?? '',
+          total_students: r.total_students,
+          total_revenue: r.total_revenue,
+        })),
+        headers: CONSULTANT_PERF_CSV_HEADERS.slice(),
       },
     };
   }

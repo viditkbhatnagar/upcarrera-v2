@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../integrations/email.service';
 import { SendNotificationDto } from './dto/send-notification.dto';
 import { ListNotificationsDto } from './dto/list-notifications.dto';
+import { UpdateNotificationDto } from './dto/update-notification.dto';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -135,6 +136,73 @@ export class NotificationsService {
     ]);
 
     return { items, total, page, limit };
+  }
+
+  /**
+   * Update an existing notification's editable fields (title / description /
+   * role_id / user_id). Ports the write side of CI4 Notifications::edit(),
+   * which set those four columns plus updated_by/updated_at. Only the supplied
+   * fields are written (partial update); an absent field is left untouched.
+   *
+   * 404s a missing or soft-deleted row so the caller never silently no-ops.
+   */
+  async update(id: number, dto: UpdateNotificationDto, userId: number) {
+    const existing = await this.prisma.notifications.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!existing) {
+      throw new NotFoundException('Notification not found!');
+    }
+
+    // Build the patch from only the fields actually supplied — undefined keys
+    // are omitted so Prisma leaves those columns unchanged.
+    const data: {
+      title?: string;
+      description?: string;
+      role_id?: number;
+      user_id?: number;
+      updated_by: number;
+      updated_at: Date;
+    } = {
+      updated_by: userId,
+      updated_at: new Date(),
+    };
+    if (dto.title !== undefined) {
+      data.title = dto.title;
+    }
+    if (dto.description !== undefined) {
+      data.description = dto.description;
+    }
+    if (dto.role_id !== undefined) {
+      data.role_id = dto.role_id;
+    }
+    if (dto.user_id !== undefined) {
+      data.user_id = dto.user_id;
+    }
+
+    return this.prisma.notifications.update({ where: { id }, data });
+  }
+
+  /**
+   * Soft-delete a notification (stamp deleted_at/deleted_by). Ports CI4
+   * Notifications::delete(), which removed the row; we soft-delete to match the
+   * rest of this migration's deleted_at convention. 404s a missing/already-
+   * deleted row.
+   */
+  async remove(id: number, userId: number) {
+    const existing = await this.prisma.notifications.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!existing) {
+      throw new NotFoundException('Notification not found!');
+    }
+
+    await this.prisma.notifications.update({
+      where: { id },
+      data: { deleted_at: new Date(), deleted_by: userId },
+    });
+
+    return { id };
   }
 
   /**

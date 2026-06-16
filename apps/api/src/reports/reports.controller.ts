@@ -7,6 +7,10 @@ import {
 } from './dto/report-query.dto';
 import { EnrollmentReportQueryDto } from './dto/enrollment-report-query.dto';
 import { TeacherSalaryReportQueryDto } from './dto/teacher-salary-report-query.dto';
+import { InvoiceReportQueryDto } from './dto/invoice-report-query.dto';
+import { FeePaymentReportQueryDto } from './dto/fee-payment-report-query.dto';
+import { CourseReportQueryDto } from './dto/course-report-query.dto';
+import { ConsultantPerformanceReportQueryDto } from './dto/consultant-performance-report-query.dto';
 import { EnrollmentPdfService } from './enrollment-pdf.service';
 import { toCsv } from './reports.csv';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
@@ -73,6 +77,90 @@ export class ReportsController {
   ) {
     return this.respond(query, res, 'followups-report', () =>
       this.reports.followups(query),
+    );
+  }
+
+  /**
+   * Invoice report — invoice rows in the date window with paid totals + grand
+   * totals. Ports Invoice.php::index() (the Invoice_report view's row set).
+   * `?from_date=&to_date=&course_id=&student_id=` filter; `?format=csv` downloads.
+   * Literal path; no `/reports/:id` catch-all, so it stays unambiguous.
+   */
+  @Get('invoices')
+  @ResponseMessage('Invoice report')
+  invoices(
+    @Query() query: InvoiceReportQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.respondFormat(query.format, res, 'invoices-report', () =>
+      this.reports.invoices(query),
+    );
+  }
+
+  /**
+   * Fee-payment report — student-role users joined to their finance row.
+   * Ports Fee_payment_report.php::fee_report(). Filters:
+   * `?from_date=&to_date=&university_id=&payment_status=`; `?format=csv` downloads.
+   */
+  @Get('fee-payment')
+  @ResponseMessage('Fee payment report')
+  feePayment(
+    @Query() query: FeePaymentReportQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.respondFormat(query.format, res, 'fee-payment-report', () =>
+      this.reports.feePayment(query),
+    );
+  }
+
+  /**
+   * Fee report — variant of fee-payment with the same filters/shape. Ports
+   * Reports.php::fee_report() (an identical body to Fee_payment_report's). Kept
+   * as a distinct literal path so both legacy report URLs map cleanly.
+   */
+  @Get('fee')
+  @ResponseMessage('Fee report')
+  fee(
+    @Query() query: FeePaymentReportQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.respondFormat(query.format, res, 'fee-report', () =>
+      this.reports.feePayment(query),
+    );
+  }
+
+  /**
+   * Course report — courses in the created_at window with active/inactive
+   * counts. Ports Fee_payment_report.php::course_wise_report(). Filters:
+   * `?from_date=&to_date=&level=`; `?format=csv` downloads.
+   */
+  @Get('courses')
+  @ResponseMessage('Course report')
+  courses(
+    @Query() query: CourseReportQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.respondFormat(query.format, res, 'courses-report', () =>
+      this.reports.courses(query),
+    );
+  }
+
+  /**
+   * Consultant performance report — consultants with student counts + revenue.
+   * Ports Reports.php::consultant_performance_report(). Filters:
+   * `?search_key=&status=&university=`; `?format=csv` downloads.
+   */
+  @Get('consultant-performance')
+  @ResponseMessage('Consultant performance report')
+  consultantPerformance(
+    @Query() query: ConsultantPerformanceReportQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.respondFormat(
+      query.format,
+      res,
+      'consultant-performance-report',
+      () => this.reports.consultantPerformance(query),
     );
   }
 
@@ -189,6 +277,36 @@ export class ReportsController {
     const result = await run();
 
     if (query.format === 'csv') {
+      const csv = toCsv(result.csv.rows, result.csv.headers);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${filename}.csv"`,
+      );
+      res.send(csv);
+      return undefined;
+    }
+
+    return result.data;
+  }
+
+  /**
+   * Response shaper for the new report endpoints whose DTOs each declare their
+   * own `format` field (invoices / fee-payment / fee / courses /
+   * consultant-performance). Identical contract to `respond` but takes the
+   * format value directly so it works across the differently-typed DTOs without
+   * widening any of them. `csv` writes a text/csv attachment and returns
+   * undefined; otherwise the structured `data` flows to the ResponseInterceptor.
+   */
+  private async respondFormat<T>(
+    format: 'json' | 'csv' | undefined,
+    res: Response,
+    filename: string,
+    run: () => Promise<ReportResult<T>>,
+  ): Promise<T | undefined> {
+    const result = await run();
+
+    if (format === 'csv') {
       const csv = toCsv(result.csv.rows, result.csv.headers);
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader(

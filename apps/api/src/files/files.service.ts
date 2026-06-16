@@ -9,6 +9,7 @@ import { CreateStudentDocumentDto } from './dto/create-student-document.dto';
 import { CreateCandidateDocumentDto } from './dto/create-candidate-document.dto';
 import { UpdateCandidateDocumentDto } from './dto/update-candidate-document.dto';
 import { UploadedFileType } from './uploaded-file.type';
+import { contentTypeFor } from './content-type';
 
 /** Subdir under uploads/ for ad-hoc uploads, student docs and candidate docs. */
 const GENERIC_SUBDIR = 'files';
@@ -151,6 +152,70 @@ export class FilesService {
     const filename = this.storage.basename(document.file);
 
     return { document, stream, filename };
+  }
+
+  /**
+   * SECURE port of the legacy CI4 FileController::serveFile.
+   *
+   * Legacy behaviour: `?item=<base64>` was base64-decoded to a path RELATIVE to
+   * WRITEPATH, then served with mime_content_type + readfile — with the auth
+   * check commented out and NO traversal guard, so any client could read any
+   * file the PHP process could reach (e.g. item=base64('../../etc/passwd')).
+   *
+   * This version keeps the same capability (decode `item`, stream the file with
+   * the right Content-Type) but fixes the vulnerability on two axes:
+   *   1. AUTH — the route lives behind the global JwtAuthGuard (no @Public), so
+   *      every request is authenticated.
+   *   2. TRAVERSAL — the decoded path is rejected if it is empty, contains a
+   *      `..` segment, or is absolute; StorageService.resolveAbsolute then does
+   *      the authoritative check (resolve + uploads-root prefix), so the file
+   *      can ONLY resolve inside the uploads directory. Anything outside 404s.
+   *
+   * Returns the open stream, a download filename, and the resolved Content-Type;
+   * the controller sets headers and pipes the stream.
+   */
+  async serveEncoded(item?: string): Promise<{
+    stream: ReturnType<StorageService['streamPath']> extends Promise<infer R>
+      ? R
+      : never;
+    filename: string;
+    contentType: string;
+  }> {
+    if (!item) {
+      throw new BadRequestException('Missing file reference');
+    }
+
+    // Decode the legacy base64 reference back to a relative path.
+    let decoded: string;
+    try {
+      decoded = Buffer.from(item, 'base64').toString('utf8');
+    } catch {
+      throw new BadRequestException('Invalid file reference');
+    }
+
+    const relativePath = decoded.trim();
+
+    // Defence-in-depth: reject obvious escapes BEFORE touching the filesystem.
+    // StorageService.resolveAbsolute is the authoritative guard, but failing
+    // fast here keeps traversal attempts out of any logs/IO. A leading slash or
+    // a drive prefix (absolute path) and any `..` segment are refused outright.
+    if (
+      relativePath.length === 0 ||
+      relativePath.startsWith('/') ||
+      relativePath.startsWith('\\') ||
+      /^[a-zA-Z]:[\\/]/.test(relativePath) ||
+      relativePath.split(/[\\/]/).includes('..')
+    ) {
+      throw new NotFoundException('File not found');
+    }
+
+    // streamPath -> resolveAbsolute enforces the uploads-root prefix check and
+    // throws NotFound for anything that escapes the root or does not exist.
+    const stream = await this.storage.streamPath(relativePath);
+    const filename = this.storage.basename(relativePath);
+    const contentType = contentTypeFor(relativePath);
+
+    return { stream, filename, contentType };
   }
 
   // ---- candidate (lead) documents ------------------------------------------
