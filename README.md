@@ -1,62 +1,82 @@
-# upcarrera-v2 — TypeScript rewrite
+# upcarrera-v2
 
-Port of the CodeIgniter 4 (PHP) upcarrera LMS/CRM to a scalable TypeScript stack.
-See `../upcarrera/MIGRATION_BLUEPRINT.md` for the full plan.
+[![CI](https://github.com/viditkbhatnagar/upcarrera-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/viditkbhatnagar/upcarrera-v2/actions/workflows/ci.yml)
+
+TypeScript rewrite of the upcarrera LMS/CRM — a port of the original PHP/CodeIgniter 4 app
+([upcarrera_migration](https://github.com/viditkbhatnagar/upcarrera_migration)) to a modern,
+scalable stack. Built domain-by-domain, each phase verified end-to-end against the real database.
 
 ## Stack
 
-- **Monorepo:** pnpm workspaces + Turborepo
-- **API (`apps/api`):** NestJS + Prisma over the existing MySQL (strangler-fig — same DB as the legacy app)
-- **Web (`apps/web`):** Next.js + React — _coming next_
-- **Auth:** JWT (Bearer), `{status, message, data}` envelope preserved for mobile compatibility. Existing bcrypt (`$2y$`) password hashes verify unchanged.
-
-## Status
-
-| Slice | State |
+| Layer | Tech |
 |---|---|
-| Monorepo + tooling | ✅ done |
-| Prisma schema (63 tables introspected from MySQL) | ✅ done (`apps/api/prisma/schema.prisma`) |
-| **Auth + RBAC vertical slice** | ✅ working & tested against real data |
-| Leads / CRM | ⬜ next |
-| Everything else | ⬜ per the blueprint |
+| **Monorepo** | pnpm workspaces + Turborepo |
+| **API** (`apps/api`) | **NestJS** + **Prisma** over the existing **MySQL** — 15 modules, 121 endpoints |
+| **Web** (`apps/web`) | **Next.js 14** (App Router) + React + Tailwind — 35 pages, full CRUD |
+| **Auth** | JWT (Bearer / cookie). Existing PHP `$2y$` bcrypt hashes verify unchanged. |
+| **Tests** | Jest + Supertest e2e — runs in CI on every push |
 
-### What the Auth slice proves
-- Prisma talks to the existing MySQL with zero schema changes.
-- `bcryptjs` verifies the legacy PHP password hashes.
-- The legacy `{status,message,data}` response envelope is reproduced (success + error).
-- Global `JwtAuthGuard` (with `@Public()` opt-out) + `RolesGuard` move authz to the controller layer.
-- The legacy `upcarrera@2024` backdoor is **not** ported; JWT TTL fixed to 7 days.
+## Features
 
-## Run it locally
+- **Auth + RBAC** — JWT, a `PermissionsGuard` (allow-list, super-admin bypass), the legacy
+  `{status, message, data}` response envelope preserved for mobile clients.
+- **All domains** — leads/CRM, students & applications, academics, teachers, finance, sessions,
+  platform — full CRUD + list/pagination, soft-delete.
+- **Business logic** — transactional lead/application → student conversion, payment → invoice
+  settlement, salary computation, secure file upload/download.
+- **Integrations** (env-gated) — Zoom (S2S + Meeting SDK), Brevo email, 2factor SMS/OTP, Razorpay.
+- **More** — bulk Excel import (`exceljs`), reports + CSV export, invoice/receipt PDF (`pdfkit`),
+  notifications, and a `/api/student/*` surface for the mobile app.
 
-Prereqs: Node ≥20, pnpm, and a MySQL with the upcarrera schema/data.
+## Quick start
+
+Requires Node ≥ 20, pnpm, and a MySQL with the upcarrera schema.
 
 ```bash
 pnpm install
 
-# point apps/api/.env at your MySQL, then:
-cd apps/api
-pnpm exec prisma db pull      # introspect (already committed)
-pnpm exec prisma generate
-pnpm run build
-node --env-file=.env dist/main.js   # API on http://localhost:3000/api
+# 1. API
+cp apps/api/.env.example apps/api/.env     # fill DATABASE_URL + JWT_SECRET (+ optional integration keys)
+pnpm --filter @upcarrera/api exec prisma generate
+pnpm --filter @upcarrera/api build
+node --env-file=apps/api/.env apps/api/dist/main.js   # API on http://localhost:3000/api
+
+# 2. Web
+cp apps/web/.env.example apps/web/.env.local           # NEXT_PUBLIC_API_URL=http://localhost:3000/api
+pnpm --filter @upcarrera/web build
+pnpm --filter @upcarrera/web exec next start -p 3001   # Web on http://localhost:3001
 ```
 
-### Smoke test
+Fresh database? Build the schema and seed it with Prisma (no SQL dump needed):
 
 ```bash
-curl -s -H "Content-Type: application/json" \
-  -d '{"username":"<user>","password":"<pass>"}' \
-  http://localhost:3000/api/auth/login
+cd apps/api
+pnpm exec prisma db push                                          # schema from prisma/schema.prisma
+pnpm exec prisma db execute --file ../../database/ci-seed.sql --schema prisma/schema.prisma
 ```
+
+## Tests
+
+```bash
+cd apps/api && pnpm exec jest --config ./test/jest-e2e.json --runInBand
+```
+
+The e2e suite boots the real `AppModule` against MySQL and exercises auth, CRUD, RBAC, the
+conversion sagas, payments, and reports. CI runs it on every push against a fresh seeded MySQL.
 
 ## Layout
 
 ```
-apps/api/src/
-├── main.ts                     # bootstrap: /api prefix, global envelope + filter
-├── app.module.ts               # global JwtAuthGuard + RolesGuard
-├── prisma/                     # PrismaService (connects to MySQL)
-├── auth/                       # AuthController/Service, JwtStrategy, guards, DTOs
-└── common/                     # response interceptor, exception filter, decorators
+apps/api/   NestJS API (modules: auth, leads, students, academics, teachers, finance,
+            sessions, platform, files, integrations, reports, notifications, student)
+apps/web/   Next.js staff app (app/(staff)/<domain> list + new/[id]/[id]/edit)
+database/   ci-seed.sql, normalize-zero-dates.sql (run at cutover)
+.github/    CI workflow
 ```
+
+## Notes for production
+
+- Set the integration API keys in `apps/api/.env` (Zoom, Brevo, 2factor, Razorpay) — all are
+  env-gated and the app runs without them.
+- Run `database/normalize-zero-dates.sql` against production once, before cutover (Prisma rejects
+  MySQL `0000-00-00` dates).
