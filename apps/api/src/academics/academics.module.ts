@@ -11,11 +11,12 @@ import {
   StatesController,
   VisaTypesController,
   DocumentTypesController,
+  GroupCoursesController,
 } from './academics.controller';
 
 /**
  * Academic catalog module: courses, universities, subjects, semesters,
- * specialisations, plus read-only lookups (colleges, countries, states,
+ * specialisations, group courses, plus lookups (colleges, countries, states,
  * visa types, document types).
  */
 @Module({
@@ -30,6 +31,7 @@ import {
     StatesController,
     VisaTypesController,
     DocumentTypesController,
+    GroupCoursesController,
   ],
   providers: [AcademicsService],
 })

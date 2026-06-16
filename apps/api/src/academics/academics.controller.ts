@@ -23,6 +23,21 @@ import { UpdateSemesterDto } from './dto/update-semester.dto';
 import { CreateSpecialisationDto } from './dto/create-specialisation.dto';
 import { UpdateSpecialisationDto } from './dto/update-specialisation.dto';
 import { TeachersBySubjectsDto } from './dto/teachers-by-subjects.dto';
+import { CourseListQueryDto } from './dto/course-list-query.dto';
+import { SemesterListQueryDto } from './dto/semester-list-query.dto';
+import { StatesListQueryDto } from './dto/states-list-query.dto';
+import { ToggleLmsDto } from './dto/toggle-lms.dto';
+import { UpdateCourseStatusDto } from './dto/update-course-status.dto';
+import { CreateDocumentTypeDto } from './dto/create-document-type.dto';
+import { UpdateDocumentTypeDto } from './dto/update-document-type.dto';
+import { CreateCollegeDto } from './dto/create-college.dto';
+import { UpdateCollegeDto } from './dto/update-college.dto';
+import { CreateCountryDto } from './dto/create-country.dto';
+import { UpdateCountryDto } from './dto/update-country.dto';
+import { CreateVisaTypeDto } from './dto/create-visa-type.dto';
+import { UpdateVisaTypeDto } from './dto/update-visa-type.dto';
+import { CreateGroupCourseDto } from './dto/create-group-course.dto';
+import { UpdateGroupCourseDto } from './dto/update-group-course.dto';
 
 /**
  * Academic catalog HTTP surface. Every route is a STAFF route, protected by the
@@ -37,8 +52,16 @@ export class CoursesController {
 
   @Get()
   @ResponseMessage('Courses')
-  list(@Query() query: ListQueryDto) {
+  list(@Query() query: CourseListQueryDto) {
     return this.academics.listCourses(query);
+  }
+
+  // Literal sub-path — MUST be declared before the `:id` routes so it is not
+  // swallowed by `/courses/:id`.
+  @Get('knowledge-base')
+  @ResponseMessage('Courses Knowledge Base')
+  knowledgeBase() {
+    return this.academics.coursesKnowledgeBase();
   }
 
   // Declared before the `:id` route so the literal segment wins routing.
@@ -58,6 +81,23 @@ export class CoursesController {
   @ResponseMessage('Course Added Successfully!')
   create(@Body() dto: CreateCourseDto) {
     return this.academics.createCourse(dto);
+  }
+
+  // Sub-resource PATCHes — literal trailing segments, safe after `:id` GETs but
+  // declared before the bare `:id` PATCH for clarity/route precedence.
+  @Patch(':id/lms')
+  @ResponseMessage('Course LMS Updated Successfully!')
+  toggleLms(@Param('id', ParseIntPipe) id: number, @Body() dto: ToggleLmsDto) {
+    return this.academics.toggleCourseLms(id, dto);
+  }
+
+  @Patch(':id/status')
+  @ResponseMessage('Status changed successfully!')
+  changeStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateCourseStatusDto,
+  ) {
+    return this.academics.updateCourseStatus(id, dto);
   }
 
   @Patch(':id')
@@ -82,6 +122,13 @@ export class UniversitiesController {
   @ResponseMessage('Universities')
   list(@Query() query: ListQueryDto) {
     return this.academics.listUniversities(query);
+  }
+
+  // Literal sub-path — declared before `:id` so it is not captured by it.
+  @Get('knowledge-base')
+  @ResponseMessage('Universities Knowledge Base')
+  knowledgeBase() {
+    return this.academics.universitiesKnowledgeBase();
   }
 
   @Get(':id')
@@ -159,8 +206,15 @@ export class SemestersController {
 
   @Get()
   @ResponseMessage('Semesters')
-  list(@Query() query: ListQueryDto) {
+  list(@Query() query: SemesterListQueryDto) {
     return this.academics.listSemesters(query);
+  }
+
+  // Literal sub-path — declared before `:id` so it is not captured by it.
+  @Get(':id/fee')
+  @ResponseMessage('Semester Fee')
+  fee(@Param('id', ParseIntPipe) id: number) {
+    return this.academics.getSemesterFee(id);
   }
 
   @Get(':id')
@@ -224,7 +278,7 @@ export class SpecialisationsController {
   }
 }
 
-// college -> /colleges (read-only list)
+// college -> /colleges (full CRUD)
 @Controller('colleges')
 export class CollegesController {
   constructor(private readonly academics: AcademicsService) {}
@@ -234,9 +288,27 @@ export class CollegesController {
   list(@Query() query: ListQueryDto) {
     return this.academics.listColleges(query);
   }
+
+  @Post()
+  @ResponseMessage('College Added Successfully!')
+  create(@Body() dto: CreateCollegeDto) {
+    return this.academics.createCollege(dto);
+  }
+
+  @Patch(':id')
+  @ResponseMessage('College Updated Successfully!')
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateCollegeDto) {
+    return this.academics.updateCollege(id, dto);
+  }
+
+  @Delete(':id')
+  @ResponseMessage('College Deleted Successfully!')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.academics.deleteCollege(id);
+  }
 }
 
-// countries -> /countries (read-only list)
+// countries -> /countries (full CRUD; PK is country_id)
 @Controller('countries')
 export class CountriesController {
   constructor(private readonly academics: AcademicsService) {}
@@ -246,21 +318,41 @@ export class CountriesController {
   list(@Query() query: ListQueryDto) {
     return this.academics.listCountries(query);
   }
+
+  @Post()
+  @ResponseMessage('Country Added Successfully!')
+  create(@Body() dto: CreateCountryDto) {
+    return this.academics.createCountry(dto);
+  }
+
+  @Patch(':id')
+  @ResponseMessage('Country Updated Successfully!')
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateCountryDto) {
+    return this.academics.updateCountry(id, dto);
+  }
+
+  @Delete(':id')
+  @ResponseMessage('Country Deleted Successfully!')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.academics.deleteCountry(id);
+  }
 }
 
-// states -> /states (read-only list)
+// states -> /states (read-only list with optional ?country filter)
 @Controller('states')
 export class StatesController {
   constructor(private readonly academics: AcademicsService) {}
 
   @Get()
   @ResponseMessage('States')
-  list(@Query() query: ListQueryDto) {
+  list(@Query() query: StatesListQueryDto) {
     return this.academics.listStates(query);
   }
 }
 
-// visa_type -> /visa-types (read-only list; see phase-3 stub in service)
+// visa_type -> /visa-types
+// CRUD wired through, but the service throws NotImplementedException until the
+// `visa_type` model is added to prisma/schema.prisma (see service phase-3 note).
 @Controller('visa-types')
 export class VisaTypesController {
   constructor(private readonly academics: AcademicsService) {}
@@ -270,9 +362,27 @@ export class VisaTypesController {
   list(@Query() query: ListQueryDto) {
     return this.academics.listVisaTypes(query);
   }
+
+  @Post()
+  @ResponseMessage('Visa Type Added Successfully!')
+  create(@Body() dto: CreateVisaTypeDto) {
+    return this.academics.createVisaType(dto);
+  }
+
+  @Patch(':id')
+  @ResponseMessage('Visa Type Updated Successfully!')
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateVisaTypeDto) {
+    return this.academics.updateVisaType(id, dto);
+  }
+
+  @Delete(':id')
+  @ResponseMessage('Visa Type Deleted Successfully!')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.academics.deleteVisaType(id);
+  }
 }
 
-// document_type -> /document-types (read-only list)
+// document_type -> /document-types (full CRUD)
 @Controller('document-types')
 export class DocumentTypesController {
   constructor(private readonly academics: AcademicsService) {}
@@ -281,5 +391,59 @@ export class DocumentTypesController {
   @ResponseMessage('Document Types')
   list(@Query() query: ListQueryDto) {
     return this.academics.listDocumentTypes(query);
+  }
+
+  @Post()
+  @ResponseMessage('Document type Added Successfully!')
+  create(@Body() dto: CreateDocumentTypeDto) {
+    return this.academics.createDocumentType(dto);
+  }
+
+  @Patch(':id')
+  @ResponseMessage('Document type Updated Successfully!')
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateDocumentTypeDto,
+  ) {
+    return this.academics.updateDocumentType(id, dto);
+  }
+
+  @Delete(':id')
+  @ResponseMessage('Document type Deleted Successfully!')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.academics.deleteDocumentType(id);
+  }
+}
+
+// group_courses -> /group-courses (full CRUD; course_ids JSON array)
+@Controller('group-courses')
+export class GroupCoursesController {
+  constructor(private readonly academics: AcademicsService) {}
+
+  @Get()
+  @ResponseMessage('Group Courses')
+  list(@Query() query: ListQueryDto) {
+    return this.academics.listGroupCourses(query);
+  }
+
+  @Post()
+  @ResponseMessage('Group Course Added Successfully!')
+  create(@Body() dto: CreateGroupCourseDto) {
+    return this.academics.createGroupCourse(dto);
+  }
+
+  @Patch(':id')
+  @ResponseMessage('Group Course Updated Successfully!')
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateGroupCourseDto,
+  ) {
+    return this.academics.updateGroupCourse(id, dto);
+  }
+
+  @Delete(':id')
+  @ResponseMessage('Group Course Deleted Successfully!')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.academics.deleteGroupCourse(id);
   }
 }

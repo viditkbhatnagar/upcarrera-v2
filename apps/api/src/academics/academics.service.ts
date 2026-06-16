@@ -15,6 +15,21 @@ import { UpdateSemesterDto } from './dto/update-semester.dto';
 import { CreateSpecialisationDto } from './dto/create-specialisation.dto';
 import { UpdateSpecialisationDto } from './dto/update-specialisation.dto';
 import { TeachersBySubjectsDto } from './dto/teachers-by-subjects.dto';
+import { CourseListQueryDto } from './dto/course-list-query.dto';
+import { SemesterListQueryDto } from './dto/semester-list-query.dto';
+import { StatesListQueryDto } from './dto/states-list-query.dto';
+import { ToggleLmsDto } from './dto/toggle-lms.dto';
+import { UpdateCourseStatusDto } from './dto/update-course-status.dto';
+import { CreateDocumentTypeDto } from './dto/create-document-type.dto';
+import { UpdateDocumentTypeDto } from './dto/update-document-type.dto';
+import { CreateCollegeDto } from './dto/create-college.dto';
+import { UpdateCollegeDto } from './dto/update-college.dto';
+import { CreateCountryDto } from './dto/create-country.dto';
+import { UpdateCountryDto } from './dto/update-country.dto';
+import { CreateVisaTypeDto } from './dto/create-visa-type.dto';
+import { UpdateVisaTypeDto } from './dto/update-visa-type.dto';
+import { CreateGroupCourseDto } from './dto/create-group-course.dto';
+import { UpdateGroupCourseDto } from './dto/update-group-course.dto';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -63,18 +78,124 @@ export class AcademicsService {
   // course  -> /courses
   // ---------------------------------------------------------------------------
 
-  async listCourses(query: Pagination): Promise<Paginated<unknown>> {
+  /**
+   * Builds the soft-delete + optional filter where-clause shared by listCourses.
+   * Ports the legacy Course::index / lms_course filters:
+   *   ?university_id -> course.university_id
+   *   ?lms           -> course.is_lms_course
+   * `?institution_id` is intentionally ignored: the `course` model in
+   * prisma/schema.prisma has no institution_id column (the legacy query against
+   * it would always match nothing), so we skip it rather than empty the result.
+   */
+  private courseWhere(query: CourseListQueryDto) {
+    const where: {
+      deleted_at: null;
+      university_id?: number;
+      is_lms_course?: number;
+    } = { deleted_at: null };
+    if (query.university_id != null) {
+      where.university_id = query.university_id;
+    }
+    if (query.lms != null) {
+      where.is_lms_course = query.lms;
+    }
+    return where;
+  }
+
+  async listCourses(query: CourseListQueryDto): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
+    const where = this.courseWhere(query);
     const [items, total] = await Promise.all([
       this.prisma.course.findMany({
-        where: { deleted_at: null },
+        where,
         orderBy: { id: 'desc' },
         skip,
         take,
       }),
-      this.prisma.course.count({ where: { deleted_at: null } }),
+      this.prisma.course.count({ where }),
     ]);
     return this.paginated(items, total, page, limit);
+  }
+
+  /**
+   * PATCH /courses/:id/lms — port of Course::add_to_lms. is_add=1 marks the
+   * course as an LMS course, otherwise removes it; either way stamps `added_at`.
+   * When `is_add` is omitted, flips the current value (toggle).
+   */
+  async toggleCourseLms(id: number, dto: ToggleLmsDto) {
+    const course = await this.getCourse(id);
+    const next =
+      dto.is_add != null ? dto.is_add : course.is_lms_course === 1 ? 0 : 1;
+    return this.prisma.course.update({
+      where: { id },
+      data: { is_lms_course: next, added_at: new Date(), updated_at: new Date() },
+    });
+  }
+
+  /**
+   * PATCH /courses/:id/status — port of Course::change_status. Sets the course
+   * status (Int? column in the schema) and bumps updated_at.
+   */
+  async updateCourseStatus(id: number, dto: UpdateCourseStatusDto) {
+    await this.getCourse(id);
+    return this.prisma.course.update({
+      where: { id },
+      data: { status: dto.status, updated_at: new Date() },
+    });
+  }
+
+  /**
+   * GET /courses/knowledge-base — port of Course::knowledge_base. Returns the
+   * active courses grouped by university, each course decorated with its
+   * `university_name`. Built in two bulk queries (courses + universities) to
+   * resolve names without an N+1. Universities are looked up by id; a missing
+   * university yields 'Unknown', matching the legacy fallback.
+   */
+  async coursesKnowledgeBase() {
+    const courses = await this.prisma.course.findMany({
+      where: { deleted_at: null },
+      orderBy: { id: 'desc' },
+    });
+
+    const universityIds = [
+      ...new Set(
+        courses
+          .map((c) => c.university_id)
+          .filter((u): u is number => u != null),
+      ),
+    ];
+    const universities =
+      universityIds.length > 0
+        ? await this.prisma.university.findMany({
+            where: { id: { in: universityIds }, deleted_at: null },
+            select: { id: true, title: true },
+          })
+        : [];
+    const nameById = new Map(universities.map((u) => [u.id, u.title]));
+
+    // Preserve insertion order while grouping by university_id.
+    const grouped = new Map<
+      number | null,
+      { university_id: number | null; university_name: string; courses: unknown[] }
+    >();
+    for (const course of courses) {
+      const uid = course.university_id ?? null;
+      const universityName =
+        uid != null ? (nameById.get(uid) ?? 'Unknown') : 'Unknown';
+      const decorated = { ...course, university_name: universityName };
+      const bucket = grouped.get(uid);
+      if (bucket) {
+        bucket.courses.push(decorated);
+      } else {
+        grouped.set(uid, {
+          university_id: uid,
+          university_name: universityName,
+          courses: [decorated],
+        });
+      }
+    }
+
+    return [...grouped.values()];
   }
 
   async getCourse(id: number) {
@@ -236,18 +357,47 @@ export class AcademicsService {
   // semester  -> /semesters
   // ---------------------------------------------------------------------------
 
-  async listSemesters(query: Pagination): Promise<Paginated<unknown>> {
+  async listSemesters(query: SemesterListQueryDto): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
+    // Ports Semester::fetch_semesters (?course_id) and
+    // fetch_semester_by_university_id (?university_id); both are real columns.
+    const where: {
+      deleted_at: null;
+      course_id?: number;
+      university_id?: number;
+    } = { deleted_at: null };
+    if (query.course_id != null) {
+      where.course_id = query.course_id;
+    }
+    if (query.university_id != null) {
+      where.university_id = query.university_id;
+    }
     const [items, total] = await Promise.all([
       this.prisma.semester.findMany({
-        where: { deleted_at: null },
+        where,
         orderBy: { id: 'desc' },
         skip,
         take,
       }),
-      this.prisma.semester.count({ where: { deleted_at: null } }),
+      this.prisma.semester.count({ where }),
     ]);
     return this.paginated(items, total, page, limit);
+  }
+
+  /**
+   * GET /semesters/:id/fee — port of Semester::fetch_semesters_amount, which
+   * returned the `semester_fee` for a semester. 404 when the semester is
+   * missing/soft-deleted.
+   */
+  async getSemesterFee(id: number) {
+    const semester = await this.prisma.semester.findFirst({
+      where: { id, deleted_at: null },
+      select: { id: true, semester_fee: true },
+    });
+    if (!semester) {
+      throw new NotFoundException('Semester not found!');
+    }
+    return { id: semester.id, semester_fee: semester.semester_fee };
   }
 
   async getSemester(id: number) {
@@ -456,10 +606,9 @@ export class AcademicsService {
   }
 
   // ---------------------------------------------------------------------------
-  // Simple read-only lookups
+  // college  -> /colleges  (full CRUD; soft delete)
   // ---------------------------------------------------------------------------
 
-  // college  -> /colleges
   async listColleges(query: Pagination): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
     const [items, total] = await Promise.all([
@@ -474,7 +623,48 @@ export class AcademicsService {
     return this.paginated(items, total, page, limit);
   }
 
-  // countries  -> /countries  (PK is country_id, not id)
+  private async getCollege(id: number) {
+    const college = await this.prisma.college.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!college) {
+      throw new NotFoundException('College not found!');
+    }
+    return college;
+  }
+
+  async createCollege(dto: CreateCollegeDto) {
+    const now = new Date();
+    return this.prisma.college.create({
+      data: { ...dto, created_at: now, updated_at: now },
+    });
+  }
+
+  async updateCollege(id: number, dto: UpdateCollegeDto) {
+    await this.getCollege(id);
+    return this.prisma.college.update({
+      where: { id },
+      data: { ...dto, updated_at: new Date() },
+    });
+  }
+
+  async deleteCollege(id: number) {
+    await this.getCollege(id);
+    return this.prisma.college.update({
+      where: { id },
+      data: { deleted_at: new Date() },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // countries  -> /countries  (full CRUD; PK is country_id, not id)
+  //
+  // ADAPTED: the legacy Country controller wrote `title`/`short_description`, but
+  // Country_model maps to the `countries` table whose real columns are `country`,
+  // `short_code`, `phonecode` (those legacy column names don't exist). We target
+  // the real schema columns. The PK is `country_id`.
+  // ---------------------------------------------------------------------------
+
   async listCountries(query: Pagination): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
     const [items, total] = await Promise.all([
@@ -489,22 +679,75 @@ export class AcademicsService {
     return this.paginated(items, total, page, limit);
   }
 
-  // states  -> /states
-  async listStates(query: Pagination): Promise<Paginated<unknown>> {
+  private async getCountry(id: number) {
+    const country = await this.prisma.countries.findFirst({
+      where: { country_id: id, deleted_at: null },
+    });
+    if (!country) {
+      throw new NotFoundException('Country not found!');
+    }
+    return country;
+  }
+
+  async createCountry(dto: CreateCountryDto) {
+    const now = new Date();
+    return this.prisma.countries.create({
+      data: {
+        country: dto.country,
+        short_code: dto.short_code ?? null,
+        phonecode: dto.phonecode,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async updateCountry(id: number, dto: UpdateCountryDto) {
+    await this.getCountry(id);
+    return this.prisma.countries.update({
+      where: { country_id: id },
+      data: { ...dto, updated_at: new Date() },
+    });
+  }
+
+  async deleteCountry(id: number) {
+    await this.getCountry(id);
+    return this.prisma.countries.update({
+      where: { country_id: id },
+      data: { deleted_at: new Date() },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // states  -> /states  (read-only list with optional ?country filter)
+  //
+  // The `states` table has a `country` VarChar column (NOT country_id), so the
+  // filter is a string match on that column — mirrors how the legacy lookups
+  // scoped states by country name.
+  // ---------------------------------------------------------------------------
+
+  async listStates(query: StatesListQueryDto): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
+    const where: { deleted_at: null; country?: string } = { deleted_at: null };
+    if (query.country != null && query.country !== '') {
+      where.country = query.country;
+    }
     const [items, total] = await Promise.all([
       this.prisma.states.findMany({
-        where: { deleted_at: null },
+        where,
         orderBy: { state_name: 'asc' },
         skip,
         take,
       }),
-      this.prisma.states.count({ where: { deleted_at: null } }),
+      this.prisma.states.count({ where }),
     ]);
     return this.paginated(items, total, page, limit);
   }
 
-  // document_type  -> /document-types
+  // ---------------------------------------------------------------------------
+  // document_type  -> /document-types  (full CRUD; soft delete)
+  // ---------------------------------------------------------------------------
+
   async listDocumentTypes(query: Pagination): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
     const [items, total] = await Promise.all([
@@ -519,15 +762,257 @@ export class AcademicsService {
     return this.paginated(items, total, page, limit);
   }
 
+  private async getDocumentType(id: number) {
+    const documentType = await this.prisma.document_type.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!documentType) {
+      throw new NotFoundException('Document type not found!');
+    }
+    return documentType;
+  }
+
+  async createDocumentType(dto: CreateDocumentTypeDto) {
+    const now = new Date();
+    return this.prisma.document_type.create({
+      data: { ...dto, created_at: now, updated_at: now },
+    });
+  }
+
+  async updateDocumentType(id: number, dto: UpdateDocumentTypeDto) {
+    await this.getDocumentType(id);
+    return this.prisma.document_type.update({
+      where: { id },
+      data: { ...dto, updated_at: new Date() },
+    });
+  }
+
+  async deleteDocumentType(id: number) {
+    await this.getDocumentType(id);
+    return this.prisma.document_type.update({
+      where: { id },
+      data: { deleted_at: new Date() },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // group_courses  -> /group-courses  (full CRUD; course_ids is a JSON LongText)
+  //
+  // Ports the App\Group_course controller + GroupCourse_model::getGroupsWithCourses.
+  // `course_ids` is stored as a JSON-encoded array of course ids (json_encode in
+  // legacy). List/read decode it and decorate each group with the referenced
+  // courses (id, title, university_id, university_title) — built without an N+1.
+  // ---------------------------------------------------------------------------
+
+  /** Parse the JSON `course_ids` LongText into a numeric id array (lenient). */
+  private parseCourseIds(raw: string | null | undefined): number[] {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((v) => Number(v))
+        .filter((n) => Number.isInteger(n));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Resolve the given course ids to { id, title, university_id, university_title }
+   * in two bulk queries (courses + their universities), preserving the requested
+   * order. Mirrors GroupCourse_model::getGroupsWithCourses' left join to
+   * university. Used to decorate group-course rows.
+   */
+  private async coursesForGroup(courseIds: number[]) {
+    if (courseIds.length === 0) return [];
+    const courses = await this.prisma.course.findMany({
+      where: { id: { in: courseIds }, deleted_at: null },
+      select: { id: true, title: true, university_id: true },
+    });
+    const universityIds = [
+      ...new Set(
+        courses
+          .map((c) => c.university_id)
+          .filter((u): u is number => u != null),
+      ),
+    ];
+    const universities =
+      universityIds.length > 0
+        ? await this.prisma.university.findMany({
+            where: { id: { in: universityIds }, deleted_at: null },
+            select: { id: true, title: true },
+          })
+        : [];
+    const uniTitleById = new Map(universities.map((u) => [u.id, u.title]));
+    const courseById = new Map(courses.map((c) => [c.id, c]));
+
+    // Keep the order the ids were stored in; drop ids that no longer resolve.
+    return courseIds
+      .map((id) => courseById.get(id))
+      .filter((c): c is NonNullable<typeof c> => c != null)
+      .map((c) => ({
+        id: c.id,
+        title: c.title,
+        university_id: c.university_id,
+        university_title:
+          c.university_id != null
+            ? (uniTitleById.get(c.university_id) ?? null)
+            : null,
+      }));
+  }
+
+  /** Decorate a raw group_courses row with its resolved `courses` array. */
+  private async decorateGroupCourse(group: {
+    course_ids: string | null;
+    [key: string]: unknown;
+  }) {
+    const ids = this.parseCourseIds(group.course_ids);
+    const courses = await this.coursesForGroup(ids);
+    return { ...group, courses };
+  }
+
+  async listGroupCourses(query: Pagination): Promise<Paginated<unknown>> {
+    const { page, limit, skip, take } = this.resolvePaging(query);
+    const [rows, total] = await Promise.all([
+      this.prisma.group_courses.findMany({
+        where: { deleted_at: null },
+        orderBy: { id: 'desc' },
+        skip,
+        take,
+      }),
+      this.prisma.group_courses.count({ where: { deleted_at: null } }),
+    ]);
+    const items = await Promise.all(
+      rows.map((row) => this.decorateGroupCourse(row)),
+    );
+    return this.paginated(items, total, page, limit);
+  }
+
+  private async getGroupCourseRow(id: number) {
+    const group = await this.prisma.group_courses.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!group) {
+      throw new NotFoundException('Group course not found!');
+    }
+    return group;
+  }
+
+  async createGroupCourse(dto: CreateGroupCourseDto) {
+    const now = new Date();
+    const created = await this.prisma.group_courses.create({
+      data: {
+        group_name: dto.group_name,
+        description: dto.description ?? null,
+        // Stored as a JSON-encoded array, mirroring legacy json_encode($courseIds).
+        course_ids: JSON.stringify(dto.course_ids),
+        created_at: now,
+        updated_at: now,
+      },
+    });
+    return this.decorateGroupCourse(created);
+  }
+
+  async updateGroupCourse(id: number, dto: UpdateGroupCourseDto) {
+    await this.getGroupCourseRow(id);
+    const data: {
+      group_name?: string;
+      description?: string | null;
+      course_ids?: string;
+      updated_at: Date;
+    } = { updated_at: new Date() };
+    if (dto.group_name !== undefined) data.group_name = dto.group_name;
+    if (dto.description !== undefined) data.description = dto.description;
+    if (dto.course_ids !== undefined) {
+      data.course_ids = JSON.stringify(dto.course_ids);
+    }
+    const updated = await this.prisma.group_courses.update({
+      where: { id },
+      data,
+    });
+    return this.decorateGroupCourse(updated);
+  }
+
+  async deleteGroupCourse(id: number) {
+    await this.getGroupCourseRow(id);
+    return this.prisma.group_courses.update({
+      where: { id },
+      data: { deleted_at: new Date() },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // universities knowledge-base  -> /universities/knowledge-base
+  //
+  // Lists active universities decorated with their country info. The
+  // `university.country_id` column is a free-form Text blob that may hold one or
+  // more comma-separated country ids, so we resolve every referenced id against
+  // the `countries` table (PK country_id) in one bulk query and attach a
+  // `countries` array per university.
+  // ---------------------------------------------------------------------------
+
+  async universitiesKnowledgeBase() {
+    const universities = await this.prisma.university.findMany({
+      where: { deleted_at: null },
+      orderBy: { id: 'desc' },
+    });
+
+    // country_id is a Text blob possibly holding several comma-separated ids.
+    const parseCountryIds = (raw: string | null | undefined): number[] =>
+      (raw ?? '')
+        .split(',')
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isInteger(n) && n > 0);
+
+    const allCountryIds = [
+      ...new Set(universities.flatMap((u) => parseCountryIds(u.country_id))),
+    ];
+    const countries =
+      allCountryIds.length > 0
+        ? await this.prisma.countries.findMany({
+            where: { country_id: { in: allCountryIds }, deleted_at: null },
+            select: { country_id: true, country: true, short_code: true },
+          })
+        : [];
+    const countryById = new Map(countries.map((c) => [c.country_id, c]));
+
+    return universities.map((university) => ({
+      ...university,
+      countries: parseCountryIds(university.country_id)
+        .map((cid) => countryById.get(cid))
+        .filter((c): c is NonNullable<typeof c> => c != null),
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
   // visa_type  -> /visa-types
-  // TODO(phase-3): The legacy `visa_type` lookup table (App\Visa_type controller)
-  // is NOT present in the current prisma/schema.prisma, so there is no
-  // `prisma.visa_type` delegate to query. Add the `visa_type` model to the schema
-  // (id, title, created_by/at, updated_by/at, deleted_by/at) and implement the
-  // simple soft-deleted list here, mirroring listDocumentTypes above.
-  async listVisaTypes(_query: Pagination): Promise<never> {
+  // TODO(phase-3): The legacy `visa_type` lookup table (App\Visa_type controller,
+  // Visa_type_model -> table `visa_type`) is NOT present in prisma/schema.prisma,
+  // so there is no `prisma.visa_type` delegate. List + full CRUD therefore throw
+  // NotImplementedException until the model is added (id, title, created_by/at,
+  // updated_by/at, deleted_by/at), at which point these mirror document_type.
+  // ---------------------------------------------------------------------------
+
+  private visaTypeNotModelled(): never {
     throw new NotImplementedException(
       'visa_type is not modelled in prisma/schema.prisma yet — phase-3',
     );
+  }
+
+  async listVisaTypes(_query: Pagination): Promise<never> {
+    return this.visaTypeNotModelled();
+  }
+
+  async createVisaType(_dto: CreateVisaTypeDto): Promise<never> {
+    return this.visaTypeNotModelled();
+  }
+
+  async updateVisaType(_id: number, _dto: UpdateVisaTypeDto): Promise<never> {
+    return this.visaTypeNotModelled();
+  }
+
+  async deleteVisaType(_id: number): Promise<never> {
+    return this.visaTypeNotModelled();
   }
 }
