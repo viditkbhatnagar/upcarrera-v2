@@ -205,4 +205,106 @@ describe('Academics catalog (e2e)', () => {
       expect(res.body.data).toBeNull();
     });
   });
+
+  describe('visa-types CRUD lifecycle', () => {
+    let createdVisaTypeId: number;
+
+    it('GET /api/visa-types returns the paginated envelope', async () => {
+      const res = await request(http)
+        .get('/api/visa-types')
+        .set(authHeader(token));
+
+      expect([200, 201]).toContain(res.status);
+      expect(res.body.status).toBe(true);
+      expect(res.body.message).toBe('Visa Types');
+
+      const { data } = res.body;
+      expect(Array.isArray(data.items)).toBe(true);
+      expect(typeof data.total).toBe('number');
+      expect(data.total).toBeGreaterThanOrEqual(0);
+      expect(data.page).toBe(1);
+      expect(data.limit).toBe(20);
+    });
+
+    it('GET /api/visa-types requires authentication', async () => {
+      const res = await request(http).get('/api/visa-types');
+
+      expect(res.status).toBe(401);
+      expect(res.body.status).toBe(false);
+      expect(res.body.data).toBeNull();
+    });
+
+    it('POST /api/visa-types creates a visa type', async () => {
+      const res = await request(http)
+        .post('/api/visa-types')
+        .set(authHeader(token))
+        .send({ title: 'E2E Student Visa' });
+
+      expect([200, 201]).toContain(res.status);
+      expect(res.body.status).toBe(true);
+      expect(res.body.message).toBe('Visa Type Added Successfully!');
+      expect(typeof res.body.data.id).toBe('number');
+      expect(res.body.data.title).toBe('E2E Student Visa');
+
+      createdVisaTypeId = res.body.data.id;
+    });
+
+    it('GET /api/visa-types includes the created row', async () => {
+      const res = await request(http)
+        .get('/api/visa-types')
+        .query({ limit: 1000 })
+        .set(authHeader(token));
+
+      expect([200, 201]).toContain(res.status);
+      const ids = res.body.data.items.map((v: { id: number }) => v.id);
+      expect(ids).toContain(createdVisaTypeId);
+    });
+
+    it('PATCH /api/visa-types/:id updates the title', async () => {
+      const res = await request(http)
+        .patch(`/api/visa-types/${createdVisaTypeId}`)
+        .set(authHeader(token))
+        .send({ title: 'E2E Work Visa' });
+
+      expect([200, 201]).toContain(res.status);
+      expect(res.body.status).toBe(true);
+      expect(res.body.message).toBe('Visa Type Updated Successfully!');
+      expect(res.body.data.title).toBe('E2E Work Visa');
+    });
+
+    it('DELETE /api/visa-types/:id soft-deletes the visa type', async () => {
+      const res = await request(http)
+        .delete(`/api/visa-types/${createdVisaTypeId}`)
+        .set(authHeader(token));
+
+      expect([200, 201]).toContain(res.status);
+      expect(res.body.status).toBe(true);
+      expect(res.body.message).toBe('Visa Type Deleted Successfully!');
+      expect(res.body.data.id).toBe(createdVisaTypeId);
+    });
+
+    it('PATCH /api/visa-types/:id 404s "Visa type not found!" after the soft delete', async () => {
+      const res = await request(http)
+        .patch(`/api/visa-types/${createdVisaTypeId}`)
+        .set(authHeader(token))
+        .send({ title: 'gone' });
+
+      expect(res.status).toBe(404);
+      expect(res.body.status).toBe(false);
+      expect(res.body.message).toBe('Visa type not found!');
+      expect(res.body.data).toBeNull();
+    });
+
+    it('PATCH /api/visa-types/:id 404s for a non-existent id', async () => {
+      const res = await request(http)
+        .patch('/api/visa-types/999999999')
+        .set(authHeader(token))
+        .send({ title: 'nope' });
+
+      expect(res.status).toBe(404);
+      expect(res.body.status).toBe(false);
+      expect(res.body.message).toBe('Visa type not found!');
+      expect(res.body.data).toBeNull();
+    });
+  });
 });

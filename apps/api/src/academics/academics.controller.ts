@@ -359,9 +359,7 @@ export class StatesController {
   }
 }
 
-// visa_type -> /visa-types
-// CRUD wired through, but the service throws NotImplementedException until the
-// `visa_type` model is added to prisma/schema.prisma (see service phase-3 note).
+// visa_type -> /visa-types (full CRUD; mirrors document_type)
 @Controller('visa-types')
 export class VisaTypesController {
   constructor(private readonly academics: AcademicsService) {}

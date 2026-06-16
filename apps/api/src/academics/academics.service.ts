@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  NotFoundException,
-  NotImplementedException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCourseDto } from './dto/create-course.dto';
@@ -1073,29 +1069,53 @@ export class AcademicsService {
   // TODO(phase-3): The legacy `visa_type` lookup table (App\Visa_type controller,
   // Visa_type_model -> table `visa_type`) is NOT present in prisma/schema.prisma,
   // so there is no `prisma.visa_type` delegate. List + full CRUD therefore throw
-  // NotImplementedException until the model is added (id, title, created_by/at,
-  // updated_by/at, deleted_by/at), at which point these mirror document_type.
+  // Full CRUD mirroring document_type (soft-delete + manual JS-Date timestamps).
   // ---------------------------------------------------------------------------
 
-  private visaTypeNotModelled(): never {
-    throw new NotImplementedException(
-      'visa_type is not modelled in prisma/schema.prisma yet — phase-3',
-    );
+  async listVisaTypes(query: Pagination): Promise<Paginated<unknown>> {
+    const { page, limit, skip, take } = this.resolvePaging(query);
+    const [items, total] = await Promise.all([
+      this.prisma.visa_type.findMany({
+        where: { deleted_at: null },
+        orderBy: { id: 'asc' },
+        skip,
+        take,
+      }),
+      this.prisma.visa_type.count({ where: { deleted_at: null } }),
+    ]);
+    return this.paginated(items, total, page, limit);
   }
 
-  async listVisaTypes(_query: Pagination): Promise<never> {
-    return this.visaTypeNotModelled();
+  private async getVisaType(id: number) {
+    const visaType = await this.prisma.visa_type.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!visaType) {
+      throw new NotFoundException('Visa type not found!');
+    }
+    return visaType;
   }
 
-  async createVisaType(_dto: CreateVisaTypeDto): Promise<never> {
-    return this.visaTypeNotModelled();
+  async createVisaType(dto: CreateVisaTypeDto) {
+    const now = new Date();
+    return this.prisma.visa_type.create({
+      data: { ...dto, created_at: now, updated_at: now },
+    });
   }
 
-  async updateVisaType(_id: number, _dto: UpdateVisaTypeDto): Promise<never> {
-    return this.visaTypeNotModelled();
+  async updateVisaType(id: number, dto: UpdateVisaTypeDto) {
+    await this.getVisaType(id);
+    return this.prisma.visa_type.update({
+      where: { id },
+      data: { ...dto, updated_at: new Date() },
+    });
   }
 
-  async deleteVisaType(_id: number): Promise<never> {
-    return this.visaTypeNotModelled();
+  async deleteVisaType(id: number) {
+    await this.getVisaType(id);
+    return this.prisma.visa_type.update({
+      where: { id },
+      data: { deleted_at: new Date() },
+    });
   }
 }
