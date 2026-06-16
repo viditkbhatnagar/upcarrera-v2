@@ -307,4 +307,96 @@ describe('Academics catalog (e2e)', () => {
       expect(res.body.data).toBeNull();
     });
   });
+
+  describe('intakes CRUD lifecycle', () => {
+    let createdIntakeId: number;
+
+    it('GET /api/intakes returns the paginated envelope', async () => {
+      const res = await request(http).get('/api/intakes').set(authHeader(token));
+
+      expect([200, 201]).toContain(res.status);
+      expect(res.body.status).toBe(true);
+      expect(res.body.message).toBe('Intakes');
+
+      const { data } = res.body;
+      expect(Array.isArray(data.items)).toBe(true);
+      expect(typeof data.total).toBe('number');
+      expect(data.total).toBeGreaterThanOrEqual(0);
+      expect(data.page).toBe(1);
+      expect(data.limit).toBe(20);
+    });
+
+    it('GET /api/intakes requires authentication', async () => {
+      const res = await request(http).get('/api/intakes');
+
+      expect(res.status).toBe(401);
+      expect(res.body.status).toBe(false);
+      expect(res.body.data).toBeNull();
+    });
+
+    it('POST /api/intakes creates an intake', async () => {
+      const res = await request(http)
+        .post('/api/intakes')
+        .set(authHeader(token))
+        .send({ name: 'E2E Spring Intake', month: 'March', year: 2026, status: 'Open' });
+
+      expect([200, 201]).toContain(res.status);
+      expect(res.body.status).toBe(true);
+      expect(res.body.message).toBe('Intake Added Successfully!');
+      expect(typeof res.body.data.id).toBe('number');
+      expect(res.body.data.name).toBe('E2E Spring Intake');
+      expect(res.body.data.status).toBe('Open');
+
+      createdIntakeId = res.body.data.id;
+    });
+
+    it('GET /api/intakes includes the created intake with mapped counts', async () => {
+      const res = await request(http)
+        .get('/api/intakes')
+        .query({ limit: 1000 })
+        .set(authHeader(token));
+
+      const found = res.body.data.items.find(
+        (i: { id: number }) => i.id === createdIntakeId,
+      );
+      expect(found).toBeDefined();
+      expect(typeof found.mapped_universities).toBe('number');
+      expect(typeof found.mapped_courses).toBe('number');
+    });
+
+    it('PATCH /api/intakes/:id updates the status', async () => {
+      const res = await request(http)
+        .patch(`/api/intakes/${createdIntakeId}`)
+        .set(authHeader(token))
+        .send({ status: 'Closed' });
+
+      expect([200, 201]).toContain(res.status);
+      expect(res.body.status).toBe(true);
+      expect(res.body.message).toBe('Intake Updated Successfully!');
+      expect(res.body.data.status).toBe('Closed');
+    });
+
+    it('DELETE /api/intakes/:id soft-deletes the intake', async () => {
+      const res = await request(http)
+        .delete(`/api/intakes/${createdIntakeId}`)
+        .set(authHeader(token));
+
+      expect([200, 201]).toContain(res.status);
+      expect(res.body.status).toBe(true);
+      expect(res.body.message).toBe('Intake Deleted Successfully!');
+      expect(res.body.data.id).toBe(createdIntakeId);
+    });
+
+    it('PATCH /api/intakes/:id 404s "Intake not found!" after the soft delete', async () => {
+      const res = await request(http)
+        .patch(`/api/intakes/${createdIntakeId}`)
+        .set(authHeader(token))
+        .send({ status: 'Open' });
+
+      expect(res.status).toBe(404);
+      expect(res.body.status).toBe(false);
+      expect(res.body.message).toBe('Intake not found!');
+      expect(res.body.data).toBeNull();
+    });
+  });
 });

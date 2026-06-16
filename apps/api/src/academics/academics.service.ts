@@ -26,6 +26,8 @@ import { CreateCountryDto } from './dto/create-country.dto';
 import { UpdateCountryDto } from './dto/update-country.dto';
 import { CreateVisaTypeDto } from './dto/create-visa-type.dto';
 import { UpdateVisaTypeDto } from './dto/update-visa-type.dto';
+import { CreateIntakeDto } from './dto/create-intake.dto';
+import { UpdateIntakeDto } from './dto/update-intake.dto';
 import { CreateGroupCourseDto } from './dto/create-group-course.dto';
 import { UpdateGroupCourseDto } from './dto/update-group-course.dto';
 
@@ -1187,6 +1189,82 @@ export class AcademicsService {
   async deleteVisaType(id: number) {
     await this.getVisaType(id);
     return this.prisma.visa_type.update({
+      where: { id },
+      data: { deleted_at: new Date() },
+    });
+  }
+
+  // ---- intakes (admission cycles) ----------------------------------------
+
+  async listIntakes(query: Pagination): Promise<Paginated<unknown>> {
+    const { page, limit, skip, take } = this.resolvePaging(query);
+    const [rows, total] = await Promise.all([
+      this.prisma.intake.findMany({
+        where: { deleted_at: null },
+        orderBy: { id: 'desc' },
+        skip,
+        take,
+      }),
+      this.prisma.intake.count({ where: { deleted_at: null } }),
+    ]);
+    // No intake<->university/course mapping tables yet, so counts are 0.
+    const items = rows.map((r) => ({
+      ...r,
+      mapped_universities: 0,
+      mapped_courses: 0,
+    }));
+    return this.paginated(items, total, page, limit);
+  }
+
+  private async getIntake(id: number) {
+    const intake = await this.prisma.intake.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!intake) {
+      throw new NotFoundException('Intake not found!');
+    }
+    return intake;
+  }
+
+  async createIntake(dto: CreateIntakeDto) {
+    const now = new Date();
+    return this.prisma.intake.create({
+      data: {
+        name: dto.name ?? null,
+        month: dto.month ?? null,
+        year: dto.year ?? null,
+        start_date: dto.start_date ? new Date(dto.start_date) : null,
+        closing_date: dto.closing_date ? new Date(dto.closing_date) : null,
+        status: dto.status ?? 'Open',
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async updateIntake(id: number, dto: UpdateIntakeDto) {
+    await this.getIntake(id);
+    return this.prisma.intake.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.month !== undefined ? { month: dto.month } : {}),
+        ...(dto.year !== undefined ? { year: dto.year } : {}),
+        ...(dto.start_date !== undefined
+          ? { start_date: dto.start_date ? new Date(dto.start_date) : null }
+          : {}),
+        ...(dto.closing_date !== undefined
+          ? { closing_date: dto.closing_date ? new Date(dto.closing_date) : null }
+          : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        updated_at: new Date(),
+      },
+    });
+  }
+
+  async deleteIntake(id: number) {
+    await this.getIntake(id);
+    return this.prisma.intake.update({
       where: { id },
       data: { deleted_at: new Date() },
     });

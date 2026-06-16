@@ -289,6 +289,22 @@ model visa_type {
   deleted_at DateTime? @db.DateTime(0)
 }
 
+model intake {
+  id           Int       @id @default(autoincrement())
+  name         String?   @db.VarChar(160)
+  month        String?   @db.VarChar(20)
+  year         Int?
+  start_date   DateTime? @db.Date
+  closing_date DateTime? @db.Date
+  status       String?   @db.VarChar(20)
+  created_by   Int?
+  updated_by   Int?
+  deleted_by   Int?
+  updated_at   DateTime? @db.DateTime(0)
+  created_at   DateTime? @db.DateTime(0)
+  deleted_at   DateTime? @db.DateTime(0)
+}
+
 model enrol {
   id            Int       @id @default(autoincrement())
   user_id       Int?

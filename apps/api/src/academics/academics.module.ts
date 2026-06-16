@@ -10,6 +10,7 @@ import {
   CountriesController,
   StatesController,
   VisaTypesController,
+  IntakesController,
   DocumentTypesController,
   GroupCoursesController,
 } from './academics.controller';
@@ -30,6 +31,7 @@ import {
     CountriesController,
     StatesController,
     VisaTypesController,
+    IntakesController,
     DocumentTypesController,
     GroupCoursesController,
   ],
