@@ -26,6 +26,8 @@ import { CreateCountryDto } from './dto/create-country.dto';
 import { UpdateCountryDto } from './dto/update-country.dto';
 import { CreateVisaTypeDto } from './dto/create-visa-type.dto';
 import { UpdateVisaTypeDto } from './dto/update-visa-type.dto';
+import { CreateIntakeDto } from './dto/create-intake.dto';
+import { UpdateIntakeDto } from './dto/update-intake.dto';
 import { CreateGroupCourseDto } from './dto/create-group-course.dto';
 import { UpdateGroupCourseDto } from './dto/update-group-course.dto';
 
@@ -246,9 +248,52 @@ export class AcademicsService {
   // university  -> /universities
   // ---------------------------------------------------------------------------
 
+  /**
+   * Derive the number of intakes from the free-form `university.intakes` Text
+   * blob. The legacy column is a textarea blob with no fixed format, so we parse
+   * leniently:
+   *   - a JSON array -> its length
+   *   - otherwise -> count of non-empty tokens split on commas/newlines/pipes
+   *   - null / empty / unparseable -> 0
+   */
+  private deriveIntakesCount(raw: string | null | undefined): number {
+    if (raw == null) return 0;
+    const trimmed = raw.trim();
+    if (trimmed === '') return 0;
+
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.filter(
+            (v) => v != null && String(v).trim() !== '',
+          ).length;
+        }
+      } catch {
+        // fall through to delimiter-based counting
+      }
+    }
+
+    return trimmed
+      .split(/[\n,|]+/)
+      .map((s) => s.trim())
+      .filter((s) => s !== '').length;
+  }
+
+  /**
+   * GET /universities — paginated catalog of active universities, each item
+   * decorated with:
+   *   - tagged_courses_count: number of active (deleted_at null) `course` rows
+   *     whose university_id = university.id, resolved in ONE bulk groupBy (no
+   *     N+1).
+   *   - intakes_count: derived from the row's free-form `intakes` Text blob.
+   *
+   * Keeps the exact { items, total, page, limit } envelope; only ADDS fields to
+   * each item (existing fields are preserved).
+   */
   async listUniversities(query: Pagination): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.university.findMany({
         where: { deleted_at: null },
         orderBy: { id: 'desc' },
@@ -257,6 +302,36 @@ export class AcademicsService {
       }),
       this.prisma.university.count({ where: { deleted_at: null } }),
     ]);
+
+    // Collect the page's university ids and resolve tagged-course counts in a
+    // single bulk groupBy keyed by course.university_id.
+    const universityIds = rows.map((u) => u.id);
+    const courseCounts =
+      universityIds.length > 0
+        ? await this.prisma.course.groupBy({
+            by: ['university_id'],
+            where: {
+              university_id: { in: universityIds },
+              deleted_at: null,
+            },
+            _count: { _all: true },
+          })
+        : [];
+    const taggedCountByUniversityId = new Map<number, number>(
+      courseCounts
+        .filter(
+          (c): c is typeof c & { university_id: number } =>
+            c.university_id != null,
+        )
+        .map((c) => [c.university_id, c._count._all]),
+    );
+
+    const items = rows.map((university) => ({
+      ...university,
+      tagged_courses_count: taggedCountByUniversityId.get(university.id) ?? 0,
+      intakes_count: this.deriveIntakesCount(university.intakes),
+    }));
+
     return this.paginated(items, total, page, limit);
   }
 
@@ -1114,6 +1189,82 @@ export class AcademicsService {
   async deleteVisaType(id: number) {
     await this.getVisaType(id);
     return this.prisma.visa_type.update({
+      where: { id },
+      data: { deleted_at: new Date() },
+    });
+  }
+
+  // ---- intakes (admission cycles) ----------------------------------------
+
+  async listIntakes(query: Pagination): Promise<Paginated<unknown>> {
+    const { page, limit, skip, take } = this.resolvePaging(query);
+    const [rows, total] = await Promise.all([
+      this.prisma.intake.findMany({
+        where: { deleted_at: null },
+        orderBy: { id: 'desc' },
+        skip,
+        take,
+      }),
+      this.prisma.intake.count({ where: { deleted_at: null } }),
+    ]);
+    // No intake<->university/course mapping tables yet, so counts are 0.
+    const items = rows.map((r) => ({
+      ...r,
+      mapped_universities: 0,
+      mapped_courses: 0,
+    }));
+    return this.paginated(items, total, page, limit);
+  }
+
+  private async getIntake(id: number) {
+    const intake = await this.prisma.intake.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!intake) {
+      throw new NotFoundException('Intake not found!');
+    }
+    return intake;
+  }
+
+  async createIntake(dto: CreateIntakeDto) {
+    const now = new Date();
+    return this.prisma.intake.create({
+      data: {
+        name: dto.name ?? null,
+        month: dto.month ?? null,
+        year: dto.year ?? null,
+        start_date: dto.start_date ? new Date(dto.start_date) : null,
+        closing_date: dto.closing_date ? new Date(dto.closing_date) : null,
+        status: dto.status ?? 'Open',
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  async updateIntake(id: number, dto: UpdateIntakeDto) {
+    await this.getIntake(id);
+    return this.prisma.intake.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.month !== undefined ? { month: dto.month } : {}),
+        ...(dto.year !== undefined ? { year: dto.year } : {}),
+        ...(dto.start_date !== undefined
+          ? { start_date: dto.start_date ? new Date(dto.start_date) : null }
+          : {}),
+        ...(dto.closing_date !== undefined
+          ? { closing_date: dto.closing_date ? new Date(dto.closing_date) : null }
+          : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        updated_at: new Date(),
+      },
+    });
+  }
+
+  async deleteIntake(id: number) {
+    await this.getIntake(id);
+    return this.prisma.intake.update({
       where: { id },
       data: { deleted_at: new Date() },
     });

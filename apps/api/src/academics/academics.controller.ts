@@ -37,6 +37,8 @@ import { CreateCountryDto } from './dto/create-country.dto';
 import { UpdateCountryDto } from './dto/update-country.dto';
 import { CreateVisaTypeDto } from './dto/create-visa-type.dto';
 import { UpdateVisaTypeDto } from './dto/update-visa-type.dto';
+import { CreateIntakeDto } from './dto/create-intake.dto';
+import { UpdateIntakeDto } from './dto/update-intake.dto';
 import { CreateGroupCourseDto } from './dto/create-group-course.dto';
 import { UpdateGroupCourseDto } from './dto/update-group-course.dto';
 
@@ -386,6 +388,36 @@ export class VisaTypesController {
   @ResponseMessage('Visa Type Deleted Successfully!')
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.academics.deleteVisaType(id);
+  }
+}
+
+// intake -> /intakes (admission cycles; full CRUD)
+@Controller('intakes')
+export class IntakesController {
+  constructor(private readonly academics: AcademicsService) {}
+
+  @Get()
+  @ResponseMessage('Intakes')
+  list(@Query() query: ListQueryDto) {
+    return this.academics.listIntakes(query);
+  }
+
+  @Post()
+  @ResponseMessage('Intake Added Successfully!')
+  create(@Body() dto: CreateIntakeDto) {
+    return this.academics.createIntake(dto);
+  }
+
+  @Patch(':id')
+  @ResponseMessage('Intake Updated Successfully!')
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateIntakeDto) {
+    return this.academics.updateIntake(id, dto);
+  }
+
+  @Delete(':id')
+  @ResponseMessage('Intake Deleted Successfully!')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.academics.deleteIntake(id);
   }
 }
 

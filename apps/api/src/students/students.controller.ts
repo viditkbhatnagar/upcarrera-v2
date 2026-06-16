@@ -42,6 +42,14 @@ export class StudentsController {
 
   // --- literal sub-paths (MUST precede /:id) ---
 
+  // Live KPI-card counters for the students list. Declared before /:id so 'stats'
+  // is never parsed as a student id.
+  @Get('stats')
+  @ResponseMessage('Student stats fetched')
+  stats() {
+    return this.students.studentStats();
+  }
+
   @Get('finance')
   @ResponseMessage('Student finance fetched')
   finance(@Query() query: ListFinanceDto) {
@@ -82,10 +90,14 @@ export class StudentsController {
 
   // --- /:id and its sub-resources ---
 
+  // Returns the student row decorated with its joined user/course/university/
+  // consultant fields plus a finance summary (invoice + payment roll-up). The
+  // response keeps every original `students` column and `id`, so the additive
+  // fields don't break existing consumers.
   @Get(':id')
   @ResponseMessage('Student fetched')
   get(@Param('id', ParseIntPipe) id: number) {
-    return this.students.getStudent(id);
+    return this.students.getStudentDetail(id);
   }
 
   @Post()
