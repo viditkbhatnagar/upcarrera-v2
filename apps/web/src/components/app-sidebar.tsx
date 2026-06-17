@@ -61,9 +61,11 @@ const items: NavItem[] = [
 
 interface AppSidebarProps {
   collapsed: boolean;
+  mobileOpen: boolean;
+  onNavigate: () => void;
 }
 
-export function AppSidebar({ collapsed }: AppSidebarProps) {
+export function AppSidebar({ collapsed, mobileOpen, onNavigate }: AppSidebarProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -74,8 +76,14 @@ export function AppSidebar({ collapsed }: AppSidebarProps) {
   return (
     <aside
       className={[
-        "hidden lg:flex fixed inset-y-0 left-0 z-30 flex-col bg-sidebar text-sidebar-foreground transition-all duration-300",
-        collapsed ? "w-[72px] items-center" : "w-[260px]",
+        // Always rendered; on mobile it slides in as a drawer, on lg it is pinned.
+        "fixed inset-y-0 left-0 z-50 flex flex-col bg-sidebar text-sidebar-foreground transition-transform duration-300",
+        // Mobile is always full width (collapse is a desktop affordance only).
+        "w-[260px]",
+        collapsed ? "lg:w-[72px] lg:items-center" : "lg:w-[260px]",
+        // Off-canvas on mobile unless open; always on-canvas from lg up.
+        mobileOpen ? "translate-x-0" : "-translate-x-full",
+        "lg:translate-x-0",
       ].join(" ")}
     >
       {/* Brand */}
@@ -120,6 +128,7 @@ export function AppSidebar({ collapsed }: AppSidebarProps) {
                   )}
                   <Link
                     to={item.to as any}
+                    onClick={onNavigate}
                     className={[
                       "group flex items-center gap-3 rounded-xl text-sm font-medium transition-all",
                       collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2.5",
@@ -179,6 +188,7 @@ export function AppSidebar({ collapsed }: AppSidebarProps) {
                         <li key={child.to}>
                           <Link
                             to={child.to as any}
+                            onClick={onNavigate}
                             className={[
                               "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-all",
                               childActive
