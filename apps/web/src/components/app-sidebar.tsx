@@ -10,13 +10,14 @@ import {
   Headphones,
   BarChart3,
   Settings,
-  Sparkles,
   ChevronDown,
   FileText,
   Users,
   BookOpen,
   CalendarRange,
 } from "lucide-react";
+
+import { BrandLogo } from "@/components/brand/brand-logo";
 
 type SubItem = { to: string; label: string; icon: typeof LayoutDashboard };
 
@@ -93,8 +94,8 @@ export function AppSidebar({ collapsed, mobileOpen, onNavigate }: AppSidebarProp
           collapsed ? "px-3 justify-center" : "px-6",
         ].join(" ")}
       >
-        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent text-accent-foreground shadow-elevated">
-          <Sparkles className="h-5 w-5" />
+        <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white shadow-elevated">
+          <BrandLogo variant="mark" className="h-7 w-7" alt="upCarrera" />
         </div>
         {!collapsed && (
           <div className="min-w-0">
