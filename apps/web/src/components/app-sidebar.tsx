@@ -22,6 +22,7 @@ import {
   Target,
   Users2,
   ShieldCheck,
+  PhoneCall,
 } from "lucide-react";
 
 import { BrandLogo } from "@/components/brand/brand-logo";
@@ -63,6 +64,7 @@ const items: NavItem[] = [
   { to: "/fees", label: "Fee Management", icon: Wallet },
   { to: "/commissions", label: "Commission Management", icon: TrendingUp },
   { to: "/support", label: "Student Support", icon: Headphones, badge: "12" },
+  { to: "/calls", label: "Call History", icon: PhoneCall },
   { to: "/reports", label: "Reports", icon: BarChart3 },
   {
     to: "/counsellors",
