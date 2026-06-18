@@ -1,5 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Download,
   Plus,
@@ -15,6 +17,7 @@ import {
   X,
   Check,
   RefreshCcw,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -35,7 +38,6 @@ import {
 } from "@/components/ui/select";
 import {
   ALL_COUNSELLORS,
-  TEAMS,
   GROUPS,
   TEAM_LEADERS,
 } from "@/lib/counsellors-data";
@@ -57,6 +59,54 @@ interface TeamRow {
   status: TeamStatus;
 }
 
+// --- Live API wiring (GET /api/sales-teams) ------------------------------
+// Each list item is the raw `sales_team` row, with `members` already parsed by
+// the API into an array of member user-ids. We map those real values into the
+// screen's existing TeamRow shape. The legacy `sales_team` table has no group or
+// monthly-target column and `leader` is a user-id string (no name join), so
+// those UI fields fall back to "—" / 0 rather than inventing data.
+interface ApiTeamRow {
+  id: number | string;
+  name: string | null;
+  leader: string | null;
+  members: unknown[] | null;
+  university_id: string | null;
+  course_id: string | null;
+  status: number | null;
+}
+
+interface SalesTeamsResponse {
+  items: ApiTeamRow[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+const EMPTY = "—";
+
+function asText(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
+}
+
+// sales_team.status (Int code) -> UI status label. Legacy convention: 1 = Active.
+function toTeamStatus(status: number | null): TeamStatus {
+  return status === 1 ? "Active" : "Inactive";
+}
+
+function mapApiRow(t: ApiTeamRow): TeamRow {
+  return {
+    id: String(t.id),
+    name: asText(t.name),
+    leader: asText(t.leader),
+    // No group column in the legacy schema -> graceful fallback.
+    group: EMPTY,
+    totalCounsellors: Array.isArray(t.members) ? t.members.length : 0,
+    // No monthly-target column in the legacy schema -> 0 fallback.
+    monthlyTarget: 0,
+    status: toTeamStatus(t.status),
+  };
+}
+
 const STATUS_STYLES: Record<TeamStatus, string> = {
   Active: "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20",
   Inactive: "bg-rose-500/10 text-rose-700 ring-rose-500/20",
@@ -65,19 +115,6 @@ const STATUS_DOT: Record<TeamStatus, string> = {
   Active: "bg-emerald-500",
   Inactive: "bg-rose-500",
 };
-
-const ALL_TEAMS: TeamRow[] = TEAMS.map((t, i) => {
-  const members = ALL_COUNSELLORS.filter((c) => c.team === t);
-  return {
-    id: `TM-${String(2001 + i).padStart(4, "0")}`,
-    name: `Team ${t}`,
-    leader: TEAM_LEADERS[i % TEAM_LEADERS.length],
-    group: GROUPS[i % GROUPS.length],
-    totalCounsellors: members.length,
-    monthlyTarget: members.reduce((s, m) => s + m.activeTarget, 0),
-    status: i === 4 ? "Inactive" : "Active",
-  };
-});
 
 type StatusFilter = TeamStatus | "All";
 
@@ -89,8 +126,28 @@ function TeamsPage() {
   const [openCreate, setOpenCreate] = useState(false);
   const PAGE_SIZE = 10;
 
+  // Live sales-teams list. The endpoint supports server-side page/limit + a
+  // `search` filter on team name; status/group refine the fetched page
+  // client-side over the same UI controls.
+  const { data, isLoading, isError, error, isFetching } = useQuery({
+    queryKey: ["sales-teams", "list", { page, limit: PAGE_SIZE, search }],
+    queryFn: () =>
+      apiGet<SalesTeamsResponse>("/sales-teams", {
+        page,
+        limit: PAGE_SIZE,
+        search: search.trim() || undefined,
+      }),
+  });
+
+  const apiTotal = data?.total ?? 0;
+  const pageItems = useMemo(
+    () => (data?.items ?? []).map(mapApiRow),
+    [data],
+  );
+
+  // Client-side refinement of the current page over the real mapped values.
   const filtered = useMemo(() => {
-    return ALL_TEAMS.filter((t) => {
+    return pageItems.filter((t) => {
       if (statusFilter !== "All" && t.status !== statusFilter) return false;
       if (groupFilter !== "All" && t.group !== groupFilter) return false;
       if (search) {
@@ -104,21 +161,25 @@ function TeamsPage() {
       }
       return true;
     });
-  }, [statusFilter, search, groupFilter]);
+  }, [pageItems, statusFilter, search, groupFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(apiTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const pageRows = filtered.slice(
-    (currentPage - 1) * PAGE_SIZE,
-    currentPage * PAGE_SIZE,
-  );
+  const pageRows = filtered;
 
+  // KPI cards. "Total Teams" uses the API total (exact). Active / counsellors /
+  // leaders are derived from the fetched page (page-derived, not faked).
   const totals = useMemo(() => {
-    const active = ALL_TEAMS.filter((t) => t.status === "Active").length;
-    const totalCounsellors = ALL_COUNSELLORS.length;
-    const leaders = new Set(ALL_TEAMS.map((t) => t.leader)).size;
+    const active = pageItems.filter((t) => t.status === "Active").length;
+    const totalCounsellors = pageItems.reduce(
+      (s, t) => s + t.totalCounsellors,
+      0,
+    );
+    const leaders = new Set(
+      pageItems.filter((t) => t.leader !== EMPTY).map((t) => t.leader),
+    ).size;
     return { active, totalCounsellors, leaders };
-  }, []);
+  }, [pageItems]);
 
   const resetFilters = () => {
     setStatusFilter("All");
@@ -162,7 +223,8 @@ function TeamsPage() {
         <KpiCard
           icon={UsersRound}
           label="Total Teams"
-          value={ALL_TEAMS.length}
+          value={apiTotal}
+          loading={isLoading}
           active={statusFilter === "All"}
           onClick={() => {
             setStatusFilter("All");
@@ -174,6 +236,7 @@ function TeamsPage() {
           icon={ShieldCheck}
           label="Active Teams"
           value={totals.active}
+          loading={isLoading}
           active={statusFilter === "Active"}
           onClick={() => {
             setStatusFilter(statusFilter === "Active" ? "All" : "Active");
@@ -186,12 +249,14 @@ function TeamsPage() {
           icon={Users}
           label="Total Counsellors"
           value={totals.totalCounsellors}
+          loading={isLoading}
           accent="bg-indigo-500/10 text-indigo-600"
         />
         <KpiCard
           icon={UserCog}
           label="Team Leaders"
           value={totals.leaders}
+          loading={isLoading}
           accent="bg-amber-500/10 text-amber-600"
         />
       </div>
@@ -205,7 +270,10 @@ function TeamsPage() {
               className="h-9 pl-9 text-sm"
               placeholder="Search team, ID, leader"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
             />
           </div>
           <Select value={groupFilter} onValueChange={setGroupFilter}>
@@ -249,7 +317,7 @@ function TeamsPage() {
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="text-sm font-semibold text-foreground">
-            {filtered.length.toLocaleString()} teams
+            {isLoading ? "Loading…" : `${apiTotal.toLocaleString()} teams`}
             {statusFilter !== "All" && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                 {statusFilter}
@@ -258,6 +326,9 @@ function TeamsPage() {
                 </button>
               </span>
             )}
+            {isFetching && !isLoading && (
+              <RefreshCcw className="ml-2 inline h-3.5 w-3.5 animate-spin text-muted-foreground/60 align-text-bottom" />
+            )}
           </div>
           <div className="text-xs text-muted-foreground">
             Sorted by <span className="font-medium text-foreground">Team ID</span>
@@ -265,7 +336,20 @@ function TeamsPage() {
         </div>
 
         <div className="overflow-x-auto scrollbar-thin">
-          {pageRows.length === 0 ? (
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
+              <div className="text-sm font-semibold text-foreground">Loading teams…</div>
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <AlertTriangle className="h-10 w-10 text-red-500/60" />
+              <div className="text-sm font-semibold text-foreground">Couldn’t load teams</div>
+              <div className="text-xs text-muted-foreground">
+                {error instanceof Error ? error.message : "Please try again."}
+              </div>
+            </div>
+          ) : pageRows.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
               <UsersRound className="h-10 w-10 text-muted-foreground/50" />
               <div className="text-sm font-semibold text-foreground">No teams found</div>
@@ -294,7 +378,9 @@ function TeamsPage() {
                     key={t.id}
                     className="group border-b border-border last:border-0 transition hover:bg-muted/40"
                   >
-                    <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
+                    <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">
+                      {(currentPage - 1) * PAGE_SIZE + i + 1}
+                    </td>
                     <td className="px-4 py-3">
                       <span className="font-mono text-xs font-semibold text-primary">
                         {t.id}
@@ -357,13 +443,13 @@ function TeamsPage() {
           <div>
             Showing{" "}
             <span className="font-semibold text-foreground">
-              {(currentPage - 1) * PAGE_SIZE + 1}
+              {apiTotal === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}
             </span>{" "}
             –{" "}
             <span className="font-semibold text-foreground">
-              {Math.min(currentPage * PAGE_SIZE, filtered.length)}
+              {Math.min(currentPage * PAGE_SIZE, apiTotal)}
             </span>{" "}
-            of <span className="font-semibold text-foreground">{filtered.length}</span>
+            of <span className="font-semibold text-foreground">{apiTotal}</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -398,6 +484,7 @@ function KpiCard({
   icon: Icon,
   label,
   value,
+  loading,
   active,
   onClick,
   accent,
@@ -406,6 +493,7 @@ function KpiCard({
   icon: typeof Users;
   label: string;
   value: number;
+  loading?: boolean;
   active?: boolean;
   onClick?: () => void;
   accent?: string;
@@ -435,9 +523,13 @@ function KpiCard({
       <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         {label}
       </div>
-      <div className="text-2xl font-bold tracking-tight text-foreground">
-        {value.toLocaleString()}
-      </div>
+      {loading ? (
+        <div className="h-7 w-12 animate-pulse rounded bg-muted" />
+      ) : (
+        <div className="text-2xl font-bold tracking-tight text-foreground">
+          {value.toLocaleString()}
+        </div>
+      )}
     </Comp>
   );
 }
@@ -461,7 +553,7 @@ function CreateTeamDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const autoCode = useMemo(
-    () => `TM-${String(2000 + ALL_TEAMS.length + 1).padStart(4, "0")}`,
+    () => `TM-${String(2000 + 1).padStart(4, "0")}`,
     [],
   );
   const [members, setMembers] = useState<string[]>([]);
