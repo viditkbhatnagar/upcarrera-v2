@@ -107,9 +107,10 @@ function toAccountStatus(status: number | string | null): AccountStatus {
   return Number(status) === 1 ? "Active" : "Inactive";
 }
 
-// Employee ID prefers the user's `code`; falls back to the numeric id.
+// Employee ID = the user's unique system id. (The `code` column is NOT a
+// per-user identifier — it carries the same value across users.)
 function toEmpId(r: ApiUserRow): string {
-  return r.code != null && String(r.code).trim() !== "" ? String(r.code) : String(r.id);
+  return String(r.id);
 }
 
 function mapToRow(r: ApiUserRow, roleTitles: Map<string, string>): SystemUser {
@@ -182,15 +183,42 @@ function UsersPage() {
     return m;
   }, [rolesData]);
 
-  // Live users list. The API paginates server-side via page/limit and returns
-  // { items, total, page, limit }. Text / empId / designation / status / date
-  // filters refine the fetched page client-side over the SAME UI controls.
+  // Staff-only: User Management manages CRM login accounts, so we exclude the
+  // "Student" role (1,200+ students who never sign into the admin app). The
+  // student role id is resolved from the live /roles list, not hardcoded.
+  const studentRoleId = useMemo(() => {
+    for (const r of rolesData ?? []) {
+      if (String(r.title ?? "").trim().toLowerCase() === "student") return Number(r.id);
+    }
+    return undefined;
+  }, [rolesData]);
+  const rolesLoaded = rolesData !== undefined;
+  const staffQuery: Record<string, number> =
+    studentRoleId !== undefined ? { exclude_role_id: studentRoleId } : {};
+
+  // Live staff list. Server-paginated via page/limit; text / empId / designation
+  // / status / date filters refine the fetched page client-side. Gated on the
+  // roles list so students are excluded from the very first fetch.
   const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: ["users", "list", { page, limit: PAGE_SIZE }],
-    queryFn: () => apiGet<UsersListResponse>("/users", { page, limit: PAGE_SIZE }),
+    queryKey: ["users", "list", { page, limit: PAGE_SIZE, excludeRoleId: studentRoleId }],
+    queryFn: () =>
+      apiGet<UsersListResponse>("/users", { page, limit: PAGE_SIZE, ...staffQuery }),
+    enabled: rolesLoaded,
+  });
+
+  // Global KPI counts: the paged list can't see all staff, so fetch the full
+  // staff set once (small — students excluded) and count by status.
+  const { data: staffAll } = useQuery({
+    queryKey: ["users", "staff-all", { excludeRoleId: studentRoleId }],
+    queryFn: () => apiGet<UsersListResponse>("/users", { limit: 2000, ...staffQuery }),
+    enabled: rolesLoaded,
+    staleTime: 60 * 1000,
   });
 
   const apiTotal = data?.total ?? 0;
+  // The list query is gated on the roles list (to exclude students from the
+  // first fetch), so treat the pre-roles phase as loading too.
+  const showLoading = !rolesLoaded || isLoading;
   const allRows = useMemo(
     () => (data?.items ?? []).map((r) => mapToRow(r, roleTitles)),
     [data, roleTitles],
@@ -219,20 +247,18 @@ function UsersPage() {
   const currentPage = Math.min(page, totalPages);
   const pageRows = filtered;
 
-  // Total card uses the API total. Active/Inactive/Locked are derived from the
-  // fetched page (page-derived) — the DB models no "Locked" state, so that count
-  // resolves to 0 from real data rather than being fabricated.
+  // Total card uses the API total (staff only). Active/Inactive are GLOBAL —
+  // counted over the full staff set, not just the current page. The DB models no
+  // "Locked" state, so that card resolves to 0 rather than being fabricated.
   const counts = useMemo(() => {
     let active = 0,
-      inactive = 0,
-      locked = 0;
-    allRows.forEach((u) => {
-      if (u.status === "Active") active++;
-      else if (u.status === "Inactive") inactive++;
-      else locked++;
-    });
-    return { active, inactive, locked };
-  }, [allRows]);
+      inactive = 0;
+    for (const u of staffAll?.items ?? []) {
+      if (Number(u.status) === 1) active++;
+      else inactive++;
+    }
+    return { active, inactive, locked: 0 };
+  }, [staffAll]);
 
   const resetFilters = () => {
     setStatusFilter("All");
@@ -419,7 +445,7 @@ function UsersPage() {
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="text-sm font-semibold text-foreground">
-            {isLoading ? "Loading…" : `${apiTotal.toLocaleString()} users`}
+            {showLoading ? "Loading…" : `${apiTotal.toLocaleString()} users`}
             {statusFilter !== "All" && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                 {statusFilter}
@@ -446,7 +472,7 @@ function UsersPage() {
         </div>
 
         <div className="overflow-x-auto scrollbar-thin">
-          {isLoading ? (
+          {showLoading ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
               <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
               <div className="text-sm font-semibold text-foreground">Loading users…</div>
