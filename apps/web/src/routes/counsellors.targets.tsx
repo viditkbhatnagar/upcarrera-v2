@@ -144,12 +144,22 @@ function monthKey(value: string | null): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+// Window-based status derivation (no status column on consultant_target):
+// Active while to_date is today/future or open-ended, otherwise Inactive. Shared
+// so both the row mapper and the GLOBAL KPI counts use identical status logic.
+function deriveStatus(toDate: string | null): TargetStatus {
+  if (!toDate) return "Active";
+  const end = new Date(toDate);
+  if (Number.isNaN(end.getTime())) return "Active";
+  end.setHours(23, 59, 59, 999);
+  return end.getTime() >= Date.now() ? "Active" : "Inactive";
+}
+
 // Map a live API target row to the screen's existing TargetRow shape. Faithful
 // mapping with graceful fallbacks for facets the API doesn't expose:
 //  - type: API 1/2 → Point/Admission; unknown → Point Target (no Revenue server side)
 //  - month: derived from from_date (target window start), else to_date
-//  - status: derived from the window — Active while to_date is today/future or
-//    open-ended, otherwise Inactive (the API has no per-row status column)
+//  - status: derived from the window via deriveStatus (no per-row status column)
 //  - counsellorEmpId: the API exposes consultant_id, not an emp code → "—"
 function mapTarget(r: ApiTargetRow): TargetRow {
   const type =
@@ -158,15 +168,7 @@ function mapTarget(r: ApiTargetRow): TargetRow {
   const value = r.value ?? 0;
   const achieved = r.achieved ?? 0;
 
-  // Window-based status derivation (no status column on consultant_target).
-  let status: TargetStatus = "Active";
-  if (r.to_date) {
-    const end = new Date(r.to_date);
-    if (!Number.isNaN(end.getTime())) {
-      end.setHours(23, 59, 59, 999);
-      status = end.getTime() >= Date.now() ? "Active" : "Inactive";
-    }
-  }
+  const status = deriveStatus(r.to_date);
 
   return {
     id: `TG-${r.consultant_target_id}`,
@@ -224,6 +226,16 @@ function TargetsPage() {
       }),
   });
 
+  // Global KPI counts: the paged list can't see all targets, so fetch the full
+  // set once and count Active/Inactive over it using the SAME window-based
+  // status logic (deriveStatus) the rows use. Total Targets keeps the API total.
+  const { data: targetsAll } = useQuery({
+    queryKey: ["consultant-targets", "all"],
+    queryFn: () =>
+      apiGet<TargetsListResponse>("/consultant-targets", { limit: 2000 }),
+    staleTime: 60 * 1000,
+  });
+
   const apiTotal = data?.total ?? 0;
   const pageItems = useMemo(
     () => (data?.items ?? []).map(mapTarget),
@@ -270,19 +282,23 @@ function TargetsPage() {
   const currentPage = Math.min(page, totalPages);
   const pageRows = filtered;
 
-  // Total Targets is the live server total. Active/Inactive are derived by
-  // counting the fetched page (status is a client-side window derivation, so an
-  // exact server count isn't available); No-Targets is the derived roster gap.
+  // Total Targets is the live server total. Active/Inactive are GLOBAL — counted
+  // over the full target set (not just the current page) using the same
+  // window-based status derivation as the rows; No-Targets is the roster gap.
   const totals = useMemo(() => {
-    const active = pageItems.filter((t) => t.status === "Active").length;
-    const inactive = pageItems.filter((t) => t.status === "Inactive").length;
+    let active = 0;
+    let inactive = 0;
+    for (const r of targetsAll?.items ?? []) {
+      if (deriveStatus(r.to_date) === "Active") active++;
+      else inactive++;
+    }
     return {
       total: apiTotal,
       active,
       inactive,
       noTargets: noTargetCounsellors.length,
     };
-  }, [pageItems, apiTotal, noTargetCounsellors.length]);
+  }, [targetsAll, apiTotal, noTargetCounsellors.length]);
 
   const resetFilters = () => {
     setStatusFilter("All");
