@@ -1,7 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import {
-  GraduationCap,
   Mail,
   Lock,
   Eye,
@@ -27,6 +26,7 @@ import {
 import { cn } from "@/lib/utils";
 import { login } from "@/lib/auth";
 import { ApiError } from "@/lib/api";
+import { BrandLogo } from "@/components/brand/brand-logo";
 
 export const Route = createFileRoute("/login")({
   head: () => ({
@@ -197,13 +197,14 @@ export function LoginPage() {
         />
 
         {/* Top: brand */}
-        <div className="relative z-10 flex items-center gap-3 text-primary-foreground">
-          <div className="grid h-11 w-11 place-items-center rounded-xl bg-white/10 ring-1 ring-white/20 backdrop-blur">
-            <GraduationCap className="h-6 w-6" />
-          </div>
-          <div className="leading-tight">
-            <div className="text-base font-semibold tracking-tight">upCarrera Education</div>
-            <div className="text-xs text-white/70">Admission & Student Success Portal</div>
+        <div className="relative z-10">
+          <BrandLogo
+            variant="light"
+            className="h-14 w-auto"
+            alt="upCarrera — Learn. Grow. Succeed."
+          />
+          <div className="mt-3 text-xs text-white/70">
+            Admission & Student Success Portal
           </div>
         </div>
 
@@ -254,15 +255,7 @@ export function LoginPage() {
       <main className="flex min-h-screen flex-col">
         {/* mobile header */}
         <div className="flex items-center justify-between px-6 pt-6 lg:hidden">
-          <div className="flex items-center gap-2">
-            <div
-              className="grid h-9 w-9 place-items-center rounded-lg text-primary-foreground"
-              style={{ background: "var(--color-primary)" }}
-            >
-              <GraduationCap className="h-5 w-5" />
-            </div>
-            <div className="text-sm font-semibold">upCarrera</div>
-          </div>
+          <BrandLogo variant="color" className="h-7 w-auto" alt="upCarrera" />
           <span className="text-xs text-muted-foreground">{greeting}</span>
         </div>
 

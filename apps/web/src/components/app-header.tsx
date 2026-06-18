@@ -1,4 +1,4 @@
-import { Search, Bell, ChevronDown, CalendarClock, PanelLeft, LogOut } from "lucide-react";
+import { Search, Bell, ChevronDown, CalendarClock, PanelLeft, LogOut, Menu } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   DropdownMenu,
@@ -14,6 +14,7 @@ import { logout } from "@/lib/auth";
 interface AppHeaderProps {
   collapsed: boolean;
   onToggle: () => void;
+  onMobileMenu: () => void;
 }
 
 function initials(name: string | null, username: string | null): string {
@@ -23,7 +24,7 @@ function initials(name: string | null, username: string | null): string {
   return base.slice(0, 2).toUpperCase();
 }
 
-export function AppHeader({ collapsed, onToggle }: AppHeaderProps) {
+export function AppHeader({ collapsed, onToggle, onMobileMenu }: AppHeaderProps) {
   const navigate = useNavigate();
   const user = getUser();
   const displayName = user?.name ?? user?.username ?? "Account";
@@ -36,6 +37,15 @@ export function AppHeader({ collapsed, onToggle }: AppHeaderProps) {
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-surface/80 backdrop-blur-md">
       <div className="flex h-16 items-center gap-3 px-4 sm:px-6 lg:px-8">
+        {/* Mobile: open the navigation drawer */}
+        <button
+          onClick={onMobileMenu}
+          className="lg:hidden grid h-10 w-10 place-items-center rounded-xl border border-border bg-surface text-foreground transition hover:bg-muted"
+          aria-label="Open menu"
+        >
+          <Menu className="h-[18px] w-[18px]" />
+        </button>
+        {/* Desktop: collapse/expand the sidebar */}
         <button
           onClick={onToggle}
           className="hidden lg:grid h-10 w-10 place-items-center rounded-xl border border-border bg-surface text-foreground transition hover:bg-muted"

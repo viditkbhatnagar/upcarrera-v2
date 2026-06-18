@@ -6,7 +6,7 @@ import { SmsService } from './sms.service';
 import { OtpService } from './otp.service';
 
 /**
- * External integration providers (Zoom, Brevo email, 2factor SMS) plus the
+ * External integration providers (Zoom, Microsoft 365 email, 2factor SMS) plus the
  * phone-OTP flow. PrismaService comes from the @Global() PrismaModule, so it is
  * not re-declared here — mirrors LeadsModule/AuthModule.
  *
