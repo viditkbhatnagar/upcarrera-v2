@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Download,
   Plus,
@@ -27,6 +29,7 @@ import {
   Activity,
   UserCheck,
   Lock,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -48,7 +51,6 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { ALL_COUNSELLORS } from "@/lib/counsellors-data";
 
 export const Route = createFileRoute("/administration/roles")({
   head: () => ({ meta: [{ title: "Role & Permission Management — upCarrera" }] }),
@@ -133,150 +135,10 @@ function fullMatrix(): PermissionMatrix {
   }, {} as PermissionMatrix);
 }
 
-function viewOnlyMatrix(): PermissionMatrix {
-  return MODULES.reduce((acc, m) => {
-    acc[m] = { view: true, ...(MODULE_PERMS[m].includes("export") ? { export: true } : {}) };
-    return acc;
-  }, {} as PermissionMatrix);
-}
-
-function limitedMatrix(): PermissionMatrix {
-  return MODULES.reduce((acc, m) => {
-    const perms: Partial<Record<PermissionKey, boolean>> = {};
-    if (MODULE_PERMS[m].includes("view")) perms.view = true;
-    if (MODULE_PERMS[m].includes("edit")) perms.edit = true;
-    if (MODULE_PERMS[m].includes("export")) perms.export = true;
-    acc[m] = perms;
-    return acc;
-  }, {} as PermissionMatrix);
-}
-
-const SEED_ROLES: Role[] = [
-  {
-    code: "ROLE-0001",
-    name: "Super Admin",
-    description: "Unrestricted access to every module, settings and audit data.",
-    accessLevel: "Full Access",
-    assignedUsers: 3,
-    status: "System Role",
-    lastUpdated: "2026-06-15T10:24:00",
-    createdAt: "2022-01-10",
-    createdBy: "System",
-    modifiedBy: "Aditi Khanna",
-    permissions: fullMatrix(),
-    isSystem: true,
-  },
-  {
-    code: "ROLE-0002",
-    name: "Admin",
-    description: "Manage users, roles and operational configuration.",
-    accessLevel: "Full Access",
-    assignedUsers: 8,
-    status: "Active",
-    lastUpdated: "2026-06-12T14:08:00",
-    createdAt: "2022-01-12",
-    createdBy: "Aditi Khanna",
-    modifiedBy: "Rahul Bhatia",
-    permissions: fullMatrix(),
-    isSystem: false,
-  },
-  {
-    code: "ROLE-0003",
-    name: "Admission Operations",
-    description: "Manage applications, students and enrollment pipeline.",
-    accessLevel: "Limited Access",
-    assignedUsers: 42,
-    status: "Active",
-    lastUpdated: "2026-06-10T09:42:00",
-    createdAt: "2022-02-04",
-    createdBy: "Aditi Khanna",
-    modifiedBy: "Meera Iyer",
-    permissions: limitedMatrix(),
-    isSystem: false,
-  },
-  {
-    code: "ROLE-0004",
-    name: "Finance Executive",
-    description: "Verify payments, manage fees and commission settlements.",
-    accessLevel: "Limited Access",
-    assignedUsers: 14,
-    status: "Active",
-    lastUpdated: "2026-06-08T12:16:00",
-    createdAt: "2022-03-20",
-    createdBy: "Rahul Bhatia",
-    modifiedBy: "Rahul Bhatia",
-    permissions: {
-      ...emptyMatrix(),
-      Dashboard: { view: true },
-      "Fee Management": { view: true, create: true, edit: true, export: true, approve: true },
-      "Commission Management": { view: true, edit: true, export: true, approve: true },
-      Reports: { view: true, export: true },
-    },
-    isSystem: false,
-  },
-  {
-    code: "ROLE-0005",
-    name: "Student Support Executive",
-    description: "Handle student queries, tickets and follow-ups.",
-    accessLevel: "Limited Access",
-    assignedUsers: 22,
-    status: "Active",
-    lastUpdated: "2026-06-05T11:30:00",
-    createdAt: "2022-05-15",
-    createdBy: "Aditi Khanna",
-    modifiedBy: "Aditi Khanna",
-    permissions: {
-      ...emptyMatrix(),
-      Dashboard: { view: true },
-      "Student Management": { view: true, edit: true, export: true },
-      "Student Support": { view: true, create: true, edit: true, export: true },
-      Reports: { view: true },
-    },
-    isSystem: false,
-  },
-  {
-    code: "ROLE-0006",
-    name: "Management Viewer",
-    description: "Read-only access for leadership review and reporting.",
-    accessLevel: "View Only",
-    assignedUsers: 6,
-    status: "Active",
-    lastUpdated: "2026-06-02T17:48:00",
-    createdAt: "2022-07-01",
-    createdBy: "Aditi Khanna",
-    modifiedBy: "Aditi Khanna",
-    permissions: viewOnlyMatrix(),
-    isSystem: false,
-  },
-  {
-    code: "ROLE-0007",
-    name: "Regional Manager",
-    description: "Supervise regional teams, applications and conversions.",
-    accessLevel: "Limited Access",
-    assignedUsers: 11,
-    status: "Active",
-    lastUpdated: "2026-05-28T08:12:00",
-    createdAt: "2023-02-18",
-    createdBy: "Rahul Bhatia",
-    modifiedBy: "Aditi Khanna",
-    permissions: limitedMatrix(),
-    isSystem: false,
-  },
-  {
-    code: "ROLE-0008",
-    name: "Audit Reviewer",
-    description: "Reviews audit logs and exports compliance reports.",
-    accessLevel: "View Only",
-    assignedUsers: 0,
-    status: "Inactive",
-    lastUpdated: "2026-04-20T13:55:00",
-    createdAt: "2023-09-08",
-    createdBy: "Aditi Khanna",
-    modifiedBy: "Aditi Khanna",
-    permissions: viewOnlyMatrix(),
-    isSystem: false,
-  },
-];
+// NOTE: the former SEED_ROLES mock array + its view-only/limited matrix helpers
+// were removed — this screen now hydrates roles from the live API (see the
+// "Live API wiring" block below). `emptyMatrix()`/`fullMatrix()` are retained
+// because the Create/Edit role editor still uses them for Clear All / Select All.
 
 const ACCESS_STYLES: Record<AccessLevel, string> = {
   "Full Access": "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20",
@@ -297,7 +159,9 @@ const STATUS_DOT: Record<RoleStatus, string> = {
 };
 
 function formatDate(iso: string) {
+  if (!iso) return "—";
   const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString("en-IN", {
     day: "2-digit",
     month: "short",
@@ -307,10 +171,242 @@ function formatDate(iso: string) {
   });
 }
 
+// ============ Live API wiring (GET /api/roles, /permissions, /role-permissions, /users) ============
+// The screen's `Role` view-model is rich (matrix, status, audit fields). The legacy
+// `user_role` table only stores id/title/created_at/updated_at, so we hydrate the
+// rest from sibling endpoints and fall back gracefully where there's no source —
+// never inventing data:
+//   • permissions matrix  -> derived from /role-permissions slugs (resource/action)
+//   • assignedUsers       -> count of /users rows whose role_id === this role id
+//   • status / isSystem   -> derived from title (no status column on user_role)
+//   • description/createdBy/modifiedBy -> "—" (no API field)
+
+interface ApiRole {
+  id: number;
+  title: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+interface ApiPermission {
+  id: number;
+  title: string | null;
+  slug: string | null;
+}
+
+interface ApiRolePermissionLink {
+  id: number;
+  role_id: number | null;
+  permission_id: number | null;
+  permission: ApiPermission | null;
+}
+
+interface ApiUser {
+  id: number;
+  role_id: number | null;
+}
+
+interface UsersListResponse {
+  items: ApiUser[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+const EMPTY = "—";
+
+// permission slug "resource/action" -> our fixed PermissionKey columns.
+const ACTION_TO_KEY: Record<string, PermissionKey> = {
+  index: "view",
+  view: "view",
+  show: "view",
+  list: "view",
+  create: "create",
+  add: "create",
+  store: "create",
+  edit: "edit",
+  update: "edit",
+  delete: "delete",
+  destroy: "delete",
+  remove: "delete",
+  export: "export",
+  download: "export",
+  approve: "approve",
+  verify: "approve",
+};
+
+// permission slug "resource" segment -> one of the screen's fixed modules. Best
+// effort: unmatched resources are skipped (no fake checkboxes get drawn).
+const RESOURCE_TO_MODULE: Record<string, ModuleName> = {
+  dashboard: "Dashboard",
+  student: "Student Management",
+  students: "Student Management",
+  user: "Administration",
+  users: "Administration",
+  enrollment: "Enrollment Management",
+  enrollments: "Enrollment Management",
+  application: "Enrollment Management",
+  applications: "Enrollment Management",
+  admission: "Enrollment Management",
+  admissions: "Enrollment Management",
+  university: "University Master",
+  universities: "University Master",
+  course: "University Master",
+  courses: "University Master",
+  fee: "Fee Management",
+  fees: "Fee Management",
+  payment: "Fee Management",
+  payments: "Fee Management",
+  commission: "Commission Management",
+  commissions: "Commission Management",
+  support: "Student Support",
+  ticket: "Student Support",
+  tickets: "Student Support",
+  report: "Reports",
+  reports: "Reports",
+  role: "Administration",
+  roles: "Administration",
+  "roles-permissions": "Administration",
+  permission: "Administration",
+  permissions: "Administration",
+  consultant: "Administration",
+  consultants: "Administration",
+  setting: "Administration",
+  settings: "Administration",
+};
+
+// Build the screen's PermissionMatrix from the role's granted permission slugs.
+function matrixFromSlugs(slugs: string[]): PermissionMatrix {
+  const matrix = emptyMatrix();
+  for (const raw of slugs) {
+    if (!raw) continue;
+    const [resourcePart, actionPart] = String(raw).toLowerCase().split("/");
+    const moduleName = RESOURCE_TO_MODULE[resourcePart];
+    const key = ACTION_TO_KEY[actionPart ?? "index"];
+    if (!moduleName || !key) continue;
+    // Only set keys the screen actually renders for that module.
+    if (MODULE_PERMS[moduleName].includes(key)) {
+      matrix[moduleName] = { ...matrix[moduleName], [key]: true };
+    }
+  }
+  return matrix;
+}
+
+// Roles whose granted set is dashboard/view-heavy read as "View Only"; broadly
+// granted (create/edit/delete/approve) read as "Full Access"; the rest "Limited".
+function accessLevelFromMatrix(matrix: PermissionMatrix): AccessLevel {
+  let total = 0;
+  let writeish = 0;
+  let possible = 0;
+  for (const m of MODULES) {
+    for (const k of MODULE_PERMS[m]) {
+      possible += 1;
+      if (matrix[m]?.[k]) {
+        total += 1;
+        if (k !== "view") writeish += 1;
+      }
+    }
+  }
+  if (total === 0) return "View Only";
+  if (writeish === 0) return "View Only";
+  if (possible > 0 && total / possible >= 0.75) return "Full Access";
+  return "Limited Access";
+}
+
+// No status column on user_role: treat the seeded super-admin / admin titles as
+// system roles, everything else as an Active custom role.
+function isSystemRole(role: ApiRole): boolean {
+  if (role.id === 1) return true;
+  const t = (role.title ?? "").trim().toLowerCase();
+  return t === "super admin" || t === "superadmin" || t === "admin" || t === "administrator";
+}
+
+function mapApiRole(
+  role: ApiRole,
+  permsByRole: Map<number, string[]>,
+  usersByRole: Map<number, number>,
+): Role {
+  const slugs = permsByRole.get(role.id) ?? [];
+  const matrix = matrixFromSlugs(slugs);
+  const system = isSystemRole(role);
+  return {
+    code: `ROLE-${String(role.id).padStart(4, "0")}`,
+    name: role.title && role.title.trim() !== "" ? role.title : EMPTY,
+    description: EMPTY,
+    accessLevel: accessLevelFromMatrix(matrix),
+    assignedUsers: usersByRole.get(role.id) ?? 0,
+    status: system ? "System Role" : "Active",
+    lastUpdated: role.updated_at ?? role.created_at ?? "",
+    createdAt: role.created_at ? String(role.created_at).slice(0, 10) : EMPTY,
+    createdBy: EMPTY,
+    modifiedBy: EMPTY,
+    permissions: matrix,
+    isSystem: system,
+  };
+}
+
 // ============ Page ============
 
 function RolesPage() {
-  const [roles, setRoles] = useState<Role[]>(SEED_ROLES);
+  // --- Live data ---------------------------------------------------------
+  // Roles list (bare array), the permission links (role -> slugs) and a user
+  // page we count role_id over to fill "Assigned Users". The three run in
+  // parallel; roles drive the table while the other two enrich each row.
+  const rolesQuery = useQuery({
+    queryKey: ["roles", "list"],
+    queryFn: () => apiGet<ApiRole[]>("/roles"),
+  });
+  const rolePermsQuery = useQuery({
+    queryKey: ["role-permissions", "all"],
+    queryFn: () => apiGet<ApiRolePermissionLink[]>("/role-permissions"),
+  });
+  const usersQuery = useQuery({
+    queryKey: ["users", "for-role-counts"],
+    queryFn: () => apiGet<UsersListResponse>("/users", { page: 1, limit: 1000 }),
+  });
+
+  const isLoading = rolesQuery.isLoading;
+  const isError = rolesQuery.isError;
+  const loadError = rolesQuery.error;
+
+  // role_id -> [permission slugs], from the live /role-permissions links.
+  const permsByRole = useMemo(() => {
+    const m = new Map<number, string[]>();
+    for (const link of rolePermsQuery.data ?? []) {
+      if (link.role_id == null) continue;
+      const slug = link.permission?.slug;
+      if (!slug) continue;
+      const list = m.get(link.role_id) ?? [];
+      list.push(slug);
+      m.set(link.role_id, list);
+    }
+    return m;
+  }, [rolePermsQuery.data]);
+
+  // role_id -> assigned user count, from the live /users page.
+  const usersByRole = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const u of usersQuery.data?.items ?? []) {
+      if (u.role_id == null) continue;
+      m.set(u.role_id, (m.get(u.role_id) ?? 0) + 1);
+    }
+    return m;
+  }, [usersQuery.data]);
+
+  // Mapped, render-ready rows. Recomputed whenever any of the three resolve.
+  const liveRoles = useMemo(
+    () => (rolesQuery.data ?? []).map((r) => mapApiRole(r, permsByRole, usersByRole)),
+    [rolesQuery.data, permsByRole, usersByRole],
+  );
+
+  // Local working copy so the in-page editor / duplicate / status toggle keep
+  // working (optimistic, client-only). Seeded from the live mapping and kept in
+  // sync as the queries resolve.
+  const [roles, setRoles] = useState<Role[]>([]);
+  useEffect(() => {
+    setRoles(liveRoles);
+  }, [liveRoles]);
+
   const [statusFilter, setStatusFilter] = useState<StatusFilter | "Custom" | "System">("All");
   const [search, setSearch] = useState("");
   const [accessFilter, setAccessFilter] = useState<string>("All");
@@ -551,7 +647,7 @@ function RolesPage() {
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="text-sm font-semibold text-foreground">
-            {filtered.length.toLocaleString()} roles
+            {isLoading ? "Loading…" : `${filtered.length.toLocaleString()} roles`}
             {statusFilter !== "All" && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                 {statusFilter}
@@ -567,7 +663,20 @@ function RolesPage() {
         </div>
 
         <div className="overflow-x-auto scrollbar-thin">
-          {pageRows.length === 0 ? (
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
+              <div className="text-sm font-semibold text-foreground">Loading roles…</div>
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <AlertTriangle className="h-10 w-10 text-red-500/60" />
+              <div className="text-sm font-semibold text-foreground">Couldn’t load roles</div>
+              <div className="text-xs text-muted-foreground">
+                {loadError instanceof Error ? loadError.message : "Please try again."}
+              </div>
+            </div>
+          ) : pageRows.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
               <ShieldOff className="h-10 w-10 text-muted-foreground/50" />
               <div className="text-sm font-semibold text-foreground">No roles found</div>
@@ -1343,17 +1452,36 @@ function RoleProfileDialog({
   onDuplicate: (r: Role) => void;
   onToggle: (r: Role) => void;
 }) {
+  // Live assigned users for this role. role.code is "ROLE-####"; the trailing
+  // digits are the real user_role.id, which is what /users filters on.
+  const roleId = role ? Number(role.code.replace(/[^0-9]/g, "")) : undefined;
+  const assignedQuery = useQuery({
+    enabled: !!role && Number.isFinite(roleId),
+    queryKey: ["users", "by-role", roleId],
+    queryFn: () => apiGet<UsersListResponse>("/users", { role_id: roleId, page: 1, limit: 100 }),
+  });
+
   if (!role) return null;
 
-  // Deterministic assigned users
-  const assignedUsers = ALL_COUNSELLORS.slice(0, role.assignedUsers).map((c, i) => ({
-    empId: c.empId,
-    name: c.name,
-    department: c.team,
-    designation: c.designation,
-    email: c.email,
-    status: i % 9 === 0 ? "Inactive" : "Active",
-  }));
+  // Map real users into the existing assigned-users row shape. Department and
+  // Designation have no column on the users table -> graceful "—".
+  const assignedUsers = (assignedQuery.data?.items ?? []).map((u) => {
+    const anyU = u as ApiUser & {
+      name?: string | null;
+      email?: string | null;
+      code?: number | null;
+      status?: number | null;
+    };
+    return {
+      empId:
+        anyU.code != null && anyU.code !== 0 ? `EMP-${anyU.code}` : `USR-${u.id}`,
+      name: anyU.name && anyU.name.trim() !== "" ? anyU.name : "—",
+      department: "—",
+      designation: "—",
+      email: anyU.email && anyU.email.trim() !== "" ? anyU.email : "—",
+      status: anyU.status === 1 || anyU.status == null ? "Active" : "Inactive",
+    };
+  });
 
   const timeline = [
     { title: "Role Created", when: role.createdAt, by: role.createdBy, desc: `Role ${role.name} created.` },
