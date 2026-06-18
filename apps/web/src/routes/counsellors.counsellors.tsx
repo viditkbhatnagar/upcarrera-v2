@@ -119,8 +119,11 @@ function toDateInput(value: string | null | undefined): string {
 // Map one API consultant onto the screen's existing Counsellor row shape.
 // Fields without a users-table source use graceful fallbacks (never faked).
 function mapToRow(c: ApiConsultant): Counsellor {
-  const empId =
-    c.code != null && String(c.code).trim() !== "" ? String(c.code) : String(c.id);
+  // Employee ID = the user's unique system id. (The `code` column is NOT a
+  // per-user identifier — it carries the same value across users, e.g. 91.)
+  // The row links to /counsellors/profile/$empId, so empId must be the real id
+  // for the profile page to look it up.
+  const empId = String(c.id);
   return {
     empId,
     name: asText(c.name) === EMPTY ? "" : String(c.name),
@@ -169,6 +172,14 @@ function CounsellorsPage() {
       }),
   });
 
+  // Global KPI counts: the paged list can't see all consultants, so fetch the
+  // full consultant set once and count by status over that complete set.
+  const { data: consultantsAll } = useQuery({
+    queryKey: ["consultants", "all"],
+    queryFn: () => apiGet<ConsultantsListResponse>("/consultants", { limit: 2000 }),
+    staleTime: 60 * 1000,
+  });
+
   const apiTotal = data?.total ?? 0;
   const allRows = useMemo(() => (data?.items ?? []).map(mapToRow), [data]);
 
@@ -191,19 +202,19 @@ function CounsellorsPage() {
   // The server already paginated; show the refined rows for the current page.
   const pageRows = filtered;
 
-  // Total card uses the API total. Active / Inactive / On Leave are derived by
-  // counting the fetched page (the list endpoint exposes no status breakdown).
+  // Total card uses the API total. Active / Inactive are GLOBAL — counted over
+  // the full consultant set, not just the current page. status===1 -> Active,
+  // everything else -> Inactive. The users table has no On-Leave field, so that
+  // card resolves to 0 rather than being fabricated.
   const counts = useMemo(() => {
     let active = 0,
-      inactive = 0,
-      leave = 0;
-    allRows.forEach((c) => {
-      if (c.status === "Active") active++;
-      else if (c.status === "Inactive") inactive++;
-      else leave++;
-    });
-    return { active, inactive, leave };
-  }, [allRows]);
+      inactive = 0;
+    for (const c of consultantsAll?.items ?? []) {
+      if (Number(c.status) === 1) active++;
+      else inactive++;
+    }
+    return { active, inactive, leave: 0 };
+  }, [consultantsAll]);
 
   const resetFilters = () => {
     setStatusFilter("All");

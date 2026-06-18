@@ -139,6 +139,20 @@ function TeamsPage() {
       }),
   });
 
+  // Global KPI counts: the paged list can't see all teams, so fetch the full
+  // team set once (teams are few — this is cheap) and derive the card numbers
+  // from it. "Total Teams" still uses the API total below.
+  const { data: teamsAll } = useQuery({
+    queryKey: ["sales-teams", "all"],
+    queryFn: () => apiGet<SalesTeamsResponse>("/sales-teams", { limit: 1000 }),
+    staleTime: 60 * 1000,
+  });
+
+  const allTeams = useMemo(
+    () => (teamsAll?.items ?? []).map(mapApiRow),
+    [teamsAll],
+  );
+
   const apiTotal = data?.total ?? 0;
   const pageItems = useMemo(
     () => (data?.items ?? []).map(mapApiRow),
@@ -168,18 +182,19 @@ function TeamsPage() {
   const pageRows = filtered;
 
   // KPI cards. "Total Teams" uses the API total (exact). Active / counsellors /
-  // leaders are derived from the fetched page (page-derived, not faked).
+  // leaders are GLOBAL — derived over the full team set, not just the current
+  // page.
   const totals = useMemo(() => {
-    const active = pageItems.filter((t) => t.status === "Active").length;
-    const totalCounsellors = pageItems.reduce(
+    const active = allTeams.filter((t) => t.status === "Active").length;
+    const totalCounsellors = allTeams.reduce(
       (s, t) => s + t.totalCounsellors,
       0,
     );
     const leaders = new Set(
-      pageItems.filter((t) => t.leader !== EMPTY).map((t) => t.leader),
+      allTeams.filter((t) => t.leader !== EMPTY).map((t) => t.leader),
     ).size;
     return { active, totalCounsellors, leaders };
-  }, [pageItems]);
+  }, [allTeams]);
 
   const resetFilters = () => {
     setStatusFilter("All");
