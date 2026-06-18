@@ -103,6 +103,42 @@ export class ConsultantsService {
     };
   }
 
+  /**
+   * GET /consultants/groups — counsellor groups derived from the `users.region`
+   * column (there is no dedicated group table). Each distinct region becomes a
+   * group with its real counsellor count. Teams have no region link, so
+   * total_teams is null (the UI renders "—"); manager/target likewise have no
+   * source. A null/blank region is surfaced as "Unassigned".
+   */
+  async groups() {
+    const grouped = await this.prisma.users.groupBy({
+      by: ['region'],
+      where: { role_id: CONSULTANT_ROLE_ID, deleted_at: null },
+      _count: { _all: true },
+    });
+
+    const items = grouped
+      .map((g) => {
+        const region = (g.region ?? '').trim();
+        return {
+          id: region || 'unassigned',
+          name: region || 'Unassigned',
+          region: region || null,
+          total_counsellors: g._count._all,
+          total_teams: null as number | null,
+          manager: null as string | null,
+          status: 1,
+        };
+      })
+      .sort((a, b) => b.total_counsellors - a.total_counsellors);
+
+    return {
+      items,
+      total: items.length,
+      total_counsellors: items.reduce((s, g) => s + g.total_counsellors, 0),
+    };
+  }
+
   /** Re-validate a consultant exists (role_id=6, not soft-deleted) or 404. */
   private async getConsultantOrThrow(id: number) {
     const consultant = await this.prisma.users.findFirst({
