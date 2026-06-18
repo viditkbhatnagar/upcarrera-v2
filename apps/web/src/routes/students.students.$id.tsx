@@ -26,6 +26,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StudentCallPanel } from "@/components/calls/student-call-panel";
 
 export const Route = createFileRoute("/students/students/$id")({
   head: ({ params }) => ({
@@ -315,11 +316,7 @@ function StudentDetailContent({ student }: { student: ApiStudentDetail }) {
           <UniversityTab student={student} />
         </TabsContent>
         <TabsContent value="comm">
-          <EmptyTab
-            icon={MessageCircle}
-            title="No communication history"
-            description="Calls, WhatsApp, and email logs are not exposed by this endpoint yet."
-          />
+          <StudentCallPanel phone={student.phone} name={student.name} />
         </TabsContent>
         <TabsContent value="timeline">
           <EmptyTab
