@@ -11,6 +11,8 @@ import {
   Eye,
   Pencil,
   Phone,
+  PhoneCall,
+  Loader2,
   MessageCircle,
   X,
   CalendarDays,
@@ -21,6 +23,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useStartCall, type CallHealth } from "@/components/calls/calls-ui";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -183,6 +186,15 @@ function StudentsPage() {
 
   const apiTotal = data?.total ?? 0;
   const allRows = useMemo(() => (data?.items ?? []).map(mapApiRow), [data]);
+
+  // Click-to-call: only surfaced when the calling integration is configured.
+  const { data: callHealth } = useQuery({
+    queryKey: ["calls", "health"],
+    queryFn: () => apiGet<CallHealth>("/calls/health"),
+    staleTime: 5 * 60 * 1000,
+  });
+  const callsOn = callHealth?.configured ?? false;
+  const { callingPhone, start } = useStartCall();
 
   // Client-side text refinement of the current page over the real joined values.
   const pageRows = useMemo(() => {
@@ -439,6 +451,20 @@ function StudentsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
+                        {callsOn && s.phone ? (
+                          <button
+                            onClick={() => start(s.phone || null)}
+                            disabled={callingPhone === s.phone}
+                            title={`Call ${s.phone}`}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-emerald-600 disabled:opacity-60"
+                          >
+                            {callingPhone === s.phone ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <PhoneCall className="h-4 w-4" />
+                            )}
+                          </button>
+                        ) : null}
                         <Link
                           to="/students/students/$id"
                           params={{ id: s.rowId }}
