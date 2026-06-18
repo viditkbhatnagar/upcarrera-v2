@@ -65,8 +65,14 @@ export class PlatformController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('role_id') roleId?: string,
+    @Query('exclude_role_id') excludeRoleId?: string,
   ) {
-    return this.platform.findUsers(toNumber(page), toNumber(limit), toNumber(roleId));
+    return this.platform.findUsers(
+      toNumber(page),
+      toNumber(limit),
+      toNumber(roleId),
+      toNumber(excludeRoleId),
+    );
   }
 
   // ----- Self-service (own row) -----

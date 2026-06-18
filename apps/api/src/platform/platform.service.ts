@@ -56,11 +56,22 @@ export class PlatformService {
   // Users (App/Admin)
   // ---------------------------------------------------------------------------
 
-  async findUsers(page?: number, limit?: number, roleId?: number): Promise<Paginated<unknown>> {
+  async findUsers(
+    page?: number,
+    limit?: number,
+    roleId?: number,
+    excludeRoleId?: number,
+  ): Promise<Paginated<unknown>> {
     const { skip, take, page: p, limit: l } = this.normalisePaging(page, limit);
     const where = {
       deleted_at: null,
-      ...(roleId !== undefined ? { role_id: roleId } : {}),
+      // roleId (exact role) and excludeRoleId (everything but a role, e.g. staff
+      // = "not student") are mutually exclusive; exact match wins if both given.
+      ...(roleId !== undefined
+        ? { role_id: roleId }
+        : excludeRoleId !== undefined
+          ? { role_id: { not: excludeRoleId } }
+          : {}),
     };
 
     const [rows, total] = await Promise.all([
