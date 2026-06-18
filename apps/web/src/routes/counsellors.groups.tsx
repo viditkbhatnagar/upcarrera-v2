@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Download,
   Plus,
@@ -17,6 +18,7 @@ import {
   RefreshCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiGet } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -33,13 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  ALL_COUNSELLORS,
-  TEAMS,
-  GROUPS,
-  MANAGERS,
-  TEAM_LEADERS,
-} from "@/lib/counsellors-data";
+import { MANAGERS } from "@/lib/counsellors-data";
 
 export const Route = createFileRoute("/counsellors/groups")({
   head: () => ({ meta: [{ title: "Groups — upCarrera" }] }),
@@ -52,10 +48,41 @@ interface GroupRow {
   id: string;
   name: string;
   manager: string;
-  totalTeams: number;
+  totalTeams: number | null;
   totalCounsellors: number;
   activeTarget: number;
   status: GroupStatus;
+}
+
+// --- Live API wiring (GET /api/consultants/groups) -----------------------
+// Counsellor "groups" are derived server-side from the users.region column
+// (there is no group table). Each region → a group with its real counsellor
+// count. Teams have no region link, so totalTeams is null ("—"); manager and
+// target have no source either.
+interface ApiGroup {
+  id: string;
+  name: string;
+  region: string | null;
+  total_counsellors: number;
+  total_teams: number | null;
+  manager: string | null;
+  status: number;
+}
+interface GroupsResponse {
+  items: ApiGroup[];
+  total: number;
+  total_counsellors: number;
+}
+function mapGroup(g: ApiGroup): GroupRow {
+  return {
+    id: String(g.id),
+    name: g.name,
+    manager: g.manager ?? "—",
+    totalTeams: g.total_teams,
+    totalCounsellors: g.total_counsellors,
+    activeTarget: 0,
+    status: Number(g.status) === 1 ? "Active" : "Inactive",
+  };
 }
 
 const STATUS_STYLES: Record<GroupStatus, string> = {
@@ -67,36 +94,6 @@ const STATUS_DOT: Record<GroupStatus, string> = {
   Inactive: "bg-rose-500",
 };
 
-// Synthesize team rows so totals reconcile with Teams module
-const TEAM_DEFS = TEAMS.map((t, i) => {
-  const members = ALL_COUNSELLORS.filter((c) => c.team === t);
-  return {
-    id: `TM-${String(2001 + i).padStart(4, "0")}`,
-    name: `Team ${t}`,
-    group: GROUPS[i % GROUPS.length],
-    members,
-    target: members.reduce((s, m) => s + m.activeTarget, 0),
-  };
-});
-
-const ALL_GROUPS: GroupRow[] = GROUPS.map((g, i) => {
-  const groupTeams = TEAM_DEFS.filter((t) => t.group === g);
-  const totalCounsellors = groupTeams.reduce(
-    (s, t) => s + t.members.length,
-    0,
-  );
-  const activeTarget = groupTeams.reduce((s, t) => s + t.target, 0);
-  return {
-    id: `GR-${String(3001 + i).padStart(4, "0")}`,
-    name: `${g} Region`,
-    manager: MANAGERS[i % MANAGERS.length],
-    totalTeams: groupTeams.length,
-    totalCounsellors,
-    activeTarget,
-    status: i === 4 ? "Inactive" : "Active",
-  };
-});
-
 type StatusFilter = GroupStatus | "All";
 
 function GroupsPage() {
@@ -107,8 +104,15 @@ function GroupsPage() {
   const [openCreate, setOpenCreate] = useState(false);
   const PAGE_SIZE = 10;
 
+  // Live region-derived groups (GET /consultants/groups).
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["consultant-groups"],
+    queryFn: () => apiGet<GroupsResponse>("/consultants/groups"),
+  });
+  const groups = useMemo(() => (data?.items ?? []).map(mapGroup), [data]);
+
   const filtered = useMemo(() => {
-    return ALL_GROUPS.filter((g) => {
+    return groups.filter((g) => {
       if (statusFilter !== "All" && g.status !== statusFilter) return false;
       if (managerFilter !== "All" && g.manager !== managerFilter) return false;
       if (search) {
@@ -122,7 +126,7 @@ function GroupsPage() {
       }
       return true;
     });
-  }, [statusFilter, search, managerFilter]);
+  }, [groups, statusFilter, search, managerFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -132,11 +136,11 @@ function GroupsPage() {
   );
 
   const totals = useMemo(() => {
-    const active = ALL_GROUPS.filter((g) => g.status === "Active").length;
-    const totalTeams = TEAM_DEFS.length;
-    const totalCounsellors = ALL_COUNSELLORS.length;
-    return { active, totalTeams, totalCounsellors };
-  }, []);
+    const active = groups.filter((g) => g.status === "Active").length;
+    // Teams have no region link, so a teams-per-group total isn't derivable.
+    const totalCounsellors = data?.total_counsellors ?? 0;
+    return { active, totalCounsellors };
+  }, [groups, data]);
 
   const resetFilters = () => {
     setStatusFilter("All");
@@ -180,7 +184,7 @@ function GroupsPage() {
         <KpiCard
           icon={Network}
           label="Total Groups"
-          value={ALL_GROUPS.length}
+          value={groups.length}
           active={statusFilter === "All"}
           onClick={() => {
             setStatusFilter("All");
@@ -203,7 +207,7 @@ function GroupsPage() {
         <KpiCard
           icon={UsersRound}
           label="Total Teams"
-          value={totals.totalTeams}
+          value="—"
           accent="bg-indigo-500/10 text-indigo-600"
         />
         <KpiCard
@@ -283,7 +287,17 @@ function GroupsPage() {
         </div>
 
         <div className="overflow-x-auto scrollbar-thin">
-          {pageRows.length === 0 ? (
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
+              <div className="text-sm font-semibold text-foreground">Loading groups…</div>
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <Network className="h-10 w-10 text-red-500/50" />
+              <div className="text-sm font-semibold text-foreground">Couldn’t load groups</div>
+            </div>
+          ) : pageRows.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
               <Network className="h-10 w-10 text-muted-foreground/50" />
               <div className="text-sm font-semibold text-foreground">No groups found</div>
@@ -332,7 +346,7 @@ function GroupsPage() {
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-foreground">
                         <UsersRound className="h-3 w-3" />
-                        {g.totalTeams}
+                        {g.totalTeams ?? "—"}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -421,7 +435,7 @@ function KpiCard({
 }: {
   icon: typeof Users;
   label: string;
-  value: number;
+  value: number | string;
   active?: boolean;
   onClick?: () => void;
   accent?: string;
@@ -469,6 +483,18 @@ function IconBtn({ icon: Icon, label }: { icon: typeof Eye; label: string }) {
   );
 }
 
+interface DialogTeamApi {
+  id: number | string;
+  name: string | null;
+  members: unknown;
+}
+interface DialogTeamRow {
+  id: string;
+  name: string;
+  members: unknown[];
+  group: string;
+}
+
 function CreateGroupDialog({
   open,
   onOpenChange,
@@ -476,29 +502,40 @@ function CreateGroupDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
-  const autoCode = useMemo(
-    () => `GR-${String(3000 + ALL_GROUPS.length + 1).padStart(4, "0")}`,
-    [],
-  );
+  const autoCode = "Auto-generated";
   const [teams, setTeams] = useState<string[]>([]);
   const [teamSearch, setTeamSearch] = useState("");
 
-  // Group Manager pool: managers + team leaders (both are senior counsellors)
-  const managerPool = useMemo(
-    () => Array.from(new Set([...MANAGERS, ...TEAM_LEADERS])),
-    [],
+  // Real teams for the assign-teams picker (GET /sales-teams).
+  const { data: teamsData } = useQuery({
+    queryKey: ["sales-teams", "picker"],
+    queryFn: () =>
+      apiGet<{ items: DialogTeamApi[] }>("/sales-teams", { limit: 1000 }),
+  });
+  const allTeams = useMemo<DialogTeamRow[]>(
+    () =>
+      (teamsData?.items ?? []).map((t) => ({
+        id: String(t.id),
+        name: t.name ?? "—",
+        members: Array.isArray(t.members) ? t.members : [],
+        group: "—",
+      })),
+    [teamsData],
   );
+
+  // Group Manager pool (no team-leader name join available).
+  const managerPool = useMemo(() => Array.from(new Set(MANAGERS)), []);
 
   const filteredTeams = useMemo(() => {
     const s = teamSearch.toLowerCase();
-    return TEAM_DEFS.filter(
+    return allTeams.filter(
       (t) =>
         !s ||
         t.name.toLowerCase().includes(s) ||
         t.id.toLowerCase().includes(s) ||
         t.group.toLowerCase().includes(s),
     );
-  }, [teamSearch]);
+  }, [allTeams, teamSearch]);
 
   const toggle = (id: string) =>
     setTeams((prev) =>
