@@ -39,7 +39,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ALL_COUNSELLORS } from "@/lib/counsellors-data";
 
 export const Route = createFileRoute("/counsellors/targets")({
   head: () => ({ meta: [{ title: "Targets — upCarrera" }] }),
@@ -193,6 +192,34 @@ const formatMonth = (m: string) => {
   return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
 };
 
+// Live counsellor roster (GET /consultants) — drives the counsellor filter, the
+// Assign-Target picker, and the no-target gap. Keyed by consultant id (String)
+// so it matches each target row's counsellorEmpId (= String(consultant_id)).
+interface RosterConsultantApi {
+  id: number | string;
+  name: string | null;
+}
+interface RosterConsultant {
+  id: string;
+  name: string;
+}
+function useConsultantRoster(): RosterConsultant[] {
+  const { data } = useQuery({
+    queryKey: ["consultants", "roster"],
+    queryFn: () =>
+      apiGet<{ items: RosterConsultantApi[] }>("/consultants", { limit: 2000 }),
+    staleTime: 5 * 60 * 1000,
+  });
+  return useMemo(
+    () =>
+      (data?.items ?? []).map((c) => ({
+        id: String(c.id),
+        name: c.name && c.name.trim() !== "" ? c.name : `#${c.id}`,
+      })),
+    [data],
+  );
+}
+
 type StatusFilter = TargetStatus | "All" | "NoTargets";
 
 function TargetsPage() {
@@ -242,18 +269,20 @@ function TargetsPage() {
     [data],
   );
 
-  // Counsellors that have no live target on the current page (by joined name).
-  // The targets API exposes consultant_name but no emp code, so the no-target
-  // set is derived from the counsellor roster minus names seen in live targets.
+  // Live counsellor roster (id + name) for the filter, no-target gap and picker.
+  const roster = useConsultantRoster();
+
+  // Counsellors with NO target at all — the live roster minus every consultant
+  // id seen across the full target set. Keyed by consultant id so it matches the
+  // live targets (the API exposes consultant_id, not team/manager).
   const noTargetCounsellors = useMemo(() => {
     const withTargets = new Set(
-      pageItems
-        .map((t) => t.counsellorName)
-        .filter((n) => n && n !== "—")
-        .map((n) => n.toLowerCase()),
+      (targetsAll?.items ?? [])
+        .map((t) => (t.consultant_id != null ? String(t.consultant_id) : null))
+        .filter((x): x is string => x != null),
     );
-    return ALL_COUNSELLORS.filter((c) => !withTargets.has(c.name.toLowerCase()));
-  }, [pageItems]);
+    return roster.filter((c) => !withTargets.has(c.id));
+  }, [targetsAll, roster]);
 
   // Client-side refinement of the fetched page over the mapped real values.
   const filtered = useMemo(() => {
@@ -407,8 +436,8 @@ function TargetsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="All">All Counsellors</SelectItem>
-              {ALL_COUNSELLORS.map((c) => (
-                <SelectItem key={c.empId} value={c.empId}>
+              {roster.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
                   {c.name}
                 </SelectItem>
               ))}
@@ -497,18 +526,18 @@ function TargetsPage() {
               <tbody>
                 {noTargetCounsellors.map((c, i) => (
                   <tr
-                    key={c.empId}
+                    key={c.id}
                     className="border-b border-border last:border-0 hover:bg-muted/40"
                   >
                     <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
                     <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">
-                      {c.empId}
+                      {c.id}
                     </td>
                     <td className="px-4 py-3 text-sm font-medium text-foreground">
                       {c.name}
                     </td>
-                    <td className="px-4 py-3 text-sm text-foreground">{c.team}</td>
-                    <td className="px-4 py-3 text-sm text-foreground">{c.manager}</td>
+                    <td className="px-4 py-3 text-sm text-foreground">—</td>
+                    <td className="px-4 py-3 text-sm text-foreground">—</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end">
                         <button
@@ -798,6 +827,7 @@ function AssignTargetDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const [type, setType] = useState<TargetType>("Admission Target");
+  const roster = useConsultantRoster();
   const now = new Date();
   const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
@@ -829,9 +859,9 @@ function AssignTargetDialog({
                   <SelectValue placeholder="Pick counsellor" />
                 </SelectTrigger>
                 <SelectContent className="max-h-72">
-                  {ALL_COUNSELLORS.map((c) => (
-                    <SelectItem key={c.empId} value={c.empId}>
-                      {c.name} · {c.empId}
+                  {roster.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name} · {c.id}
                     </SelectItem>
                   ))}
                 </SelectContent>
