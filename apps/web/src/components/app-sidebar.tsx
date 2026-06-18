@@ -15,6 +15,13 @@ import {
   Users,
   BookOpen,
   CalendarRange,
+  Briefcase,
+  UserCheck,
+  UsersRound,
+  Network,
+  Target,
+  Users2,
+  ShieldCheck,
 } from "lucide-react";
 
 import { BrandLogo } from "@/components/brand/brand-logo";
@@ -57,7 +64,26 @@ const items: NavItem[] = [
   { to: "/commissions", label: "Commission Management", icon: TrendingUp },
   { to: "/support", label: "Student Support", icon: Headphones, badge: "12" },
   { to: "/reports", label: "Reports", icon: BarChart3 },
-  { to: "/administration", label: "Administration", icon: Settings },
+  {
+    to: "/counsellors",
+    label: "Counsellor Management",
+    icon: Briefcase,
+    children: [
+      { to: "/counsellors/counsellors", label: "Counsellors", icon: UserCheck },
+      { to: "/counsellors/teams", label: "Teams", icon: UsersRound },
+      { to: "/counsellors/groups", label: "Groups", icon: Network },
+      { to: "/counsellors/targets", label: "Targets", icon: Target },
+    ],
+  },
+  {
+    to: "/administration",
+    label: "Administration",
+    icon: Settings,
+    children: [
+      { to: "/administration/users", label: "User Management", icon: Users2 },
+      { to: "/administration/roles", label: "Role & Permissions", icon: ShieldCheck },
+    ],
+  },
 ];
 
 interface AppSidebarProps {
