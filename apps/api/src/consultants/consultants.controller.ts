@@ -54,6 +54,12 @@ export class ConsultantsController {
     return this.consultants.admissions(query);
   }
 
+  @Get('groups')
+  @ResponseMessage('Counsellor groups')
+  groups() {
+    return this.consultants.groups();
+  }
+
   @Get('admissions/:student_id')
   @ResponseMessage('Admission')
   admissionDetail(
