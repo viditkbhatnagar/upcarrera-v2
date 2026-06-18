@@ -1,11 +1,12 @@
-import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet, ApiError } from "@/lib/api";
 import {
   ArrowLeft,
   Pencil,
   ArrowRightLeft,
   Mail,
   Phone,
-  CalendarDays,
   Users,
   UserCheck,
   Building2,
@@ -20,293 +21,238 @@ import {
   GraduationCap,
   Wallet,
   Eye,
-  UserPlus,
   Award,
+  RefreshCcw,
+  Inbox,
+  Globe,
+  MapPin,
 } from "lucide-react";
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
-import {
-  getCounsellorByEmpId,
-  STATUS_DOT,
-  STATUS_STYLES,
-  type Counsellor,
-} from "@/lib/counsellors-data";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export const Route = createFileRoute("/counsellors/profile/$empId")({
   head: ({ params }) => ({
     meta: [{ title: `${params.empId} — Counsellor Profile` }],
   }),
-  loader: ({ params }) => {
-    const counsellor = getCounsellorByEmpId(params.empId);
-    if (!counsellor) throw notFound();
-    return { counsellor };
-  },
-  notFoundComponent: () => (
-    <div className="rounded-2xl border border-border bg-surface p-10 text-center">
-      <h2 className="text-lg font-semibold text-foreground">Counsellor not found</h2>
-      <p className="mt-1 text-sm text-muted-foreground">
-        The counsellor you are looking for does not exist.
-      </p>
-      <Link
-        to="/counsellors/counsellors"
-        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
-      >
-        <ArrowLeft className="h-3.5 w-3.5" /> Back to Counsellors
-      </Link>
-    </div>
-  ),
-  errorComponent: ({ error, reset }) => (
-    <div className="rounded-2xl border border-border bg-surface p-10 text-center">
-      <h2 className="text-lg font-semibold text-foreground">Something went wrong</h2>
-      <p className="mt-1 text-sm text-muted-foreground">{(error as Error).message}</p>
-      <button
-        onClick={reset}
-        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
-      >
-        Retry
-      </button>
-    </div>
-  ),
   component: CounsellorProfilePage,
 });
 
-/* ---------------- Derived mock data (deterministic per empId) ---------------- */
-
-function seed(empId: string) {
-  let h = 0;
-  for (let i = 0; i < empId.length; i++) h = (h * 31 + empId.charCodeAt(i)) >>> 0;
-  return h;
+/* ------------------------------------------------------------------ *
+ * API shape — GET /api/consultants/:id (apiGet unwraps the envelope).
+ *
+ * The endpoint keys on the numeric `users` PK (role_id = 6) and returns the
+ * sanitized consultant row (password stripped) plus a resolved `country`
+ * string, the consultant's enrolled `students` (each students profile
+ * decorated with its backing `user`), and `total_students`. The list screen
+ * links this route with the real numeric user id, so we resolve the numeric
+ * portion of the route param to the PK the API expects. Every visible value
+ * below comes from this response — fields the users table has no column for
+ * (designation/team/team-leader/group/manager, plus performance/targets/
+ * applications/timeline) fall back to "—" / 0 / an empty state, never faked.
+ * ------------------------------------------------------------------ */
+interface ApiConsultantStudentUser {
+  id: number;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  university_id: number | null;
 }
 
-function buildProfileData(c: Counsellor) {
-  const s = seed(c.empId);
-  const r = (n: number, mod: number) => ((s >> n) % mod);
+interface ApiConsultantStudent {
+  id: number;
+  student_id: number;
+  enrollment_id: string | null;
+  application_id: string | null;
+  enrollment_date: string | null;
+  admission_status: number | null;
+  course_id: number | null;
+  specialisation_id: number | null;
+  session_id: number | null;
+  source: string | null;
+  consultant_id: number;
+  user: ApiConsultantStudentUser | null;
+}
 
-  const monthlyAdmissionTarget = c.activeTarget;
-  const admissionsAchieved = c.achieved;
-  const revenuePerAdmission = 35000 + r(2, 5) * 5000;
-  const monthlyRevenueTarget = monthlyAdmissionTarget * revenuePerAdmission;
-  const revenueAchieved = admissionsAchieved * revenuePerAdmission;
-  const pct = Math.round((admissionsAchieved / monthlyAdmissionTarget) * 100);
+interface ApiConsultantDetail {
+  id: number;
+  name: string | null;
+  code: number | string | null;
+  phone: string | null;
+  email: string | null;
+  gender: string | null;
+  region: string | null;
+  dob: string | null;
+  doj: string | null;
+  highest_qualification: string | null;
+  languages_spoken: string | null;
+  country_id: number | null;
+  status: number | string | null;
+  created_at: string | null;
+  // findOne extras
+  country: string | null;
+  students: ApiConsultantStudent[];
+  total_students: number;
+}
 
-  const totalApplications = monthlyAdmissionTarget + 12 + r(3, 10);
-  const pendingApplications = 3 + r(4, 8);
-  const totalStudents = admissionsAchieved;
-  const enrollmentPending = 2 + r(5, 5);
-  const courseCompleted = Math.max(0, admissionsAchieved - 5 - r(6, 6));
-  const dropout = r(7, 4);
-  const cancelled = r(8, 3);
+/* ---------------- status mapping (mirrors the list screen) ---------------- */
 
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const trend = months.map((m, i) => {
-    const base = 5 + ((s >> (i % 30)) % 18);
-    const target = 15 + ((s >> ((i + 7) % 30)) % 10);
-    return { month: m, admissions: base, target };
-  });
+type CounsellorStatus = "Active" | "Inactive" | "On Leave";
 
-  const targetStatus: "Achieved" | "On Track" | "Needs Attention" | "Critical" =
-    pct >= 100 ? "Achieved" : pct >= 75 ? "On Track" : pct >= 50 ? "Needs Attention" : "Critical";
+// users.status is an Int (default 1). 1 = Active, 2 = On Leave, everything else
+// (0 / null) = Inactive — keeping the three UI states intact.
+function toCounsellorStatus(status: number | string | null | undefined): CounsellorStatus {
+  const n = status == null ? null : Number(status);
+  if (n === 1) return "Active";
+  if (n === 2) return "On Leave";
+  return "Inactive";
+}
 
-  const branches = ["Mumbai HQ", "Delhi", "Bengaluru", "Pune", "Hyderabad"];
-  const branch = branches[r(9, branches.length)];
+const STATUS_STYLES: Record<CounsellorStatus, string> = {
+  Active: "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20",
+  Inactive: "bg-rose-500/10 text-rose-700 ring-rose-500/20",
+  "On Leave": "bg-amber-500/10 text-amber-700 ring-amber-500/20",
+};
 
-  // Applications
-  const universities = [
-    { name: "Amity University", course: "MBA" },
-    { name: "Lovely Professional University", course: "B.Tech CSE" },
-    { name: "Manipal University", course: "BCA" },
-    { name: "Chandigarh University", course: "MCA" },
-    { name: "Symbiosis", course: "BBA" },
-    { name: "NMIMS", course: "MBA Finance" },
-  ];
-  const intakes = ["Jan 2026", "Apr 2026", "Jul 2026", "Sep 2026"];
-  const appStatuses = ["Submitted", "Under Review", "Offer Issued", "Confirmed", "Rejected"];
-  const feeStatuses = ["Paid", "Pending", "Partial"];
-  const studentFirst = ["Aarav", "Riya", "Kabir", "Ananya", "Ishaan", "Diya", "Vivaan", "Saanvi", "Rohan", "Myra", "Arjun", "Pari"];
-  const studentLast = ["Sharma", "Verma", "Patel", "Reddy", "Iyer", "Nair", "Singh", "Khan"];
+const STATUS_DOT: Record<CounsellorStatus, string> = {
+  Active: "bg-emerald-500",
+  Inactive: "bg-rose-500",
+  "On Leave": "bg-amber-500",
+};
 
-  const applications = Array.from({ length: 12 }).map((_, i) => {
-    const u = universities[(r(10 + i, universities.length))];
-    return {
-      id: `APP-${(20000 + (s % 999) * 7 + i).toString().slice(-6)}`,
-      studentName: `${studentFirst[(i + r(11, 12)) % studentFirst.length]} ${studentLast[(i + r(12, 8)) % studentLast.length]}`,
-      university: u.name,
-      course: u.course,
-      intake: intakes[(i + r(13, 4)) % intakes.length],
-      status: appStatuses[(i + r(14, 5)) % appStatuses.length],
-      feeStatus: feeStatuses[(i + r(15, 3)) % feeStatuses.length],
-    };
-  });
+/* ---------------- formatting helpers ---------------- */
 
-  // Converted students = those with status Confirmed or fee Paid
-  const students = applications
-    .filter((a, i) => i < admissionsAchieved)
-    .slice(0, 10)
-    .map((a, i) => ({
-      id: `STD-${(30000 + (s % 999) + i).toString().slice(-6)}`,
-      name: a.studentName,
-      university: a.university,
-      course: a.course,
-      intake: a.intake,
-      enrollment:
-        i % 5 === 0 ? "Pending" : i % 7 === 0 ? "Dropped" : "Enrolled",
-    }));
+const EMPTY = "—";
 
-  // Timeline
-  const baseDate = new Date(c.joiningDate);
-  const fmt = (d: Date) =>
-    d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) +
-    " · " +
-    d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false });
+function dash(value: string | number | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
+}
 
-  const timeline = [
-    {
-      icon: UserPlus,
-      title: "Counsellor Created",
-      date: fmt(baseDate),
-      desc: `${c.name} onboarded as ${c.designation}.`,
-      tone: "bg-primary/10 text-primary",
-    },
-    {
-      icon: Users,
-      title: "Team Assigned",
-      date: fmt(new Date(baseDate.getTime() + 86400000)),
-      desc: `Assigned to Team ${c.team} under TL ${c.teamLeader}.`,
-      tone: "bg-indigo-500/10 text-indigo-600",
-    },
-    {
-      icon: Target,
-      title: "Target Assigned",
-      date: fmt(new Date(baseDate.getTime() + 7 * 86400000)),
-      desc: `Monthly target set to ${monthlyAdmissionTarget} admissions.`,
-      tone: "bg-amber-500/10 text-amber-600",
-    },
-    {
-      icon: FileText,
-      title: "Application Created",
-      date: fmt(new Date(Date.now() - 10 * 86400000)),
-      desc: `${applications[0]?.id} — ${applications[0]?.studentName} for ${applications[0]?.course}.`,
-      tone: "bg-sky-500/10 text-sky-600",
-    },
-    {
-      icon: Wallet,
-      title: "Registration Fee Collected",
-      date: fmt(new Date(Date.now() - 7 * 86400000)),
-      desc: `₹15,000 received for ${applications[1]?.studentName}.`,
-      tone: "bg-emerald-500/10 text-emerald-600",
-    },
-    {
-      icon: GraduationCap,
-      title: "Enrollment Completed",
-      date: fmt(new Date(Date.now() - 3 * 86400000)),
-      desc: `${students[0]?.name ?? "Student"} enrolled in ${students[0]?.course ?? "course"}.`,
-      tone: "bg-violet-500/10 text-violet-600",
-    },
-    {
-      icon: Activity,
-      title: "Status Changed",
-      date: fmt(new Date(Date.now() - 86400000)),
-      desc: `Status updated to ${c.status}.`,
-      tone: "bg-rose-500/10 text-rose-600",
-    },
-  ];
+function formatDate(value: string | null | undefined): string {
+  if (!value) return EMPTY;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return EMPTY;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
 
-  return {
-    monthlyAdmissionTarget,
-    monthlyRevenueTarget,
-    admissionsAchieved,
-    revenueAchieved,
-    pct,
-    pendingTarget: Math.max(0, monthlyAdmissionTarget - admissionsAchieved),
-    targetStatus,
-    totalApplications,
-    pendingApplications,
-    totalStudents,
-    enrollmentPending,
-    courseCompleted,
-    dropout,
-    cancelled,
-    trend,
-    branch,
-    applications,
-    students,
-    timeline,
-  };
+function initials(name: string | null | undefined): string {
+  const source = name && name.trim() !== "" ? name : "";
+  return (
+    source
+      .split(/\s+/)
+      .map((w) => w[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "?"
+  );
+}
+
+// The route param is the real numeric user id (the list links by users.id). Be
+// defensive: extract the numeric portion in case a display id ever reaches here.
+function numericIdFromParam(param: string): number | null {
+  const digits = param.match(/\d+/g);
+  if (!digits || digits.length === 0) return null;
+  const n = Number(digits[digits.length - 1]);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 /* ---------------- Page ---------------- */
 
 function CounsellorProfilePage() {
-  const { counsellor } = Route.useLoaderData() as { counsellor: Counsellor };
-  const d = buildProfileData(counsellor);
-  const initials = counsellor.name
-    .split(" ")
-    .map((w) => w[0])
-    .join("")
-    .slice(0, 2);
+  const { empId: rawParam } = Route.useParams();
+  const numericId = numericIdFromParam(rawParam);
+
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+    queryKey: ["consultant-detail", numericId],
+    queryFn: () => apiGet<ApiConsultantDetail>(`/consultants/${numericId}`),
+    enabled: numericId != null,
+  });
 
   return (
     <div className="space-y-6">
       {/* Back link */}
-      <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Link
           to="/counsellors/counsellors"
           className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground transition hover:text-foreground"
         >
           <ArrowLeft className="h-3.5 w-3.5" /> Back to Counsellors
         </Link>
+        {!isLoading && !isError && data && (
+          <button
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted disabled:opacity-50"
+          >
+            <RefreshCcw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
+            Refresh
+          </button>
+        )}
       </div>
 
+      {numericId == null ? (
+        <NotFoundState param={rawParam} />
+      ) : isLoading ? (
+        <LoadingState />
+      ) : isError ? (
+        <ErrorState error={error} onRetry={() => refetch()} />
+      ) : !data ? (
+        <NotFoundState param={rawParam} />
+      ) : (
+        <CounsellorProfileContent consultant={data} />
+      )}
+    </div>
+  );
+}
+
+function CounsellorProfileContent({ consultant }: { consultant: ApiConsultantDetail }) {
+  const status = toCounsellorStatus(consultant.status);
+  const name = dash(consultant.name);
+
+  return (
+    <div className="space-y-6">
       {/* Profile Header */}
       <div className="rounded-2xl border border-border bg-surface p-5 shadow-card sm:p-6">
         <div className="flex flex-wrap items-start gap-5">
           <div className="grid h-20 w-20 shrink-0 place-items-center rounded-full bg-primary/10 text-2xl font-bold text-primary ring-4 ring-primary/5">
-            {initials}
+            {initials(consultant.name)}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
-                {counsellor.name}
+                {name}
               </h1>
               <span
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset",
-                  STATUS_STYLES[counsellor.status],
+                  STATUS_STYLES[status],
                 )}
               >
-                <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[counsellor.status])} />
-                {counsellor.status}
+                <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[status])} />
+                {status}
               </span>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span className="font-mono font-semibold text-primary">{counsellor.empId}</span>
+              <span className="font-mono font-semibold text-primary">#{consultant.id}</span>
+              {/* Designation is role-derived and not exposed by this endpoint. */}
               <span className="inline-flex items-center gap-1">
-                <Briefcase className="h-3.5 w-3.5" /> {counsellor.designation}
+                <Briefcase className="h-3.5 w-3.5" /> Counsellor
               </span>
               <span className="inline-flex items-center gap-1">
-                <Mail className="h-3.5 w-3.5" /> {counsellor.email}
+                <Mail className="h-3.5 w-3.5" /> {dash(consultant.email)}
               </span>
               <span className="inline-flex items-center gap-1">
-                <Phone className="h-3.5 w-3.5" /> {counsellor.phone}
+                <Phone className="h-3.5 w-3.5" /> {dash(consultant.phone)}
               </span>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <HeaderStat icon={Users} label="Team" value={counsellor.team} />
-              <HeaderStat icon={UserCheck} label="Team Leader" value={counsellor.teamLeader} />
-              <HeaderStat icon={Building2} label="Group" value={counsellor.group} />
-              <HeaderStat icon={Briefcase} label="Manager" value={counsellor.manager} />
+              {/* Team / Team Leader / Group / Manager have no users-table source.
+                  Region is the closest grouping the row carries; the rest are "—". */}
+              <HeaderStat icon={Users} label="Team" value={EMPTY} />
+              <HeaderStat icon={UserCheck} label="Team Leader" value={EMPTY} />
+              <HeaderStat icon={Building2} label="Region" value={dash(consultant.region)} />
+              <HeaderStat icon={Globe} label="Country" value={dash(consultant.country)} />
             </div>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -335,255 +281,260 @@ function CounsellorProfilePage() {
         <TabsContent value="overview" className="space-y-5">
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SectionCard title="Basic Information" icon={UserCheck}>
-              <InfoRow label="Employee ID" value={counsellor.empId} mono />
-              <InfoRow label="Full Name" value={counsellor.name} />
-              <InfoRow label="Designation" value={counsellor.designation} />
-              <InfoRow label="Email" value={counsellor.email} />
-              <InfoRow label="Phone" value={counsellor.phone} />
-              <InfoRow
-                label="Joining Date"
-                value={new Date(counsellor.joiningDate).toLocaleDateString("en-IN", {
-                  day: "2-digit",
-                  month: "short",
-                  year: "numeric",
-                })}
-              />
+              <InfoRow label="Employee ID" value={`#${consultant.id}`} mono />
+              <InfoRow label="Full Name" value={dash(consultant.name)} />
+              <InfoRow label="Designation" value={EMPTY} />
+              <InfoRow label="Email" value={dash(consultant.email)} />
+              <InfoRow label="Phone" value={dash(consultant.phone)} />
+              <InfoRow label="Joining Date" value={formatDate(consultant.doj ?? consultant.created_at)} />
               <InfoRow
                 label="Status"
                 value={
                   <span
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                      STATUS_STYLES[counsellor.status],
+                      STATUS_STYLES[status],
                     )}
                   >
-                    <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[counsellor.status])} />
-                    {counsellor.status}
+                    <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[status])} />
+                    {status}
                   </span>
                 }
               />
             </SectionCard>
 
             <SectionCard title="Reporting Details" icon={Building2}>
-              <InfoRow label="Assigned Team" value={counsellor.team} />
-              <InfoRow label="Team Leader" value={counsellor.teamLeader} />
-              <InfoRow label="Group" value={counsellor.group} />
-              <InfoRow label="Group Manager" value={counsellor.manager} />
-              <InfoRow label="Branch" value={d.branch} />
+              {/* Team / TL / Group / Manager are not modelled on the users row. */}
+              <InfoRow label="Assigned Team" value={EMPTY} />
+              <InfoRow label="Team Leader" value={EMPTY} />
+              <InfoRow label="Group" value={EMPTY} />
+              <InfoRow label="Group Manager" value={EMPTY} />
+              <InfoRow label="Region" value={dash(consultant.region)} />
+              <InfoRow label="Country" value={dash(consultant.country)} />
             </SectionCard>
           </div>
         </TabsContent>
 
-        {/* PERFORMANCE */}
+        {/* PERFORMANCE — no performance metrics on this endpoint; show real
+            student count and a "no data" state for the rest. */}
         <TabsContent value="performance" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
-            <KpiTile icon={FileText} label="Total Applications" value={d.totalApplications} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={AlertTriangle} label="Pending Applications" value={d.pendingApplications} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={Users} label="Total Students" value={d.totalStudents} accent="bg-indigo-500/10 text-indigo-600" />
-            <KpiTile icon={GraduationCap} label="Enrollment Pending" value={d.enrollmentPending} accent="bg-sky-500/10 text-sky-600" />
-            <KpiTile icon={CheckCircle2} label="Course Completed" value={d.courseCompleted} accent="bg-emerald-500/10 text-emerald-600" />
-            <KpiTile icon={XCircle} label="Dropout" value={d.dropout} accent="bg-rose-500/10 text-rose-600" />
-            <KpiTile icon={XCircle} label="Cancelled" value={d.cancelled} accent="bg-muted text-foreground" />
+            <KpiTile icon={FileText} label="Total Applications" value={EMPTY} accent="bg-primary/10 text-primary" />
+            <KpiTile icon={AlertTriangle} label="Pending Applications" value={EMPTY} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={Users} label="Total Students" value={consultant.total_students} accent="bg-indigo-500/10 text-indigo-600" />
+            <KpiTile icon={GraduationCap} label="Enrollment Pending" value={EMPTY} accent="bg-sky-500/10 text-sky-600" />
+            <KpiTile icon={CheckCircle2} label="Course Completed" value={EMPTY} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={XCircle} label="Dropout" value={EMPTY} accent="bg-rose-500/10 text-rose-600" />
+            <KpiTile icon={XCircle} label="Cancelled" value={EMPTY} accent="bg-muted text-foreground" />
           </div>
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SectionCard title="Monthly Admission Trend" icon={TrendingUp}>
-              <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={d.trend}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="month" fontSize={11} stroke="hsl(var(--muted-foreground))" />
-                    <YAxis fontSize={11} stroke="hsl(var(--muted-foreground))" />
-                    <Tooltip
-                      contentStyle={{
-                        background: "hsl(var(--background))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: 8,
-                        fontSize: 12,
-                      }}
-                    />
-                    <Bar dataKey="admissions" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              <ChartEmptyState />
             </SectionCard>
 
             <SectionCard title="Monthly Target Point Trend" icon={Target}>
-              <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={d.trend}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="month" fontSize={11} stroke="hsl(var(--muted-foreground))" />
-                    <YAxis fontSize={11} stroke="hsl(var(--muted-foreground))" />
-                    <Tooltip
-                      contentStyle={{
-                        background: "hsl(var(--background))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: 8,
-                        fontSize: 12,
-                      }}
-                    />
-                    <Line type="monotone" dataKey="target" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3 }} />
-                    <Line type="monotone" dataKey="admissions" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
+              <ChartEmptyState />
             </SectionCard>
           </div>
         </TabsContent>
 
-        {/* TARGETS */}
+        {/* TARGETS — not exposed by this endpoint; keep the layout, show "—". */}
         <TabsContent value="targets" className="space-y-5">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <KpiTile icon={Target} label="Monthly Admission Target" value={d.monthlyAdmissionTarget} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={Wallet} label="Monthly Revenue Target" value={`₹${(d.monthlyRevenueTarget / 100000).toFixed(1)}L`} accent="bg-indigo-500/10 text-indigo-600" />
-            <KpiTile icon={CheckCircle2} label="Admissions Achieved" value={d.admissionsAchieved} accent="bg-emerald-500/10 text-emerald-600" />
-            <KpiTile icon={TrendingUp} label="Revenue Achieved" value={`₹${(d.revenueAchieved / 100000).toFixed(1)}L`} accent="bg-emerald-500/10 text-emerald-600" />
-            <KpiTile icon={Award} label="Achievement %" value={`${d.pct}%`} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={AlertTriangle} label="Pending Target" value={d.pendingTarget} accent="bg-rose-500/10 text-rose-600" />
+            <KpiTile icon={Target} label="Monthly Admission Target" value={EMPTY} accent="bg-primary/10 text-primary" />
+            <KpiTile icon={Wallet} label="Monthly Revenue Target" value={EMPTY} accent="bg-indigo-500/10 text-indigo-600" />
+            <KpiTile icon={CheckCircle2} label="Admissions Achieved" value={EMPTY} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={TrendingUp} label="Revenue Achieved" value={EMPTY} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={Award} label="Achievement %" value={EMPTY} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={AlertTriangle} label="Pending Target" value={EMPTY} accent="bg-rose-500/10 text-rose-600" />
             <div className="rounded-xl border border-border bg-surface p-4 shadow-card sm:col-span-2">
               <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Target Status</div>
-              <div className="mt-2">
-                <TargetStatusBadge status={d.targetStatus} />
-              </div>
+              <div className="mt-2 text-sm text-muted-foreground">No data available</div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SectionCard title="Admission Target" icon={Target}>
-              <ProgressRow
-                label={`${d.admissionsAchieved} / ${d.monthlyAdmissionTarget} admissions`}
-                pct={d.pct}
-              />
+              <ProgressRow label="No target set" pct={0} />
             </SectionCard>
             <SectionCard title="Revenue Target" icon={Wallet}>
-              <ProgressRow
-                label={`₹${(d.revenueAchieved / 100000).toFixed(1)}L / ₹${(d.monthlyRevenueTarget / 100000).toFixed(1)}L`}
-                pct={Math.round((d.revenueAchieved / d.monthlyRevenueTarget) * 100)}
-              />
+              <ProgressRow label="No target set" pct={0} />
             </SectionCard>
           </div>
         </TabsContent>
 
-        {/* APPLICATIONS */}
+        {/* APPLICATIONS — not exposed by this endpoint. */}
         <TabsContent value="applications">
-          <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
-            <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
-              {d.applications.length} applications handled
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1000px] border-collapse text-sm">
-                <thead className="bg-muted/60">
-                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-2.5 font-semibold">Application ID</th>
-                    <th className="px-4 py-2.5 font-semibold">Student Name</th>
-                    <th className="px-4 py-2.5 font-semibold">University</th>
-                    <th className="px-4 py-2.5 font-semibold">Course</th>
-                    <th className="px-4 py-2.5 font-semibold">Intake</th>
-                    <th className="px-4 py-2.5 font-semibold">Status</th>
-                    <th className="px-4 py-2.5 font-semibold">Reg. Fee</th>
-                    <th className="px-4 py-2.5 text-right font-semibold">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {d.applications.map((a) => (
-                    <tr key={a.id} className="border-b border-border last:border-0 hover:bg-muted/40">
-                      <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">{a.id}</td>
-                      <td className="px-4 py-3 text-foreground">{a.studentName}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{a.university}</td>
-                      <td className="px-4 py-3 text-foreground">{a.course}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{a.intake}</td>
-                      <td className="px-4 py-3">
-                        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset", appStatusStyle(a.status))}>
-                          {a.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset", feeStatusStyle(a.feeStatus))}>
-                          {a.feeStatus}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button title="View Application" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground">
-                          <Eye className="h-4 w-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <EmptyTab
+            icon={FileText}
+            title="No applications available"
+            description="Applications handled by this counsellor are not exposed by this endpoint yet."
+          />
         </TabsContent>
 
-        {/* STUDENTS */}
+        {/* STUDENTS — the real enrolled students for this consultant. */}
         <TabsContent value="students">
-          <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
-            <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
-              {d.students.length} converted students
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px] border-collapse text-sm">
-                <thead className="bg-muted/60">
-                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-2.5 font-semibold">Student ID</th>
-                    <th className="px-4 py-2.5 font-semibold">Name</th>
-                    <th className="px-4 py-2.5 font-semibold">University</th>
-                    <th className="px-4 py-2.5 font-semibold">Course</th>
-                    <th className="px-4 py-2.5 font-semibold">Intake</th>
-                    <th className="px-4 py-2.5 font-semibold">Enrollment</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {d.students.map((s) => (
-                    <tr key={s.id} className="border-b border-border last:border-0 hover:bg-muted/40">
-                      <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">{s.id}</td>
-                      <td className="px-4 py-3 text-foreground">{s.name}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{s.university}</td>
-                      <td className="px-4 py-3 text-foreground">{s.course}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{s.intake}</td>
-                      <td className="px-4 py-3">
-                        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset", enrollmentStyle(s.enrollment))}>
-                          {s.enrollment}
-                        </span>
-                      </td>
+          {consultant.students.length === 0 ? (
+            <EmptyTab
+              icon={Users}
+              title="No students enrolled"
+              description="This counsellor has no enrolled students on file yet."
+            />
+          ) : (
+            <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
+              <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
+                {consultant.total_students} enrolled student
+                {consultant.total_students === 1 ? "" : "s"}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[900px] border-collapse text-sm">
+                  <thead className="bg-muted/60">
+                    <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                      <th className="px-4 py-2.5 font-semibold">Student ID</th>
+                      <th className="px-4 py-2.5 font-semibold">Name</th>
+                      <th className="px-4 py-2.5 font-semibold">Email</th>
+                      <th className="px-4 py-2.5 font-semibold">Phone</th>
+                      <th className="px-4 py-2.5 font-semibold">Enrolled</th>
+                      <th className="px-4 py-2.5 text-right font-semibold">Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {consultant.students.map((s) => {
+                      const displayId = dash(s.enrollment_id ?? `STU-${s.student_id}`);
+                      return (
+                        <tr key={s.id} className="border-b border-border last:border-0 hover:bg-muted/40">
+                          <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">
+                            {displayId}
+                          </td>
+                          <td className="px-4 py-3 text-foreground">{dash(s.user?.name)}</td>
+                          <td className="px-4 py-3 text-muted-foreground">{dash(s.user?.email)}</td>
+                          <td className="px-4 py-3 text-muted-foreground">{dash(s.user?.phone)}</td>
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {formatDate(s.enrollment_date)}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <Link
+                              to="/students/students/$id"
+                              params={{ id: String(s.id) }}
+                              title="View Student"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </Link>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
+          )}
         </TabsContent>
 
-        {/* ACTIVITY */}
+        {/* ACTIVITY — not exposed by this endpoint. */}
         <TabsContent value="activity">
           <SectionCard title="Activity Timeline" icon={Activity}>
-            <ol className="relative space-y-5 border-l-2 border-border pl-6">
-              {d.timeline.map((t, i) => (
-                <li key={i} className="relative">
-                  <span
-                    className={cn(
-                      "absolute -left-[33px] grid h-7 w-7 place-items-center rounded-full ring-4 ring-surface",
-                      t.tone,
-                    )}
-                  >
-                    <t.icon className="h-3.5 w-3.5" />
-                  </span>
-                  <div className="rounded-xl border border-border bg-background px-4 py-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-sm font-semibold text-foreground">{t.title}</div>
-                      <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                        <CalendarDays className="h-3 w-3" /> {t.date}
-                      </div>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">{t.desc}</div>
-                  </div>
-                </li>
-              ))}
-            </ol>
+            <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+                <Activity className="h-6 w-6" />
+              </div>
+              <div className="text-sm font-semibold text-foreground">No timeline activity</div>
+              <p className="max-w-sm text-xs text-muted-foreground">
+                Activity events are not exposed by this endpoint yet.
+              </p>
+            </div>
           </SectionCard>
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+/* ---------------- state views ---------------- */
+
+function LoadingState() {
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-border bg-surface p-6 shadow-card">
+        <div className="flex items-start gap-5">
+          <Skeleton className="h-20 w-20 rounded-full" />
+          <div className="flex-1 space-y-3">
+            <Skeleton className="h-7 w-56" />
+            <Skeleton className="h-4 w-72" />
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {[0, 1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-12 w-full rounded-lg" />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        {[0, 1].map((i) => (
+          <div key={i} className="rounded-2xl border border-border bg-surface p-5 shadow-card">
+            <Skeleton className="mb-4 h-5 w-40" />
+            <div className="space-y-3">
+              {[0, 1, 2, 3, 4].map((j) => (
+                <Skeleton key={j} className="h-4 w-full" />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const notFound = error instanceof ApiError && error.status === 404;
+  const message =
+    error instanceof Error ? error.message : "Something went wrong while loading this counsellor.";
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-10 text-center shadow-card">
+      <AlertTriangle className="mx-auto h-10 w-10 text-red-500/60" />
+      <h2 className="mt-3 text-lg font-semibold text-foreground">
+        {notFound ? "Counsellor not found" : "Couldn’t load counsellor"}
+      </h2>
+      <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">{message}</p>
+      <div className="mt-4 flex items-center justify-center gap-2">
+        {!notFound && (
+          <button
+            onClick={onRetry}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
+          >
+            <RefreshCcw className="h-3.5 w-3.5" />
+            Retry
+          </button>
+        )}
+        <Link
+          to="/counsellors/counsellors"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back to Counsellors
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function NotFoundState({ param }: { param: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-10 text-center shadow-card">
+      <Inbox className="mx-auto h-10 w-10 text-muted-foreground/50" />
+      <h2 className="mt-3 text-lg font-semibold text-foreground">Counsellor not found</h2>
+      <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+        No counsellor id could be resolved from{" "}
+        <span className="font-mono text-foreground">{param}</span>.
+      </p>
+      <Link
+        to="/counsellors/counsellors"
+        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" /> Back to Counsellors
+      </Link>
     </div>
   );
 }
@@ -673,57 +624,35 @@ function ProgressRow({ label, pct }: { label: string; pct: number }) {
   );
 }
 
-function TargetStatusBadge({ status }: { status: "Achieved" | "On Track" | "Needs Attention" | "Critical" }) {
-  const map: Record<string, string> = {
-    Achieved: "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20",
-    "On Track": "bg-sky-500/10 text-sky-700 ring-sky-500/20",
-    "Needs Attention": "bg-amber-500/10 text-amber-700 ring-amber-500/20",
-    Critical: "bg-rose-500/10 text-rose-700 ring-rose-500/20",
-  };
+// Placeholder for the recharts panels — the endpoint exposes no trend series.
+function ChartEmptyState() {
   return (
-    <span className={cn("inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset", map[status])}>
-      {status === "Achieved" && <CheckCircle2 className="h-3.5 w-3.5" />}
-      {status === "On Track" && <TrendingUp className="h-3.5 w-3.5" />}
-      {status === "Needs Attention" && <AlertTriangle className="h-3.5 w-3.5" />}
-      {status === "Critical" && <XCircle className="h-3.5 w-3.5" />}
-      {status}
-    </span>
+    <div className="flex h-64 w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-background text-center">
+      <MapPin className="h-6 w-6 text-muted-foreground/40" />
+      <div className="text-sm font-semibold text-foreground">No trend data available</div>
+      <p className="max-w-xs text-xs text-muted-foreground">
+        Monthly trends are not exposed by this endpoint yet.
+      </p>
+    </div>
   );
 }
 
-function appStatusStyle(s: string) {
-  switch (s) {
-    case "Confirmed":
-      return "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20";
-    case "Offer Issued":
-      return "bg-sky-500/10 text-sky-700 ring-sky-500/20";
-    case "Under Review":
-      return "bg-amber-500/10 text-amber-700 ring-amber-500/20";
-    case "Rejected":
-      return "bg-rose-500/10 text-rose-700 ring-rose-500/20";
-    default:
-      return "bg-muted text-foreground ring-border";
-  }
-}
-
-function feeStatusStyle(s: string) {
-  switch (s) {
-    case "Paid":
-      return "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20";
-    case "Partial":
-      return "bg-amber-500/10 text-amber-700 ring-amber-500/20";
-    default:
-      return "bg-rose-500/10 text-rose-700 ring-rose-500/20";
-  }
-}
-
-function enrollmentStyle(s: string) {
-  switch (s) {
-    case "Enrolled":
-      return "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20";
-    case "Pending":
-      return "bg-amber-500/10 text-amber-700 ring-amber-500/20";
-    default:
-      return "bg-rose-500/10 text-rose-700 ring-rose-500/20";
-  }
+function EmptyTab({
+  icon: Icon,
+  title,
+  description,
+}: {
+  icon: typeof FileText;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-surface px-6 py-16 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+        <Icon className="h-6 w-6" />
+      </div>
+      <div className="text-sm font-semibold text-foreground">{title}</div>
+      <p className="max-w-sm text-xs text-muted-foreground">{description}</p>
+    </div>
+  );
 }
