@@ -46,10 +46,13 @@ export const Route = createFileRoute("/fees/dashboard")({
 // Recent activity is the live payments feed: GET /payments -> payment rows
 // decorated with student_name + mode_label (plus paid_amount, payment_date,
 // reference_no, invoice_id).
+// The Collection Trend chart is driven by GET /finance/collection-trend?months=12
+// (12 chronological monthly buckets; Quarterly/Yearly aggregate the same real
+// series client-side). University-wise Outstanding is driven by
+// GET /finance/outstanding-by-university (items sorted by outstanding desc).
 //
 // Fields the API does NOT expose on these endpoints are rendered as "—"/0 and
-// never fabricated: the legacy trend buckets (monthly/quarterly/yearly), the
-// university/intake outstanding rollups, and the dated due-buckets.
+// never fabricated: the intake-wise outstanding rollup and the dated due-buckets.
 
 interface FinanceSummary {
   count: number;
@@ -103,6 +106,35 @@ interface ListResponse<T> {
   total: number;
   page: number;
   limit: number;
+}
+
+// GET /finance/collection-trend?months=12 — 12 months oldest→newest, each with a
+// human label ("Jul 2025") and the ₹ collected that month (0 if none).
+interface CollectionTrendPoint {
+  ym: string;
+  label: string;
+  total: number;
+}
+
+interface CollectionTrendResponse {
+  months: number;
+  series: CollectionTrendPoint[];
+  total: number;
+}
+
+// GET /finance/outstanding-by-university — items sorted by outstanding desc.
+interface OutstandingByUniversityItem {
+  university_id: number | null;
+  university_title: string;
+  billed: number;
+  paid: number;
+  outstanding: number;
+  invoice_count: number;
+}
+
+interface OutstandingByUniversityResponse {
+  items: OutstandingByUniversityItem[];
+  total_outstanding: number;
 }
 
 const EMPTY = "—";
@@ -205,6 +237,18 @@ function FeeDashboard() {
     queryFn: () => apiGet<ListResponse<PaymentRow>>("/payments", { page: 1, limit: 6 }),
   });
 
+  // 12-month collection history for the Collection Trend chart (oldest→newest).
+  const trendQuery = useQuery({
+    queryKey: ["fees", "collection-trend", { months: 12 }],
+    queryFn: () => apiGet<CollectionTrendResponse>("/finance/collection-trend", { months: 12 }),
+  });
+
+  // University-wise outstanding rollup (items sorted by outstanding desc).
+  const universityQuery = useQuery({
+    queryKey: ["fees", "outstanding-by-university"],
+    queryFn: () => apiGet<OutstandingByUniversityResponse>("/finance/outstanding-by-university"),
+  });
+
   const invoices = useMemo(() => invoicesQuery.data?.items ?? [], [invoicesQuery.data]);
 
   // Collected / billed derived from the real invoice rows on the page.
@@ -233,12 +277,50 @@ function FeeDashboard() {
     { label: "Collection %", value: `${collectionPct.toFixed(1)}%`, delta: null, up: true, icon: Percent, tint: "accent" },
   ];
 
-  // No time-bucketed collection endpoint exists, so the trend chart has no real
-  // series to plot — render an empty, zeroed axis instead of fabricated bars.
-  const trend: { label: string; collected: number; target: number }[] = [];
+  // Collection Trend: the API returns 12 chronological monthly buckets. "Monthly"
+  // plots them as-is; "Quarterly"/"Yearly" aggregate the SAME real series client-
+  // side (summing into quarters / a single yearly bar) so no data is fabricated.
+  const trendSeries = useMemo(() => trendQuery.data?.series ?? [], [trendQuery.data]);
+  const trend = useMemo(() => {
+    if (trendSeries.length === 0) return [] as { label: string; total: number; pct: number }[];
 
-  // No university/intake outstanding rollup endpoint — show empty panels.
-  const universityOutstanding: { name: string; value: string; pct: number }[] = [];
+    let buckets: { label: string; total: number }[];
+    if (range === "Yearly") {
+      buckets = [{ label: "This year", total: trendSeries.reduce((s, p) => s + (p.total ?? 0), 0) }];
+    } else if (range === "Quarterly") {
+      // Group consecutive months into quarters of 3, oldest→newest.
+      const groups: { label: string; total: number }[] = [];
+      for (let i = 0; i < trendSeries.length; i += 3) {
+        const slice = trendSeries.slice(i, i + 3);
+        const total = slice.reduce((s, p) => s + (p.total ?? 0), 0);
+        const first = slice[0]?.label ?? "";
+        const last = slice[slice.length - 1]?.label ?? "";
+        groups.push({ label: first === last ? first : `${first} – ${last}`, total });
+      }
+      buckets = groups;
+    } else {
+      buckets = trendSeries.map((p) => ({ label: p.label, total: p.total ?? 0 }));
+    }
+
+    const max = Math.max(...buckets.map((b) => b.total), 1);
+    return buckets.map((b) => ({ label: b.label, total: b.total, pct: Math.round((b.total / max) * 100) }));
+  }, [trendSeries, range]);
+
+  // University-wise outstanding: render the top 8 by pending dues as horizontal
+  // bars; bar width is relative to the largest outstanding in the list.
+  const universityItems = useMemo(() => universityQuery.data?.items ?? [], [universityQuery.data]);
+  const universityOutstanding = useMemo(() => {
+    const top = universityItems.slice(0, 8);
+    const max = Math.max(...top.map((u) => u.outstanding ?? 0), 1);
+    return top.map((u) => ({
+      name: asText(u.university_title),
+      value: inrFull(u.outstanding),
+      pct: Math.round(((u.outstanding ?? 0) / max) * 100),
+    }));
+  }, [universityItems]);
+  const universityTotalOutstanding = universityQuery.data?.total_outstanding ?? 0;
+
+  // No intake-wise outstanding endpoint — keep this panel as a graceful empty state.
   const intakeOutstanding: { name: string; value: string; pct: number }[] = [];
 
   // No dated due-bucket endpoint — surface the counts we do have (0 otherwise).
@@ -323,12 +405,14 @@ function FeeDashboard() {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h3 className="text-base font-semibold tracking-tight text-foreground">Collection Trend</h3>
-            <p className="text-xs text-muted-foreground">Collected vs. target over time</p>
+            <p className="text-xs text-muted-foreground">
+              Collected over the last 12 months
+              {trendQuery.data ? ` • ${inrCompact(trendQuery.data.total)} total` : ""}
+            </p>
           </div>
           <div className="flex items-center gap-3">
             <div className="hidden items-center gap-3 text-xs sm:flex">
               <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-primary" />Collected</span>
-              <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-accent/40" />Target</span>
             </div>
             <div className="flex items-center gap-1 rounded-lg border border-border p-0.5 text-xs">
               {(["Monthly", "Quarterly", "Yearly"] as const).map((p) => (
@@ -343,24 +427,46 @@ function FeeDashboard() {
             </div>
           </div>
         </div>
-        {trend.length === 0 ? (
+        {trendQuery.isLoading ? (
+          <div className="mt-6 flex h-48 flex-col items-center justify-center gap-2 rounded-xl border border-border text-center">
+            <Loader2 className="h-7 w-7 animate-spin text-muted-foreground/50" />
+            <div className="text-sm font-semibold text-foreground">Loading trend…</div>
+          </div>
+        ) : trendQuery.isError ? (
+          <div className="mt-6 flex h-48 flex-col items-center justify-center gap-2 rounded-xl border border-border text-center">
+            <AlertTriangle className="h-8 w-8 text-red-500/60" />
+            <div className="text-sm font-semibold text-foreground">Couldn’t load trend</div>
+            <div className="text-xs text-muted-foreground">
+              {trendQuery.error instanceof Error ? trendQuery.error.message : "Please try again."}
+            </div>
+          </div>
+        ) : trend.length === 0 ? (
           <div className="mt-6 flex h-48 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border text-center">
             <TrendingUp className="h-8 w-8 text-muted-foreground/40" />
             <div className="text-sm font-semibold text-foreground">No trend data</div>
-            <div className="text-xs text-muted-foreground">Time-bucketed collection history isn’t available yet.</div>
+            <div className="text-xs text-muted-foreground">No collections were recorded in this period.</div>
           </div>
         ) : (
           <>
             <div className="mt-6 flex h-48 items-end gap-2">
               {trend.map((d) => (
-                <div key={d.label} className="group relative flex flex-1 flex-col items-center gap-1">
-                  <div className="w-full rounded-md bg-accent/30" style={{ height: `${d.target}%` }} />
-                  <div className="absolute bottom-0 w-full rounded-md bg-primary transition-all group-hover:bg-primary-hover" style={{ height: `${d.collected}%` }} />
+                <div key={d.label} className="group relative flex flex-1 flex-col items-center justify-end">
+                  <div className="pointer-events-none absolute -top-1 z-10 -translate-y-full whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-[10px] font-semibold text-background opacity-0 shadow-card transition group-hover:opacity-100">
+                    {inrFull(d.total)}
+                  </div>
+                  <div
+                    className="w-full rounded-md bg-primary transition-all group-hover:bg-primary-hover"
+                    style={{ height: `${Math.max(d.pct, 2)}%` }}
+                  />
                 </div>
               ))}
             </div>
-            <div className="mt-3 flex justify-between text-[10px] text-muted-foreground">
-              {trend.map((d) => <span key={d.label}>{d.label}</span>)}
+            <div className="mt-3 flex justify-between gap-1 text-[10px] text-muted-foreground">
+              {trend.map((d) => (
+                <span key={d.label} className="flex-1 truncate text-center" title={d.label}>
+                  {d.label}
+                </span>
+              ))}
             </div>
           </>
         )}
@@ -376,27 +482,43 @@ function FeeDashboard() {
               </div>
               <div>
                 <h3 className="text-base font-semibold tracking-tight text-foreground">University-wise Outstanding</h3>
-                <p className="text-xs text-muted-foreground">Top universities by pending dues</p>
+                <p className="text-xs text-muted-foreground">
+                  Top universities by pending dues
+                  {universityQuery.data ? ` • ${inrCompact(universityTotalOutstanding)} total` : ""}
+                </p>
               </div>
             </div>
             <Link to="/universities/universities" className="text-xs font-semibold text-accent hover:underline">View all</Link>
           </div>
-          {universityOutstanding.length === 0 ? (
+          {universityQuery.isLoading ? (
+            <div className="mt-5 flex flex-col items-center justify-center gap-2 py-8 text-center">
+              <Loader2 className="h-7 w-7 animate-spin text-muted-foreground/50" />
+              <div className="text-sm font-semibold text-foreground">Loading breakdown…</div>
+            </div>
+          ) : universityQuery.isError ? (
+            <div className="mt-5 flex flex-col items-center justify-center gap-2 py-8 text-center">
+              <AlertTriangle className="h-8 w-8 text-red-500/60" />
+              <div className="text-sm font-semibold text-foreground">Couldn’t load breakdown</div>
+              <div className="text-xs text-muted-foreground">
+                {universityQuery.error instanceof Error ? universityQuery.error.message : "Please try again."}
+              </div>
+            </div>
+          ) : universityOutstanding.length === 0 ? (
             <div className="mt-5 flex flex-col items-center justify-center gap-1 py-8 text-center">
               <Building2 className="h-8 w-8 text-muted-foreground/40" />
-              <div className="text-sm font-semibold text-foreground">No breakdown available</div>
-              <div className="text-xs text-muted-foreground">University-wise rollup isn’t provided by the API.</div>
+              <div className="text-sm font-semibold text-foreground">Nothing outstanding</div>
+              <div className="text-xs text-muted-foreground">No universities have pending dues right now.</div>
             </div>
           ) : (
             <div className="mt-5 space-y-3.5">
-              {universityOutstanding.map((u) => (
-                <div key={u.name}>
+              {universityOutstanding.map((u, idx) => (
+                <div key={`${u.name}-${idx}`}>
                   <div className="flex items-center justify-between text-sm">
-                    <span className="font-medium text-foreground">{u.name}</span>
-                    <span className="text-muted-foreground">{u.value}</span>
+                    <span className="truncate pr-3 font-medium text-foreground">{u.name}</span>
+                    <span className="shrink-0 font-semibold text-foreground">{u.value}</span>
                   </div>
                   <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-muted">
-                    <div className="h-full rounded-full bg-primary" style={{ width: `${u.pct}%` }} />
+                    <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(u.pct, 2)}%` }} />
                   </div>
                 </div>
               ))}

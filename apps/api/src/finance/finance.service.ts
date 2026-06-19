@@ -1931,4 +1931,103 @@ export class FinanceService {
       'Commission auto-calculation — phase 3',
     );
   }
+
+  // ---- dashboard aggregates ------------------------------------------------
+
+  /**
+   * Collection trend — SUM(payment.paid_amount) bucketed by calendar month for
+   * the last `months` months (default 12, max 36). Ported from the legacy
+   * dashboard income math (get_current_day_income, summed monthly here). Months
+   * with no payments are returned as 0 so the chart has a continuous series.
+   */
+  async collectionTrend(months = 12) {
+    const span = months && months > 0 && months <= 36 ? months : 12;
+    const now = new Date();
+    const monthNames = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    const series: { ym: string; label: string; total: number }[] = [];
+    for (let i = span - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      series.push({
+        ym,
+        label: `${monthNames[d.getMonth()]} ${d.getFullYear()}`,
+        total: 0,
+      });
+    }
+    const cutoff = new Date(now.getFullYear(), now.getMonth() - (span - 1), 1);
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{ ym: string; total: unknown }>
+    >`
+      SELECT DATE_FORMAT(payment_date, '%Y-%m') AS ym, SUM(paid_amount) AS total
+      FROM payment
+      WHERE deleted_at IS NULL AND payment_date IS NOT NULL AND payment_date >= ${cutoff}
+      GROUP BY ym
+    `;
+    const totalByYm = new Map(rows.map((r) => [r.ym, this.toMoney(r.total)]));
+    for (const m of series) m.total = totalByYm.get(m.ym) ?? 0;
+
+    return {
+      months: span,
+      series,
+      total: series.reduce((s, m) => s + m.total, 0),
+    };
+  }
+
+  /**
+   * Outstanding fees grouped by university — invoices joined through their
+   * course to the owning university (legacy joins manually; no FKs). Per
+   * university: billed = SUM(invoice.payable_amount), paid = SUM(payment.paid_amount),
+   * outstanding = billed - paid. Sorted by outstanding desc. Mirrors the old CRM's
+   * get_users_by_university grouping, on fee amounts instead of head-counts.
+   */
+  async outstandingByUniversity() {
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        university_id: number | null;
+        university_title: string | null;
+        billed: unknown;
+        paid: unknown;
+        invoice_count: unknown;
+      }>
+    >`
+      SELECT u.id AS university_id,
+             COALESCE(u.title, 'Others (No University)') AS university_title,
+             SUM(i.payable_amount) AS billed,
+             SUM(COALESCE(pp.paid, 0)) AS paid,
+             COUNT(DISTINCT i.id) AS invoice_count
+      FROM invoice i
+      LEFT JOIN course c ON c.id = i.course_id AND c.deleted_at IS NULL
+      LEFT JOIN university u ON u.id = c.university_id AND u.deleted_at IS NULL
+      LEFT JOIN (
+        SELECT invoice_id, SUM(paid_amount) AS paid
+        FROM payment WHERE deleted_at IS NULL GROUP BY invoice_id
+      ) pp ON pp.invoice_id = i.id
+      WHERE i.deleted_at IS NULL
+      GROUP BY u.id, university_title
+    `;
+    const items = rows
+      .map((r) => {
+        const billed = this.toMoney(r.billed);
+        const paid = this.toMoney(r.paid);
+        return {
+          university_id: r.university_id,
+          university_title: r.university_title ?? 'Others (No University)',
+          billed,
+          paid,
+          outstanding: Math.max(0, billed - paid),
+          invoice_count: this.toMoney(r.invoice_count),
+        };
+      })
+      .filter((r) => r.billed > 0)
+      .sort((a, b) => b.outstanding - a.outstanding);
+
+    return {
+      items,
+      total_outstanding: items.reduce((s, r) => s + r.outstanding, 0),
+    };
+  }
 }
