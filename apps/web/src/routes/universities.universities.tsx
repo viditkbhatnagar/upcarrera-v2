@@ -1,8 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from "@/lib/api";
-import { toast } from "sonner";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Building2,
   Download,
@@ -17,7 +16,8 @@ import {
   Phone,
   RefreshCcw,
   Edit3,
-  Trash2,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,33 +61,30 @@ export const Route = createFileRoute("/universities/universities")({
   component: UniversitiesPage,
 });
 
-type UniType = "Private" | "Deemed" | "State" | "Central" | "Foreign";
-
 type UniRow = {
-  id: number;
   code: string;
   name: string;
-  type: UniType;
+  type: "Type 1 – Student Pays University" | "Type 2 – Student Pays upCarrera";
+  category: string;
   location: string;
+  country: string;
+  state: string;
+  city: string;
+  address: string;
+  website: string;
+  email: string;
+  phone: string;
   courses: number;
   intakes: number;
   status: "Active" | "Inactive";
   initials: string;
   color: string;
-  // Raw fields carried through for the edit form prefill.
-  raw: ApiUniversity;
-};
-
-const TYPE_STYLE: Record<UniRow["type"], string> = {
-  Private: "bg-sky-50 text-sky-700 ring-sky-200",
-  Deemed: "bg-violet-50 text-violet-700 ring-violet-200",
-  State: "bg-amber-50 text-amber-700 ring-amber-200",
-  Central: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-  Foreign: "bg-rose-50 text-rose-700 ring-rose-200",
 };
 
 // ---- Live API wiring (GET /api/universities) ----
-
+// Each list item is a raw `universities` row decorated server-side with
+// aggregate counts (tagged_courses_count / intakes_count). We map each into the
+// new design's `UniRow` shape, filling fields the API lacks with "—"/0.
 interface ApiUniversity {
   id: number;
   title: string | null;
@@ -96,9 +93,6 @@ interface ApiUniversity {
   website?: string | null;
   phone?: string | null;
   email?: string | null;
-  year_established?: string | null;
-  ranking?: string | null;
-  intakes?: string | null;
   address?: string | null;
   state?: string | null;
   status?: string | number | null;
@@ -122,80 +116,101 @@ const AVATAR_COLORS = [
   "bg-cyan-100 text-cyan-700",
 ];
 
-const VALID_TYPES: UniType[] = ["Private", "Deemed", "State", "Central", "Foreign"];
-
-// Shared list query key — invalidated after every write so the table refreshes.
-const UNIVERSITIES_QUERY_KEY = ["universities"] as const;
-
-/**
- * Legacy `status` column is CHAR(1): "1" = Active, "0" = Inactive.
- * The dialog Select uses human labels, so map them to the backend value.
- */
-function statusToApi(status: string): string {
-  return status === "Inactive" ? "0" : "1";
-}
-
-function statusFromApi(status: string | number | null | undefined): "Active" | "Inactive" {
-  return deriveStatus(status);
-}
+const KNOWN_CATEGORIES = [
+  "Private University",
+  "Deemed University",
+  "State University",
+  "Skill University",
+  "International University",
+] as const;
 
 function deriveInitials(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return "UN";
-  return words
-    .map((w) => w[0]?.toUpperCase() ?? "")
-    .join("")
-    .slice(0, 2) || "UN";
+  return (
+    words
+      .map((w) => w[0]?.toUpperCase() ?? "")
+      .join("")
+      .slice(0, 2) || "UN"
+  );
 }
 
-function deriveType(category: string | null | undefined): UniType {
-  if (!category) return "Private";
-  const match = VALID_TYPES.find((t) => category.toLowerCase().includes(t.toLowerCase()));
-  return match ?? "Private";
+/** Normalize the free-form legacy `category` text onto the new design's set. */
+function deriveCategory(category: string | null | undefined): string {
+  if (!category) return "Private University";
+  const lower = category.toLowerCase();
+  const match = KNOWN_CATEGORIES.find((c) =>
+    lower.includes(c.replace(" University", "").toLowerCase()),
+  );
+  return match ?? "Private University";
 }
 
-function deriveLocation(state: string | null | undefined, address: string | null | undefined): string {
+function deriveLocation(
+  state: string | null | undefined,
+  address: string | null | undefined,
+): string {
   return state?.trim() || address?.trim() || "—";
 }
 
-function deriveStatus(status: string | number | null | undefined): "Active" | "Inactive" {
+/** Legacy `status` is CHAR(1): "1"/Active, "0"/Inactive. */
+function deriveStatus(
+  status: string | number | null | undefined,
+): "Active" | "Inactive" {
   const normalized = String(status ?? "").toLowerCase().trim();
-  if (normalized === "0" || normalized === "inactive" || normalized === "false") return "Inactive";
+  if (normalized === "0" || normalized === "inactive" || normalized === "false")
+    return "Inactive";
   return "Active";
 }
 
 function mapApiUniversity(u: ApiUniversity): UniRow {
   const name = u.title?.trim() || `University #${u.id}`;
+  const state = u.state?.trim() ?? "";
   return {
-    id: u.id,
     code: `UNI-${String(u.id).padStart(3, "0")}`,
     name,
-    type: deriveType(u.category),
+    // The API has no "Type 1/Type 2" payer field — default to Type 1.
+    type: "Type 1 – Student Pays University",
+    category: deriveCategory(u.category),
     location: deriveLocation(u.state, u.address),
+    // Country/city are not separate columns in the legacy schema.
+    country: u.country_id?.trim() || "—",
+    state,
+    city: "",
+    address: u.address?.trim() ?? "",
+    website: u.website?.trim() ?? "",
+    email: u.email?.trim() ?? "",
+    phone: u.phone?.trim() ?? "",
     // Server-decorated aggregates from GET /api/universities.
     courses: u.tagged_courses_count ?? 0,
     intakes: u.intakes_count ?? 0,
     status: deriveStatus(u.status),
     initials: deriveInitials(name),
     color: AVATAR_COLORS[u.id % AVATAR_COLORS.length],
-    raw: u,
   };
 }
 
+const CATEGORY_STYLE: Record<string, string> = {
+  "Private University": "bg-sky-50 text-sky-700 ring-sky-200",
+  "Deemed University": "bg-violet-50 text-violet-700 ring-violet-200",
+  "State University": "bg-amber-50 text-amber-700 ring-amber-200",
+  "Skill University": "bg-emerald-50 text-emerald-700 ring-emerald-200",
+  "International University": "bg-rose-50 text-rose-700 ring-rose-200",
+};
+
 function UniversitiesPage() {
+  const [universities, setUniversities] = useState<UniRow[]>([]);
   const [query, setQuery] = useState("");
-  const [type, setType] = useState<string>("all");
+  const [category, setCategory] = useState<string>("all");
   const [status, setStatus] = useState<string>("all");
   const [page, setPage] = useState(1);
   const [addOpen, setAddOpen] = useState(false);
-  const [editTarget, setEditTarget] = useState<UniRow | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<UniRow | null>(null);
+  const [editing, setEditing] = useState<UniRow | null>(null);
   const pageSize = 10;
 
-  const qc = useQueryClient();
-
+  // Live list (GET /api/universities). Mirrors the wired ref: fetch a wide page
+  // and refine on the client. `total` drives the KPI card.
   const { data, isLoading, isError } = useQuery({
-    queryKey: [...UNIVERSITIES_QUERY_KEY, { page: 1, limit: 100 }],
+    queryKey: ["universities", { page: 1, limit: 100 }],
     queryFn: () =>
       apiGet<{ items: ApiUniversity[]; total: number; page: number; limit: number }>(
         "/universities",
@@ -203,25 +218,24 @@ function UniversitiesPage() {
       ),
   });
 
-  const deleteMut = useMutation({
-    mutationFn: (id: number) => apiDelete(`/universities/${id}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: UNIVERSITIES_QUERY_KEY });
-      toast.success("University deleted");
-      setDeleteTarget(null);
-    },
-    onError: (e) =>
-      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
-  });
+  // Seed local rows from the fetched set. Local edits (mock dialog) stay
+  // client-side; a fresh fetch re-seeds them.
+  useEffect(() => {
+    if (data?.items) {
+      setUniversities(data.items.map(mapApiUniversity));
+    }
+  }, [data]);
 
-  const universities = useMemo<UniRow[]>(
-    () => (data?.items ?? []).map(mapApiUniversity),
-    [data],
-  );
+  const resetFilters = () => {
+    setQuery("");
+    setCategory("all");
+    setStatus("all");
+    setPage(1);
+  };
 
   const filtered = useMemo(() => {
     return universities.filter((u) => {
-      if (type !== "all" && u.type !== type) return false;
+      if (category !== "all" && u.category !== category) return false;
       if (status !== "all" && u.status !== status) return false;
       if (query) {
         const q = query.toLowerCase();
@@ -234,7 +248,7 @@ function UniversitiesPage() {
       }
       return true;
     });
-  }, [universities, query, type, status]);
+  }, [query, category, status, universities]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const current = filtered.slice((page - 1) * pageSize, page * pageSize);
@@ -310,17 +324,17 @@ function UniversitiesPage() {
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Select value={type} onValueChange={(v) => { setType(v); setPage(1); }}>
-              <SelectTrigger className="w-[160px]">
-                <SelectValue placeholder="Type" />
+            <Select value={category} onValueChange={(v) => { setCategory(v); setPage(1); }}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Category" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Types</SelectItem>
-                <SelectItem value="Private">Private</SelectItem>
-                <SelectItem value="Deemed">Deemed</SelectItem>
-                <SelectItem value="State">State</SelectItem>
-                <SelectItem value="Central">Central</SelectItem>
-                <SelectItem value="Foreign">Foreign</SelectItem>
+                <SelectItem value="all">All Categories</SelectItem>
+                <SelectItem value="Private University">Private University</SelectItem>
+                <SelectItem value="Deemed University">Deemed University</SelectItem>
+                <SelectItem value="State University">State University</SelectItem>
+                <SelectItem value="Skill University">Skill University</SelectItem>
+                <SelectItem value="International University">International University</SelectItem>
               </SelectContent>
             </Select>
             <Select value={status} onValueChange={(v) => { setStatus(v); setPage(1); }}>
@@ -333,6 +347,10 @@ function UniversitiesPage() {
                 <SelectItem value="Inactive">Inactive</SelectItem>
               </SelectContent>
             </Select>
+            <Button variant="ghost" size="sm" onClick={resetFilters}>
+              <RefreshCcw className="mr-1 h-4 w-4" />
+              Clear
+            </Button>
           </div>
         </div>
 
@@ -340,12 +358,12 @@ function UniversitiesPage() {
           <Table>
             <TableHeader className="sticky top-0 z-10 bg-muted/40">
               <TableRow>
-                <TableHead className="px-4">University Code</TableHead>
+                <TableHead className="px-4 w-16">Sl No</TableHead>
+                <TableHead>University Code</TableHead>
                 <TableHead>University Name</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Location</TableHead>
                 <TableHead>Tagged Courses</TableHead>
-                <TableHead>Active Intakes</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right pr-4">Action</TableHead>
               </TableRow>
@@ -353,14 +371,20 @@ function UniversitiesPage() {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
-                    Loading universities…
+                  <TableCell colSpan={8} className="py-12 text-center">
+                    <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading universities…
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : isError ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-sm text-red-500">
-                    Failed to load universities. Please try again.
+                  <TableCell colSpan={8} className="py-12 text-center">
+                    <div className="flex flex-col items-center gap-2 text-sm text-red-500">
+                      <AlertTriangle className="h-5 w-5" />
+                      Failed to load universities. Please try again.
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : current.length === 0 ? (
@@ -370,8 +394,9 @@ function UniversitiesPage() {
                   </TableCell>
                 </TableRow>
               ) : (
-                current.map((u) => (
+                current.map((u, i) => (
                   <TableRow key={u.code} className="hover:bg-muted/40">
+                    <TableCell className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</TableCell>
                     <TableCell className="px-4 py-3 font-mono text-xs font-medium text-muted-foreground">
                       {u.code}
                     </TableCell>
@@ -391,8 +416,8 @@ function UniversitiesPage() {
                       </div>
                     </TableCell>
                     <TableCell className="py-3">
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${TYPE_STYLE[u.type]}`}>
-                        {u.type}
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${CATEGORY_STYLE[u.category] || "bg-zinc-50 text-zinc-700 ring-zinc-200"}`}>
+                        {u.category}
                       </span>
                     </TableCell>
                     <TableCell className="py-3">
@@ -405,11 +430,6 @@ function UniversitiesPage() {
                       <button className="text-sm font-medium text-primary hover:underline">
                         {u.courses} Courses
                       </button>
-                    </TableCell>
-                    <TableCell className="py-3">
-                      <span className="text-sm text-foreground">
-                        {u.intakes} Active {u.intakes === 1 ? "Intake" : "Intakes"}
-                      </span>
                     </TableCell>
                     <TableCell className="py-3">
                       {u.status === "Active" ? (
@@ -436,18 +456,9 @@ function UniversitiesPage() {
                           size="icon"
                           className="h-8 w-8"
                           title="Edit"
-                          onClick={() => setEditTarget(u)}
+                          onClick={() => setEditing(u)}
                         >
                           <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-red-500 hover:bg-red-50 hover:text-red-600"
-                          title="Delete"
-                          onClick={() => setDeleteTarget(u)}
-                        >
-                          <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
                     </TableCell>
@@ -499,57 +510,311 @@ function UniversitiesPage() {
         </div>
       </div>
 
-      <AddUniversityDialog
-        open={addOpen}
-        editRow={null}
-        onClose={() => setAddOpen(false)}
-      />
-
-      <AddUniversityDialog
-        open={editTarget !== null}
-        editRow={editTarget}
-        onClose={() => setEditTarget(null)}
-      />
-
-      {/* Delete confirmation */}
-      <Dialog
-        open={deleteTarget !== null}
-        onOpenChange={(v) => {
-          if (!v && !deleteMut.isPending) setDeleteTarget(null);
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Delete University</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete{" "}
-              <span className="font-semibold text-foreground">
-                {deleteTarget?.name}
-              </span>
-              ? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="mt-4 flex items-center justify-end gap-2">
-            <Button
-              variant="outline"
-              disabled={deleteMut.isPending}
-              onClick={() => setDeleteTarget(null)}
-            >
-              Cancel
-            </Button>
-            <Button
-              className="bg-red-600 text-white hover:bg-red-700"
-              disabled={deleteMut.isPending}
-              onClick={() => {
-                if (deleteTarget) deleteMut.mutate(deleteTarget.id);
-              }}
-            >
-              {deleteMut.isPending ? "Deleting…" : "Delete"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <AddUniversityDialog open={addOpen} onClose={() => setAddOpen(false)} />
+      {editing && (
+        <EditUniversityDialog
+          university={editing}
+          onClose={() => setEditing(null)}
+          onSave={(updated, originalCode) => {
+            setUniversities((prev) =>
+              prev.map((u) => (u.code === originalCode ? updated : u)),
+            );
+            setEditing(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/* ---------------- Edit University Dialog ---------------- */
+
+function EditUniversityDialog({
+  university,
+  onClose,
+  onSave,
+}: {
+  university: UniRow;
+  onClose: () => void;
+  onSave: (updated: UniRow, originalCode: string) => void;
+}) {
+  const [form, setForm] = useState({
+    code: university.code,
+    name: university.name,
+    type: university.type,
+    category: university.category,
+    website: university.website,
+    email: university.email,
+    phone: university.phone,
+    country: university.country,
+    state: university.state,
+    city: university.city,
+    address: university.address,
+    status: university.status,
+  });
+
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const update = (field: keyof typeof form, value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+    if (errors[field]) {
+      setErrors((prev) => {
+        const next = { ...prev };
+        delete next[field];
+        return next;
+      });
+    }
+  };
+
+  const validate = () => {
+    const next: Record<string, string> = {};
+    if (!form.name.trim()) next.name = "University name is required";
+    if (!form.code.trim()) next.code = "University code is required";
+    if (!form.type) next.type = "University type is required";
+    if (!form.category) next.category = "University category is required";
+    if (!form.country.trim()) next.country = "Country is required";
+    if (!form.state.trim()) next.state = "State is required";
+    if (!form.city.trim()) next.city = "City is required";
+    if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
+      next.email = "Invalid email address";
+    if (form.website && !/^(https?:\/\/)?[^\s$.?#].[^\s]*$/i.test(form.website))
+      next.website = "Invalid website URL";
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
+  const save = () => {
+    if (!validate()) return;
+
+    const initials = form.name
+      .split(/\s+/)
+      .filter((word) => word && !/^(University|College|Institute|of|the|and|&)$/i.test(word))
+      .map((word) => word[0]?.toUpperCase())
+      .slice(0, 2)
+      .join("") || university.initials;
+
+    const location = `${form.city.trim()}, ${form.state.trim()}`;
+
+    onSave(
+      {
+        ...university,
+        code: form.code.trim() || university.code,
+        name: form.name.trim() || university.name,
+        type: form.type as UniRow["type"],
+        category: form.category,
+        website: form.website.trim(),
+        email: form.email.trim(),
+        phone: form.phone.trim(),
+        country: form.country.trim(),
+        state: form.state.trim(),
+        city: form.city.trim(),
+        address: form.address.trim(),
+        location,
+        status: form.status as UniRow["status"],
+        initials,
+      },
+      university.code,
+    );
+  };
+
+  const SectionTitle = ({ children }: { children: React.ReactNode }) => (
+    <div className="col-span-full">
+      <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        {children}
+      </h4>
+      <div className="mt-1 h-px bg-border" />
+    </div>
+  );
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-3xl p-0 overflow-hidden max-h-[85vh]">
+        <DialogHeader className="px-6 pt-6 pb-0">
+          <DialogTitle className="text-xl font-semibold">Edit University</DialogTitle>
+          <DialogDescription>
+            Update the university profile details.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
+          {/* Basic Info */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-4">
+            <SectionTitle>Basic Information</SectionTitle>
+
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label htmlFor="edit-uni-name">University Name <span className="text-accent">*</span></Label>
+              <Input
+                id="edit-uni-name"
+                value={form.name}
+                onChange={(e) => update("name", e.target.value)}
+                className={cn(errors.name && "border-red-400 focus-visible:ring-red-300")}
+              />
+              {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-uni-code">University Code <span className="text-accent">*</span></Label>
+              <Input
+                id="edit-uni-code"
+                className={cn("font-mono", errors.code && "border-red-400 focus-visible:ring-red-300")}
+                value={form.code}
+                onChange={(e) => update("code", e.target.value)}
+              />
+              {errors.code && <p className="text-xs text-red-500">{errors.code}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>University Type <span className="text-accent">*</span></Label>
+              <Select value={form.type} onValueChange={(v) => update("type", v)}>
+                <SelectTrigger className={cn(errors.type && "border-red-400 focus:ring-red-300")}>
+                  <SelectValue placeholder="Select type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Type 1 – Student Pays University">Type 1 – Student Pays University</SelectItem>
+                  <SelectItem value="Type 2 – Student Pays upCarrera">Type 2 – Student Pays upCarrera</SelectItem>
+                </SelectContent>
+              </Select>
+              {errors.type && <p className="text-xs text-red-500">{errors.type}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>University Category <span className="text-accent">*</span></Label>
+              <Select value={form.category} onValueChange={(v) => update("category", v)}>
+                <SelectTrigger className={cn(errors.category && "border-red-400 focus:ring-red-300")}>
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {CATEGORIES.map((c) => (
+                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {errors.category && <p className="text-xs text-red-500">{errors.category}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Status</Label>
+              <Select value={form.status} onValueChange={(v) => update("status", v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Active">Active</SelectItem>
+                  <SelectItem value="Inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Contact Info */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-4">
+            <SectionTitle>Contact Information</SectionTitle>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-uni-website">Website</Label>
+              <div className="relative">
+                <Globe className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="edit-uni-website"
+                  placeholder="https://university.edu"
+                  value={form.website}
+                  onChange={(e) => update("website", e.target.value)}
+                  className={cn("pl-9", errors.website && "border-red-400 focus-visible:ring-red-300")}
+                />
+              </div>
+              {errors.website && <p className="text-xs text-red-500">{errors.website}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-uni-email">Official Email</Label>
+              <div className="relative">
+                <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="edit-uni-email"
+                  type="email"
+                  placeholder="contact@university.edu"
+                  value={form.email}
+                  onChange={(e) => update("email", e.target.value)}
+                  className={cn("pl-9", errors.email && "border-red-400 focus-visible:ring-red-300")}
+                />
+              </div>
+              {errors.email && <p className="text-xs text-red-500">{errors.email}</p>}
+            </div>
+
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label htmlFor="edit-uni-phone">Official Phone</Label>
+              <div className="relative">
+                <Phone className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="edit-uni-phone"
+                  placeholder="+91 12345 67890"
+                  value={form.phone}
+                  onChange={(e) => update("phone", e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Location */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-4">
+            <SectionTitle>Location</SectionTitle>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-uni-country">Country <span className="text-accent">*</span></Label>
+              <Input
+                id="edit-uni-country"
+                placeholder="India"
+                value={form.country}
+                onChange={(e) => update("country", e.target.value)}
+                className={cn(errors.country && "border-red-400 focus-visible:ring-red-300")}
+              />
+              {errors.country && <p className="text-xs text-red-500">{errors.country}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-uni-state">State <span className="text-accent">*</span></Label>
+              <Input
+                id="edit-uni-state"
+                placeholder="Uttar Pradesh"
+                value={form.state}
+                onChange={(e) => update("state", e.target.value)}
+                className={cn(errors.state && "border-red-400 focus-visible:ring-red-300")}
+              />
+              {errors.state && <p className="text-xs text-red-500">{errors.state}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-uni-city">City <span className="text-accent">*</span></Label>
+              <Input
+                id="edit-uni-city"
+                placeholder="Noida"
+                value={form.city}
+                onChange={(e) => update("city", e.target.value)}
+                className={cn(errors.city && "border-red-400 focus-visible:ring-red-300")}
+              />
+              {errors.city && <p className="text-xs text-red-500">{errors.city}</p>}
+            </div>
+
+            <div className="space-y-1.5 sm:col-span-3">
+              <Label htmlFor="edit-uni-address">Full Address</Label>
+              <Textarea
+                id="edit-uni-address"
+                placeholder="Enter complete postal address"
+                rows={3}
+                value={form.address}
+                onChange={(e) => update("address", e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-6 py-4">
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button className="bg-accent text-accent-foreground hover:bg-accent-hover" onClick={save}>Save Changes</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -557,47 +822,7 @@ function UniversitiesPage() {
 
 interface AddUniversityDialogProps {
   open: boolean;
-  /** When set, the dialog edits this row (PATCH); when null, it creates (POST). */
-  editRow: UniRow | null;
   onClose: () => void;
-}
-
-/** Map the dialog form to the backend CreateUniversityDto (snake_case columns). */
-type UniversityApiBody = {
-  title: string;
-  country_id: string;
-  website: string;
-  email: string;
-  phone: string;
-  category: string;
-  state: string;
-  address: string;
-  status: string;
-};
-
-function buildUniversityBody(form: {
-  name: string;
-  website: string;
-  email: string;
-  phone: string;
-  category: string;
-  country: string;
-  state: string;
-  address: string;
-  status: string;
-}): UniversityApiBody {
-  return {
-    title: form.name.trim(),
-    // Legacy `country_id` is a free-form Text column; send the typed country name.
-    country_id: form.country.trim(),
-    website: form.website.trim(),
-    email: form.email.trim(),
-    phone: form.phone.trim(),
-    category: form.category,
-    state: form.state.trim(),
-    address: form.address.trim(),
-    status: statusToApi(form.status),
-  };
 }
 
 const CATEGORIES = [
@@ -608,10 +833,7 @@ const CATEGORIES = [
   "International University",
 ];
 
-function AddUniversityDialog({ open, editRow, onClose }: AddUniversityDialogProps) {
-  const isEdit = editRow !== null;
-  const qc = useQueryClient();
-
+function AddUniversityDialog({ open, onClose }: AddUniversityDialogProps) {
   const [step, setStep] = useState<"form" | "success">("form");
   const [codeLocked, setCodeLocked] = useState(true);
   const [createdUni, setCreatedUni] = useState<{
@@ -622,25 +844,28 @@ function AddUniversityDialog({ open, editRow, onClose }: AddUniversityDialogProp
     status: string;
   } | null>(null);
 
-  const buildInitialForm = () => {
-    if (editRow) {
-      const r = editRow.raw;
-      return {
-        name: r.title?.trim() ?? editRow.name,
-        code: editRow.code,
-        type: "",
-        category: r.category ?? "",
-        website: r.website ?? "",
-        email: r.email ?? "",
-        phone: r.phone ?? "",
-        country: r.country_id ?? "",
-        state: r.state ?? "",
-        city: "",
-        address: r.address ?? "",
-        status: statusFromApi(r.status),
-      };
-    }
-    return {
+  const [form, setForm] = useState({
+    name: "",
+    code: "",
+    type: "",
+    category: "",
+    website: "",
+    email: "",
+    phone: "",
+    country: "",
+    state: "",
+    city: "",
+    address: "",
+    status: "Active",
+  });
+
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const reset = () => {
+    setStep("form");
+    setCodeLocked(true);
+    setCreatedUni(null);
+    setForm({
       name: "",
       code: "",
       type: "",
@@ -653,58 +878,7 @@ function AddUniversityDialog({ open, editRow, onClose }: AddUniversityDialogProp
       city: "",
       address: "",
       status: "Active",
-    };
-  };
-
-  const [form, setForm] = useState(buildInitialForm);
-  // Re-seed the form whenever a different row is opened for editing.
-  const [seededId, setSeededId] = useState<number | null>(editRow?.id ?? null);
-  if (open && (editRow?.id ?? null) !== seededId) {
-    setSeededId(editRow?.id ?? null);
-    setForm(buildInitialForm());
-    setStep("form");
-    setCodeLocked(!editRow);
-  }
-
-  const [errors, setErrors] = useState<Record<string, string>>({});
-
-  const createMut = useMutation({
-    mutationFn: (body: UniversityApiBody) => apiPost("/universities", body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: UNIVERSITIES_QUERY_KEY });
-      toast.success("University created");
-      setCreatedUni({
-        name: form.name,
-        code: form.code,
-        type: form.type,
-        category: form.category,
-        status: form.status,
-      });
-      setStep("success");
-    },
-    onError: (e) =>
-      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
-  });
-
-  const updateMut = useMutation({
-    mutationFn: (body: UniversityApiBody) =>
-      apiPatch(`/universities/${editRow!.id}`, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: UNIVERSITIES_QUERY_KEY });
-      toast.success("University updated");
-      handleClose();
-    },
-    onError: (e) =>
-      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
-  });
-
-  const isPending = createMut.isPending || updateMut.isPending;
-
-  const reset = () => {
-    setStep("form");
-    setCodeLocked(!editRow);
-    setCreatedUni(null);
-    setForm(buildInitialForm());
+    });
     setErrors({});
   };
 
@@ -761,12 +935,14 @@ function AddUniversityDialog({ open, editRow, onClose }: AddUniversityDialogProp
 
   const handleSave = () => {
     if (!validate()) return;
-    const body = buildUniversityBody(form);
-    if (isEdit) {
-      updateMut.mutate(body);
-    } else {
-      createMut.mutate(body);
-    }
+    setCreatedUni({
+      name: form.name,
+      code: form.code,
+      type: form.type,
+      category: form.category,
+      status: form.status,
+    });
+    setStep("success");
   };
 
   const SectionTitle = ({ children }: { children: React.ReactNode }) => (
@@ -784,14 +960,9 @@ function AddUniversityDialog({ open, editRow, onClose }: AddUniversityDialogProp
         {step === "form" ? (
           <>
             <DialogHeader className="px-6 pt-6 pb-0">
-              <DialogTitle className="text-xl font-semibold">
-                {isEdit ? "Edit University" : "Add New University"}
-              </DialogTitle>
+              <DialogTitle className="text-xl font-semibold">Add New University</DialogTitle>
               <DialogDescription>
-                {isEdit
-                  ? "Update this university profile."
-                  : "Create a new university profile."}{" "}
-                Fields marked with <span className="text-accent">*</span> are required.
+                Create a new university profile. Fields marked with <span className="text-accent">*</span> are required.
               </DialogDescription>
             </DialogHeader>
 
@@ -1014,22 +1185,16 @@ function AddUniversityDialog({ open, editRow, onClose }: AddUniversityDialogProp
             <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-6 py-4">
               <button
                 onClick={handleClose}
-                disabled={isPending}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-muted"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSave}
-                disabled={isPending}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow transition hover:bg-accent-hover"
               >
                 <CheckCircle2 className="h-4 w-4" />
-                {isPending
-                  ? "Saving…"
-                  : isEdit
-                    ? "Update University"
-                    : "Save University"}
+                Save University
               </button>
             </div>
           </>
