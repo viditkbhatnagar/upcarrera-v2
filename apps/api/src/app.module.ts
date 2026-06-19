@@ -27,11 +27,14 @@ import { ClientsModule } from './clients/clients.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { ResourcesModule } from './resources/resources.module';
 import { CallsModule } from './calls/calls.module';
+import { ScheduleModule } from '@nestjs/schedule';
+import { MaintenanceModule } from './maintenance/maintenance.module';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     PrismaModule,
     HealthModule,
     AuthModule,
@@ -56,6 +59,7 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
     DashboardModule,
     ResourcesModule,
     CallsModule,
+    MaintenanceModule,
   ],
   providers: [
     // Global JWT guard — every route is protected unless marked @Public().
