@@ -24,6 +24,7 @@ import { Route as AdministrationRouteImport } from './routes/administration'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as UniversitiesIndexRouteImport } from './routes/universities.index'
 import { Route as StudentsIndexRouteImport } from './routes/students.index'
+import { Route as FeesIndexRouteImport } from './routes/fees.index'
 import { Route as EnrollmentIndexRouteImport } from './routes/enrollment.index'
 import { Route as CounsellorsIndexRouteImport } from './routes/counsellors.index'
 import { Route as AdministrationIndexRouteImport } from './routes/administration.index'
@@ -33,6 +34,10 @@ import { Route as UniversitiesFeeStructureRouteImport } from './routes/universit
 import { Route as UniversitiesCoursesRouteImport } from './routes/universities.courses'
 import { Route as StudentsStudentsRouteImport } from './routes/students.students'
 import { Route as StudentsApplicationsRouteImport } from './routes/students.applications'
+import { Route as FeesSummaryRouteImport } from './routes/fees.summary'
+import { Route as FeesPaymentVerificationRouteImport } from './routes/fees.payment-verification'
+import { Route as FeesDashboardRouteImport } from './routes/fees.dashboard'
+import { Route as FeesCollectionRouteImport } from './routes/fees.collection'
 import { Route as EnrollmentUniversityWiseRouteImport } from './routes/enrollment.university-wise'
 import { Route as EnrollmentStudentsRouteImport } from './routes/enrollment.students'
 import { Route as EnrollmentReRegistrationRouteImport } from './routes/enrollment.re-registration'
@@ -49,6 +54,7 @@ import { Route as StudentsApplicationsIndexRouteImport } from './routes/students
 import { Route as UniversitiesUniversitiesCodeRouteImport } from './routes/universities.universities_.$code'
 import { Route as StudentsStudentsIdRouteImport } from './routes/students.students.$id'
 import { Route as StudentsApplicationsNewRouteImport } from './routes/students.applications.new'
+import { Route as StudentsApplicationsAppIdRouteImport } from './routes/students.applications.$appId'
 import { Route as CounsellorsTeamProfileTeamIdRouteImport } from './routes/counsellors.team-profile.$teamId'
 import { Route as CounsellorsProfileEmpIdRouteImport } from './routes/counsellors.profile.$empId'
 
@@ -127,6 +133,11 @@ const StudentsIndexRoute = StudentsIndexRouteImport.update({
   path: '/',
   getParentRoute: () => StudentsRoute,
 } as any)
+const FeesIndexRoute = FeesIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => FeesRoute,
+} as any)
 const EnrollmentIndexRoute = EnrollmentIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -173,6 +184,26 @@ const StudentsApplicationsRoute = StudentsApplicationsRouteImport.update({
   id: '/applications',
   path: '/applications',
   getParentRoute: () => StudentsRoute,
+} as any)
+const FeesSummaryRoute = FeesSummaryRouteImport.update({
+  id: '/summary',
+  path: '/summary',
+  getParentRoute: () => FeesRoute,
+} as any)
+const FeesPaymentVerificationRoute = FeesPaymentVerificationRouteImport.update({
+  id: '/payment-verification',
+  path: '/payment-verification',
+  getParentRoute: () => FeesRoute,
+} as any)
+const FeesDashboardRoute = FeesDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => FeesRoute,
+} as any)
+const FeesCollectionRoute = FeesCollectionRouteImport.update({
+  id: '/collection',
+  path: '/collection',
+  getParentRoute: () => FeesRoute,
 } as any)
 const EnrollmentUniversityWiseRoute =
   EnrollmentUniversityWiseRouteImport.update({
@@ -258,6 +289,12 @@ const StudentsApplicationsNewRoute = StudentsApplicationsNewRouteImport.update({
   path: '/new',
   getParentRoute: () => StudentsApplicationsRoute,
 } as any)
+const StudentsApplicationsAppIdRoute =
+  StudentsApplicationsAppIdRouteImport.update({
+    id: '/$appId',
+    path: '/$appId',
+    getParentRoute: () => StudentsApplicationsRoute,
+  } as any)
 const CounsellorsTeamProfileTeamIdRoute =
   CounsellorsTeamProfileTeamIdRouteImport.update({
     id: '/team-profile/$teamId',
@@ -278,7 +315,7 @@ export interface FileRoutesByFullPath {
   '/counsellors': typeof CounsellorsRouteWithChildren
   '/dashboard': typeof DashboardRoute
   '/enrollment': typeof EnrollmentRouteWithChildren
-  '/fees': typeof FeesRoute
+  '/fees': typeof FeesRouteWithChildren
   '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
   '/students': typeof StudentsRouteWithChildren
@@ -295,6 +332,10 @@ export interface FileRoutesByFullPath {
   '/enrollment/re-registration': typeof EnrollmentReRegistrationRoute
   '/enrollment/students': typeof EnrollmentStudentsRoute
   '/enrollment/university-wise': typeof EnrollmentUniversityWiseRoute
+  '/fees/collection': typeof FeesCollectionRoute
+  '/fees/dashboard': typeof FeesDashboardRoute
+  '/fees/payment-verification': typeof FeesPaymentVerificationRoute
+  '/fees/summary': typeof FeesSummaryRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
   '/universities/courses': typeof UniversitiesCoursesRoute
@@ -304,10 +345,12 @@ export interface FileRoutesByFullPath {
   '/administration/': typeof AdministrationIndexRoute
   '/counsellors/': typeof CounsellorsIndexRoute
   '/enrollment/': typeof EnrollmentIndexRoute
+  '/fees/': typeof FeesIndexRoute
   '/students/': typeof StudentsIndexRoute
   '/universities/': typeof UniversitiesIndexRoute
   '/counsellors/profile/$empId': typeof CounsellorsProfileEmpIdRoute
   '/counsellors/team-profile/$teamId': typeof CounsellorsTeamProfileTeamIdRoute
+  '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
   '/universities/universities/$code': typeof UniversitiesUniversitiesCodeRoute
@@ -319,7 +362,6 @@ export interface FileRoutesByTo {
   '/calls': typeof CallsRoute
   '/commissions': typeof CommissionsRoute
   '/dashboard': typeof DashboardRoute
-  '/fees': typeof FeesRoute
   '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
   '/support': typeof SupportRoute
@@ -334,6 +376,10 @@ export interface FileRoutesByTo {
   '/enrollment/re-registration': typeof EnrollmentReRegistrationRoute
   '/enrollment/students': typeof EnrollmentStudentsRoute
   '/enrollment/university-wise': typeof EnrollmentUniversityWiseRoute
+  '/fees/collection': typeof FeesCollectionRoute
+  '/fees/dashboard': typeof FeesDashboardRoute
+  '/fees/payment-verification': typeof FeesPaymentVerificationRoute
+  '/fees/summary': typeof FeesSummaryRoute
   '/universities/courses': typeof UniversitiesCoursesRoute
   '/universities/fee-structure': typeof UniversitiesFeeStructureRoute
   '/universities/intakes': typeof UniversitiesIntakesRoute
@@ -341,10 +387,12 @@ export interface FileRoutesByTo {
   '/administration': typeof AdministrationIndexRoute
   '/counsellors': typeof CounsellorsIndexRoute
   '/enrollment': typeof EnrollmentIndexRoute
+  '/fees': typeof FeesIndexRoute
   '/students': typeof StudentsIndexRoute
   '/universities': typeof UniversitiesIndexRoute
   '/counsellors/profile/$empId': typeof CounsellorsProfileEmpIdRoute
   '/counsellors/team-profile/$teamId': typeof CounsellorsTeamProfileTeamIdRoute
+  '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
   '/universities/universities/$code': typeof UniversitiesUniversitiesCodeRoute
@@ -360,7 +408,7 @@ export interface FileRoutesById {
   '/counsellors': typeof CounsellorsRouteWithChildren
   '/dashboard': typeof DashboardRoute
   '/enrollment': typeof EnrollmentRouteWithChildren
-  '/fees': typeof FeesRoute
+  '/fees': typeof FeesRouteWithChildren
   '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
   '/students': typeof StudentsRouteWithChildren
@@ -377,6 +425,10 @@ export interface FileRoutesById {
   '/enrollment/re-registration': typeof EnrollmentReRegistrationRoute
   '/enrollment/students': typeof EnrollmentStudentsRoute
   '/enrollment/university-wise': typeof EnrollmentUniversityWiseRoute
+  '/fees/collection': typeof FeesCollectionRoute
+  '/fees/dashboard': typeof FeesDashboardRoute
+  '/fees/payment-verification': typeof FeesPaymentVerificationRoute
+  '/fees/summary': typeof FeesSummaryRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
   '/universities/courses': typeof UniversitiesCoursesRoute
@@ -386,10 +438,12 @@ export interface FileRoutesById {
   '/administration/': typeof AdministrationIndexRoute
   '/counsellors/': typeof CounsellorsIndexRoute
   '/enrollment/': typeof EnrollmentIndexRoute
+  '/fees/': typeof FeesIndexRoute
   '/students/': typeof StudentsIndexRoute
   '/universities/': typeof UniversitiesIndexRoute
   '/counsellors/profile/$empId': typeof CounsellorsProfileEmpIdRoute
   '/counsellors/team-profile/$teamId': typeof CounsellorsTeamProfileTeamIdRoute
+  '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
   '/universities/universities_/$code': typeof UniversitiesUniversitiesCodeRoute
@@ -423,6 +477,10 @@ export interface FileRouteTypes {
     | '/enrollment/re-registration'
     | '/enrollment/students'
     | '/enrollment/university-wise'
+    | '/fees/collection'
+    | '/fees/dashboard'
+    | '/fees/payment-verification'
+    | '/fees/summary'
     | '/students/applications'
     | '/students/students'
     | '/universities/courses'
@@ -432,10 +490,12 @@ export interface FileRouteTypes {
     | '/administration/'
     | '/counsellors/'
     | '/enrollment/'
+    | '/fees/'
     | '/students/'
     | '/universities/'
     | '/counsellors/profile/$empId'
     | '/counsellors/team-profile/$teamId'
+    | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
     | '/universities/universities/$code'
@@ -447,7 +507,6 @@ export interface FileRouteTypes {
     | '/calls'
     | '/commissions'
     | '/dashboard'
-    | '/fees'
     | '/login'
     | '/reports'
     | '/support'
@@ -462,6 +521,10 @@ export interface FileRouteTypes {
     | '/enrollment/re-registration'
     | '/enrollment/students'
     | '/enrollment/university-wise'
+    | '/fees/collection'
+    | '/fees/dashboard'
+    | '/fees/payment-verification'
+    | '/fees/summary'
     | '/universities/courses'
     | '/universities/fee-structure'
     | '/universities/intakes'
@@ -469,10 +532,12 @@ export interface FileRouteTypes {
     | '/administration'
     | '/counsellors'
     | '/enrollment'
+    | '/fees'
     | '/students'
     | '/universities'
     | '/counsellors/profile/$empId'
     | '/counsellors/team-profile/$teamId'
+    | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
     | '/universities/universities/$code'
@@ -504,6 +569,10 @@ export interface FileRouteTypes {
     | '/enrollment/re-registration'
     | '/enrollment/students'
     | '/enrollment/university-wise'
+    | '/fees/collection'
+    | '/fees/dashboard'
+    | '/fees/payment-verification'
+    | '/fees/summary'
     | '/students/applications'
     | '/students/students'
     | '/universities/courses'
@@ -513,10 +582,12 @@ export interface FileRouteTypes {
     | '/administration/'
     | '/counsellors/'
     | '/enrollment/'
+    | '/fees/'
     | '/students/'
     | '/universities/'
     | '/counsellors/profile/$empId'
     | '/counsellors/team-profile/$teamId'
+    | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
     | '/universities/universities_/$code'
@@ -532,7 +603,7 @@ export interface RootRouteChildren {
   CounsellorsRoute: typeof CounsellorsRouteWithChildren
   DashboardRoute: typeof DashboardRoute
   EnrollmentRoute: typeof EnrollmentRouteWithChildren
-  FeesRoute: typeof FeesRoute
+  FeesRoute: typeof FeesRouteWithChildren
   LoginRoute: typeof LoginRoute
   ReportsRoute: typeof ReportsRoute
   StudentsRoute: typeof StudentsRouteWithChildren
@@ -647,6 +718,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StudentsIndexRouteImport
       parentRoute: typeof StudentsRoute
     }
+    '/fees/': {
+      id: '/fees/'
+      path: '/'
+      fullPath: '/fees/'
+      preLoaderRoute: typeof FeesIndexRouteImport
+      parentRoute: typeof FeesRoute
+    }
     '/enrollment/': {
       id: '/enrollment/'
       path: '/'
@@ -709,6 +787,34 @@ declare module '@tanstack/react-router' {
       fullPath: '/students/applications'
       preLoaderRoute: typeof StudentsApplicationsRouteImport
       parentRoute: typeof StudentsRoute
+    }
+    '/fees/summary': {
+      id: '/fees/summary'
+      path: '/summary'
+      fullPath: '/fees/summary'
+      preLoaderRoute: typeof FeesSummaryRouteImport
+      parentRoute: typeof FeesRoute
+    }
+    '/fees/payment-verification': {
+      id: '/fees/payment-verification'
+      path: '/payment-verification'
+      fullPath: '/fees/payment-verification'
+      preLoaderRoute: typeof FeesPaymentVerificationRouteImport
+      parentRoute: typeof FeesRoute
+    }
+    '/fees/dashboard': {
+      id: '/fees/dashboard'
+      path: '/dashboard'
+      fullPath: '/fees/dashboard'
+      preLoaderRoute: typeof FeesDashboardRouteImport
+      parentRoute: typeof FeesRoute
+    }
+    '/fees/collection': {
+      id: '/fees/collection'
+      path: '/collection'
+      fullPath: '/fees/collection'
+      preLoaderRoute: typeof FeesCollectionRouteImport
+      parentRoute: typeof FeesRoute
     }
     '/enrollment/university-wise': {
       id: '/enrollment/university-wise'
@@ -822,6 +928,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StudentsApplicationsNewRouteImport
       parentRoute: typeof StudentsApplicationsRoute
     }
+    '/students/applications/$appId': {
+      id: '/students/applications/$appId'
+      path: '/$appId'
+      fullPath: '/students/applications/$appId'
+      preLoaderRoute: typeof StudentsApplicationsAppIdRouteImport
+      parentRoute: typeof StudentsApplicationsRoute
+    }
     '/counsellors/team-profile/$teamId': {
       id: '/counsellors/team-profile/$teamId'
       path: '/team-profile/$teamId'
@@ -901,12 +1014,32 @@ const EnrollmentRouteWithChildren = EnrollmentRoute._addFileChildren(
   EnrollmentRouteChildren,
 )
 
+interface FeesRouteChildren {
+  FeesCollectionRoute: typeof FeesCollectionRoute
+  FeesDashboardRoute: typeof FeesDashboardRoute
+  FeesPaymentVerificationRoute: typeof FeesPaymentVerificationRoute
+  FeesSummaryRoute: typeof FeesSummaryRoute
+  FeesIndexRoute: typeof FeesIndexRoute
+}
+
+const FeesRouteChildren: FeesRouteChildren = {
+  FeesCollectionRoute: FeesCollectionRoute,
+  FeesDashboardRoute: FeesDashboardRoute,
+  FeesPaymentVerificationRoute: FeesPaymentVerificationRoute,
+  FeesSummaryRoute: FeesSummaryRoute,
+  FeesIndexRoute: FeesIndexRoute,
+}
+
+const FeesRouteWithChildren = FeesRoute._addFileChildren(FeesRouteChildren)
+
 interface StudentsApplicationsRouteChildren {
+  StudentsApplicationsAppIdRoute: typeof StudentsApplicationsAppIdRoute
   StudentsApplicationsNewRoute: typeof StudentsApplicationsNewRoute
   StudentsApplicationsIndexRoute: typeof StudentsApplicationsIndexRoute
 }
 
 const StudentsApplicationsRouteChildren: StudentsApplicationsRouteChildren = {
+  StudentsApplicationsAppIdRoute: StudentsApplicationsAppIdRoute,
   StudentsApplicationsNewRoute: StudentsApplicationsNewRoute,
   StudentsApplicationsIndexRoute: StudentsApplicationsIndexRoute,
 }
@@ -973,7 +1106,7 @@ const rootRouteChildren: RootRouteChildren = {
   CounsellorsRoute: CounsellorsRouteWithChildren,
   DashboardRoute: DashboardRoute,
   EnrollmentRoute: EnrollmentRouteWithChildren,
-  FeesRoute: FeesRoute,
+  FeesRoute: FeesRouteWithChildren,
   LoginRoute: LoginRoute,
   ReportsRoute: ReportsRoute,
   StudentsRoute: StudentsRouteWithChildren,
