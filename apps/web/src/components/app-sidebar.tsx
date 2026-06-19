@@ -74,7 +74,17 @@ const items: NavItem[] = [
       { to: "/universities/fee-structure", label: "Fee Structure", icon: Wallet },
     ],
   },
-  { to: "/fees", label: "Fee Management", icon: Wallet },
+  {
+    to: "/fees",
+    label: "Fee Management",
+    icon: Wallet,
+    children: [
+      { to: "/fees/dashboard", label: "Fee Dashboard", icon: LayoutDashboard },
+      { to: "/fees/summary", label: "Fee Summary", icon: FileText },
+      { to: "/fees/collection", label: "Fee Collection", icon: Wallet },
+      { to: "/fees/payment-verification", label: "Payment Verification", icon: ShieldCheck },
+    ],
+  },
   { to: "/commissions", label: "Commission Management", icon: TrendingUp },
   { to: "/support", label: "Student Support", icon: Headphones, badge: "12" },
   { to: "/calls", label: "Call History", icon: PhoneCall },

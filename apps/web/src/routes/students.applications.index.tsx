@@ -589,7 +589,15 @@ function ApplicationsPage() {
                         onChange={() => toggleOne(a.id)}
                       />
                     </td>
-                    <td className="px-3 py-3 font-mono text-xs font-semibold text-primary">{a.id}</td>
+                    <td className="px-3 py-3">
+                      <Link
+                        to="/students/applications/$appId"
+                        params={{ appId: a.id }}
+                        className="font-mono text-xs font-semibold text-primary hover:underline"
+                      >
+                        {a.id}
+                      </Link>
+                    </td>
                     <td className="px-3 py-3 text-xs text-muted-foreground">{a.date}</td>
                     <td className="px-3 py-3">
                       <div className="font-semibold text-foreground">{a.name}</div>
