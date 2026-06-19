@@ -24,6 +24,7 @@ import { Route as AdministrationRouteImport } from './routes/administration'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as UniversitiesIndexRouteImport } from './routes/universities.index'
 import { Route as StudentsIndexRouteImport } from './routes/students.index'
+import { Route as EnrollmentIndexRouteImport } from './routes/enrollment.index'
 import { Route as CounsellorsIndexRouteImport } from './routes/counsellors.index'
 import { Route as AdministrationIndexRouteImport } from './routes/administration.index'
 import { Route as UniversitiesUniversitiesRouteImport } from './routes/universities.universities'
@@ -32,12 +33,17 @@ import { Route as UniversitiesFeeStructureRouteImport } from './routes/universit
 import { Route as UniversitiesCoursesRouteImport } from './routes/universities.courses'
 import { Route as StudentsStudentsRouteImport } from './routes/students.students'
 import { Route as StudentsApplicationsRouteImport } from './routes/students.applications'
+import { Route as EnrollmentUniversityWiseRouteImport } from './routes/enrollment.university-wise'
+import { Route as EnrollmentStudentsRouteImport } from './routes/enrollment.students'
+import { Route as EnrollmentReRegistrationRouteImport } from './routes/enrollment.re-registration'
+import { Route as EnrollmentIntakeWiseRouteImport } from './routes/enrollment.intake-wise'
 import { Route as CounsellorsTeamsRouteImport } from './routes/counsellors.teams'
 import { Route as CounsellorsTargetsRouteImport } from './routes/counsellors.targets'
 import { Route as CounsellorsGroupsRouteImport } from './routes/counsellors.groups'
 import { Route as CounsellorsCounsellorsRouteImport } from './routes/counsellors.counsellors'
 import { Route as AdministrationUsersRouteImport } from './routes/administration.users'
 import { Route as AdministrationRolesRouteImport } from './routes/administration.roles'
+import { Route as AdministrationAuditLogsRouteImport } from './routes/administration.audit-logs'
 import { Route as StudentsStudentsIndexRouteImport } from './routes/students.students.index'
 import { Route as StudentsApplicationsIndexRouteImport } from './routes/students.applications.index'
 import { Route as UniversitiesUniversitiesCodeRouteImport } from './routes/universities.universities_.$code'
@@ -121,6 +127,11 @@ const StudentsIndexRoute = StudentsIndexRouteImport.update({
   path: '/',
   getParentRoute: () => StudentsRoute,
 } as any)
+const EnrollmentIndexRoute = EnrollmentIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => EnrollmentRoute,
+} as any)
 const CounsellorsIndexRoute = CounsellorsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -163,6 +174,28 @@ const StudentsApplicationsRoute = StudentsApplicationsRouteImport.update({
   path: '/applications',
   getParentRoute: () => StudentsRoute,
 } as any)
+const EnrollmentUniversityWiseRoute =
+  EnrollmentUniversityWiseRouteImport.update({
+    id: '/university-wise',
+    path: '/university-wise',
+    getParentRoute: () => EnrollmentRoute,
+  } as any)
+const EnrollmentStudentsRoute = EnrollmentStudentsRouteImport.update({
+  id: '/students',
+  path: '/students',
+  getParentRoute: () => EnrollmentRoute,
+} as any)
+const EnrollmentReRegistrationRoute =
+  EnrollmentReRegistrationRouteImport.update({
+    id: '/re-registration',
+    path: '/re-registration',
+    getParentRoute: () => EnrollmentRoute,
+  } as any)
+const EnrollmentIntakeWiseRoute = EnrollmentIntakeWiseRouteImport.update({
+  id: '/intake-wise',
+  path: '/intake-wise',
+  getParentRoute: () => EnrollmentRoute,
+} as any)
 const CounsellorsTeamsRoute = CounsellorsTeamsRouteImport.update({
   id: '/teams',
   path: '/teams',
@@ -191,6 +224,11 @@ const AdministrationUsersRoute = AdministrationUsersRouteImport.update({
 const AdministrationRolesRoute = AdministrationRolesRouteImport.update({
   id: '/roles',
   path: '/roles',
+  getParentRoute: () => AdministrationRoute,
+} as any)
+const AdministrationAuditLogsRoute = AdministrationAuditLogsRouteImport.update({
+  id: '/audit-logs',
+  path: '/audit-logs',
   getParentRoute: () => AdministrationRoute,
 } as any)
 const StudentsStudentsIndexRoute = StudentsStudentsIndexRouteImport.update({
@@ -239,19 +277,24 @@ export interface FileRoutesByFullPath {
   '/commissions': typeof CommissionsRoute
   '/counsellors': typeof CounsellorsRouteWithChildren
   '/dashboard': typeof DashboardRoute
-  '/enrollment': typeof EnrollmentRoute
+  '/enrollment': typeof EnrollmentRouteWithChildren
   '/fees': typeof FeesRoute
   '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
   '/students': typeof StudentsRouteWithChildren
   '/support': typeof SupportRoute
   '/universities': typeof UniversitiesRouteWithChildren
+  '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/roles': typeof AdministrationRolesRoute
   '/administration/users': typeof AdministrationUsersRoute
   '/counsellors/counsellors': typeof CounsellorsCounsellorsRoute
   '/counsellors/groups': typeof CounsellorsGroupsRoute
   '/counsellors/targets': typeof CounsellorsTargetsRoute
   '/counsellors/teams': typeof CounsellorsTeamsRoute
+  '/enrollment/intake-wise': typeof EnrollmentIntakeWiseRoute
+  '/enrollment/re-registration': typeof EnrollmentReRegistrationRoute
+  '/enrollment/students': typeof EnrollmentStudentsRoute
+  '/enrollment/university-wise': typeof EnrollmentUniversityWiseRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
   '/universities/courses': typeof UniversitiesCoursesRoute
@@ -260,6 +303,7 @@ export interface FileRoutesByFullPath {
   '/universities/universities': typeof UniversitiesUniversitiesRoute
   '/administration/': typeof AdministrationIndexRoute
   '/counsellors/': typeof CounsellorsIndexRoute
+  '/enrollment/': typeof EnrollmentIndexRoute
   '/students/': typeof StudentsIndexRoute
   '/universities/': typeof UniversitiesIndexRoute
   '/counsellors/profile/$empId': typeof CounsellorsProfileEmpIdRoute
@@ -275,23 +319,28 @@ export interface FileRoutesByTo {
   '/calls': typeof CallsRoute
   '/commissions': typeof CommissionsRoute
   '/dashboard': typeof DashboardRoute
-  '/enrollment': typeof EnrollmentRoute
   '/fees': typeof FeesRoute
   '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
   '/support': typeof SupportRoute
+  '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/roles': typeof AdministrationRolesRoute
   '/administration/users': typeof AdministrationUsersRoute
   '/counsellors/counsellors': typeof CounsellorsCounsellorsRoute
   '/counsellors/groups': typeof CounsellorsGroupsRoute
   '/counsellors/targets': typeof CounsellorsTargetsRoute
   '/counsellors/teams': typeof CounsellorsTeamsRoute
+  '/enrollment/intake-wise': typeof EnrollmentIntakeWiseRoute
+  '/enrollment/re-registration': typeof EnrollmentReRegistrationRoute
+  '/enrollment/students': typeof EnrollmentStudentsRoute
+  '/enrollment/university-wise': typeof EnrollmentUniversityWiseRoute
   '/universities/courses': typeof UniversitiesCoursesRoute
   '/universities/fee-structure': typeof UniversitiesFeeStructureRoute
   '/universities/intakes': typeof UniversitiesIntakesRoute
   '/universities/universities': typeof UniversitiesUniversitiesRoute
   '/administration': typeof AdministrationIndexRoute
   '/counsellors': typeof CounsellorsIndexRoute
+  '/enrollment': typeof EnrollmentIndexRoute
   '/students': typeof StudentsIndexRoute
   '/universities': typeof UniversitiesIndexRoute
   '/counsellors/profile/$empId': typeof CounsellorsProfileEmpIdRoute
@@ -310,19 +359,24 @@ export interface FileRoutesById {
   '/commissions': typeof CommissionsRoute
   '/counsellors': typeof CounsellorsRouteWithChildren
   '/dashboard': typeof DashboardRoute
-  '/enrollment': typeof EnrollmentRoute
+  '/enrollment': typeof EnrollmentRouteWithChildren
   '/fees': typeof FeesRoute
   '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
   '/students': typeof StudentsRouteWithChildren
   '/support': typeof SupportRoute
   '/universities': typeof UniversitiesRouteWithChildren
+  '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/roles': typeof AdministrationRolesRoute
   '/administration/users': typeof AdministrationUsersRoute
   '/counsellors/counsellors': typeof CounsellorsCounsellorsRoute
   '/counsellors/groups': typeof CounsellorsGroupsRoute
   '/counsellors/targets': typeof CounsellorsTargetsRoute
   '/counsellors/teams': typeof CounsellorsTeamsRoute
+  '/enrollment/intake-wise': typeof EnrollmentIntakeWiseRoute
+  '/enrollment/re-registration': typeof EnrollmentReRegistrationRoute
+  '/enrollment/students': typeof EnrollmentStudentsRoute
+  '/enrollment/university-wise': typeof EnrollmentUniversityWiseRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
   '/universities/courses': typeof UniversitiesCoursesRoute
@@ -331,6 +385,7 @@ export interface FileRoutesById {
   '/universities/universities': typeof UniversitiesUniversitiesRoute
   '/administration/': typeof AdministrationIndexRoute
   '/counsellors/': typeof CounsellorsIndexRoute
+  '/enrollment/': typeof EnrollmentIndexRoute
   '/students/': typeof StudentsIndexRoute
   '/universities/': typeof UniversitiesIndexRoute
   '/counsellors/profile/$empId': typeof CounsellorsProfileEmpIdRoute
@@ -357,12 +412,17 @@ export interface FileRouteTypes {
     | '/students'
     | '/support'
     | '/universities'
+    | '/administration/audit-logs'
     | '/administration/roles'
     | '/administration/users'
     | '/counsellors/counsellors'
     | '/counsellors/groups'
     | '/counsellors/targets'
     | '/counsellors/teams'
+    | '/enrollment/intake-wise'
+    | '/enrollment/re-registration'
+    | '/enrollment/students'
+    | '/enrollment/university-wise'
     | '/students/applications'
     | '/students/students'
     | '/universities/courses'
@@ -371,6 +431,7 @@ export interface FileRouteTypes {
     | '/universities/universities'
     | '/administration/'
     | '/counsellors/'
+    | '/enrollment/'
     | '/students/'
     | '/universities/'
     | '/counsellors/profile/$empId'
@@ -386,23 +447,28 @@ export interface FileRouteTypes {
     | '/calls'
     | '/commissions'
     | '/dashboard'
-    | '/enrollment'
     | '/fees'
     | '/login'
     | '/reports'
     | '/support'
+    | '/administration/audit-logs'
     | '/administration/roles'
     | '/administration/users'
     | '/counsellors/counsellors'
     | '/counsellors/groups'
     | '/counsellors/targets'
     | '/counsellors/teams'
+    | '/enrollment/intake-wise'
+    | '/enrollment/re-registration'
+    | '/enrollment/students'
+    | '/enrollment/university-wise'
     | '/universities/courses'
     | '/universities/fee-structure'
     | '/universities/intakes'
     | '/universities/universities'
     | '/administration'
     | '/counsellors'
+    | '/enrollment'
     | '/students'
     | '/universities'
     | '/counsellors/profile/$empId'
@@ -427,12 +493,17 @@ export interface FileRouteTypes {
     | '/students'
     | '/support'
     | '/universities'
+    | '/administration/audit-logs'
     | '/administration/roles'
     | '/administration/users'
     | '/counsellors/counsellors'
     | '/counsellors/groups'
     | '/counsellors/targets'
     | '/counsellors/teams'
+    | '/enrollment/intake-wise'
+    | '/enrollment/re-registration'
+    | '/enrollment/students'
+    | '/enrollment/university-wise'
     | '/students/applications'
     | '/students/students'
     | '/universities/courses'
@@ -441,6 +512,7 @@ export interface FileRouteTypes {
     | '/universities/universities'
     | '/administration/'
     | '/counsellors/'
+    | '/enrollment/'
     | '/students/'
     | '/universities/'
     | '/counsellors/profile/$empId'
@@ -459,7 +531,7 @@ export interface RootRouteChildren {
   CommissionsRoute: typeof CommissionsRoute
   CounsellorsRoute: typeof CounsellorsRouteWithChildren
   DashboardRoute: typeof DashboardRoute
-  EnrollmentRoute: typeof EnrollmentRoute
+  EnrollmentRoute: typeof EnrollmentRouteWithChildren
   FeesRoute: typeof FeesRoute
   LoginRoute: typeof LoginRoute
   ReportsRoute: typeof ReportsRoute
@@ -575,6 +647,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StudentsIndexRouteImport
       parentRoute: typeof StudentsRoute
     }
+    '/enrollment/': {
+      id: '/enrollment/'
+      path: '/'
+      fullPath: '/enrollment/'
+      preLoaderRoute: typeof EnrollmentIndexRouteImport
+      parentRoute: typeof EnrollmentRoute
+    }
     '/counsellors/': {
       id: '/counsellors/'
       path: '/'
@@ -631,6 +710,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StudentsApplicationsRouteImport
       parentRoute: typeof StudentsRoute
     }
+    '/enrollment/university-wise': {
+      id: '/enrollment/university-wise'
+      path: '/university-wise'
+      fullPath: '/enrollment/university-wise'
+      preLoaderRoute: typeof EnrollmentUniversityWiseRouteImport
+      parentRoute: typeof EnrollmentRoute
+    }
+    '/enrollment/students': {
+      id: '/enrollment/students'
+      path: '/students'
+      fullPath: '/enrollment/students'
+      preLoaderRoute: typeof EnrollmentStudentsRouteImport
+      parentRoute: typeof EnrollmentRoute
+    }
+    '/enrollment/re-registration': {
+      id: '/enrollment/re-registration'
+      path: '/re-registration'
+      fullPath: '/enrollment/re-registration'
+      preLoaderRoute: typeof EnrollmentReRegistrationRouteImport
+      parentRoute: typeof EnrollmentRoute
+    }
+    '/enrollment/intake-wise': {
+      id: '/enrollment/intake-wise'
+      path: '/intake-wise'
+      fullPath: '/enrollment/intake-wise'
+      preLoaderRoute: typeof EnrollmentIntakeWiseRouteImport
+      parentRoute: typeof EnrollmentRoute
+    }
     '/counsellors/teams': {
       id: '/counsellors/teams'
       path: '/teams'
@@ -671,6 +778,13 @@ declare module '@tanstack/react-router' {
       path: '/roles'
       fullPath: '/administration/roles'
       preLoaderRoute: typeof AdministrationRolesRouteImport
+      parentRoute: typeof AdministrationRoute
+    }
+    '/administration/audit-logs': {
+      id: '/administration/audit-logs'
+      path: '/audit-logs'
+      fullPath: '/administration/audit-logs'
+      preLoaderRoute: typeof AdministrationAuditLogsRouteImport
       parentRoute: typeof AdministrationRoute
     }
     '/students/students/': {
@@ -726,12 +840,14 @@ declare module '@tanstack/react-router' {
 }
 
 interface AdministrationRouteChildren {
+  AdministrationAuditLogsRoute: typeof AdministrationAuditLogsRoute
   AdministrationRolesRoute: typeof AdministrationRolesRoute
   AdministrationUsersRoute: typeof AdministrationUsersRoute
   AdministrationIndexRoute: typeof AdministrationIndexRoute
 }
 
 const AdministrationRouteChildren: AdministrationRouteChildren = {
+  AdministrationAuditLogsRoute: AdministrationAuditLogsRoute,
   AdministrationRolesRoute: AdministrationRolesRoute,
   AdministrationUsersRoute: AdministrationUsersRoute,
   AdministrationIndexRoute: AdministrationIndexRoute,
@@ -763,6 +879,26 @@ const CounsellorsRouteChildren: CounsellorsRouteChildren = {
 
 const CounsellorsRouteWithChildren = CounsellorsRoute._addFileChildren(
   CounsellorsRouteChildren,
+)
+
+interface EnrollmentRouteChildren {
+  EnrollmentIntakeWiseRoute: typeof EnrollmentIntakeWiseRoute
+  EnrollmentReRegistrationRoute: typeof EnrollmentReRegistrationRoute
+  EnrollmentStudentsRoute: typeof EnrollmentStudentsRoute
+  EnrollmentUniversityWiseRoute: typeof EnrollmentUniversityWiseRoute
+  EnrollmentIndexRoute: typeof EnrollmentIndexRoute
+}
+
+const EnrollmentRouteChildren: EnrollmentRouteChildren = {
+  EnrollmentIntakeWiseRoute: EnrollmentIntakeWiseRoute,
+  EnrollmentReRegistrationRoute: EnrollmentReRegistrationRoute,
+  EnrollmentStudentsRoute: EnrollmentStudentsRoute,
+  EnrollmentUniversityWiseRoute: EnrollmentUniversityWiseRoute,
+  EnrollmentIndexRoute: EnrollmentIndexRoute,
+}
+
+const EnrollmentRouteWithChildren = EnrollmentRoute._addFileChildren(
+  EnrollmentRouteChildren,
 )
 
 interface StudentsApplicationsRouteChildren {
@@ -836,7 +972,7 @@ const rootRouteChildren: RootRouteChildren = {
   CommissionsRoute: CommissionsRoute,
   CounsellorsRoute: CounsellorsRouteWithChildren,
   DashboardRoute: DashboardRoute,
-  EnrollmentRoute: EnrollmentRoute,
+  EnrollmentRoute: EnrollmentRouteWithChildren,
   FeesRoute: FeesRoute,
   LoginRoute: LoginRoute,
   ReportsRoute: ReportsRoute,

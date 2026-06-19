@@ -23,6 +23,8 @@ import {
   Users2,
   ShieldCheck,
   PhoneCall,
+  RefreshCw,
+  ScrollText,
 } from "lucide-react";
 
 import { BrandLogo } from "@/components/brand/brand-logo";
@@ -49,7 +51,18 @@ const items: NavItem[] = [
       { to: "/students/students", label: "Students", icon: Users },
     ],
   },
-  { to: "/enrollment", label: "Enrollment Management", icon: ClipboardList, badge: "32" },
+  {
+    to: "/enrollment",
+    label: "Enrollment Management",
+    icon: ClipboardList,
+    children: [
+      { to: "/enrollment", label: "Enrollment Dashboard", icon: LayoutDashboard },
+      { to: "/enrollment/students", label: "Student Enrollments", icon: GraduationCap },
+      { to: "/enrollment/university-wise", label: "University-wise", icon: Building2 },
+      { to: "/enrollment/intake-wise", label: "Intake-wise", icon: CalendarRange },
+      { to: "/enrollment/re-registration", label: "Re-registration", icon: RefreshCw },
+    ],
+  },
   {
     to: "/universities",
     label: "University Master",
@@ -84,6 +97,7 @@ const items: NavItem[] = [
     children: [
       { to: "/administration/users", label: "User Management", icon: Users2 },
       { to: "/administration/roles", label: "Role & Permissions", icon: ShieldCheck },
+      { to: "/administration/audit-logs", label: "Audit Logs", icon: ScrollText },
     ],
   },
 ];
