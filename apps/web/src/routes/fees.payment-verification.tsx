@@ -2,6 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
 import { z } from "zod";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   ShieldCheck,
   CheckCircle2,
@@ -11,6 +13,8 @@ import {
   Download,
   FileText,
   Search,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react";
 import {
   Dialog,
@@ -70,7 +74,15 @@ export const Route = createFileRoute("/fees/payment-verification")({
   component: PaymentVerification,
 });
 
-// ---------------- Types & Mock Data ----------------
+// ---------------- Types ----------------
+// This screen models a finance "payment verification" workflow. The closest real
+// data is the `invoice` model (GET /api/invoices, finance.controller.ts ->
+// finance.service.listInvoices). Its `payment_status` enum is {pending, paid}, so
+// we treat pending invoices as "Unverified" and paid invoices as "Verified".
+// Verify/Reject are local-only actions: there is NO payment-verification endpoint
+// in the API, so they update the in-memory view but do not persist server-side.
+// Fields the invoice list does not provide (student/university/course names,
+// payment mode, txn id, receipt no, submitted-by, verified-by) render as "—".
 type Status = "Unverified" | "Verified" | "Rejected";
 type PaymentMode = "UPI" | "NEFT" | "RTGS" | "Cash" | "Card" | "Cheque";
 
@@ -83,7 +95,7 @@ interface Payment {
   course: string;
   instalment: string;
   amount: number;
-  mode: PaymentMode;
+  mode: PaymentMode | string;
   txnId: string;
   proofUrl: string;
   submittedDate: string;
@@ -95,110 +107,69 @@ interface Payment {
   remarks?: string;
 }
 
-const seed: Payment[] = [
-  {
-    id: "P-1001",
-    receiptNo: "RCP-2026-1001",
-    studentId: "STU-2401",
-    student: "Aarav Sharma",
-    university: "Amity University Online",
-    course: "MBA",
-    instalment: "Sem 1 - Inst 2",
-    amount: 35000,
-    mode: "UPI",
-    txnId: "UPI9823746512",
-    proofUrl: "/receipts/p-1001.jpg",
-    submittedDate: "2026-06-17",
-    submittedBy: "Riya Mehta",
-    status: "Unverified",
-  },
-  {
-    id: "P-1002",
-    receiptNo: "RCP-2026-1002",
-    studentId: "STU-2402",
-    student: "Ishita Verma",
-    university: "Manipal University Jaipur",
-    course: "BBA",
-    instalment: "Sem 2 - Inst 1",
-    amount: 28000,
-    mode: "NEFT",
-    txnId: "NEFT00982341",
-    proofUrl: "/receipts/p-1002.pdf",
-    submittedDate: "2026-06-17",
-    submittedBy: "Karan Patel",
-    status: "Unverified",
-  },
-  {
-    id: "P-1003",
-    receiptNo: "RCP-2026-1003",
-    studentId: "STU-2403",
-    student: "Rohan Iyer",
-    university: "Chandigarh University",
-    course: "MCA",
-    instalment: "Sem 1 - Inst 1",
-    amount: 42000,
-    mode: "RTGS",
-    txnId: "RTGS-77621",
-    proofUrl: "/receipts/p-1003.pdf",
-    submittedDate: "2026-06-16",
-    submittedBy: "Priya Nair",
-    status: "Unverified",
-  },
-  {
-    id: "P-1004",
-    receiptNo: "RCP-2026-0998",
-    studentId: "STU-2398",
-    student: "Megha Kapoor",
-    university: "Amity University Online",
-    course: "BCA",
-    instalment: "Sem 1 - Inst 2",
-    amount: 22000,
-    mode: "UPI",
-    txnId: "UPI7712398765",
-    proofUrl: "/receipts/p-0998.jpg",
-    submittedDate: "2026-06-18",
-    submittedBy: "Riya Mehta",
-    status: "Verified",
-    verifiedBy: "Anita Desai",
-    verificationDate: "2026-06-18",
-  },
-  {
-    id: "P-1005",
-    receiptNo: "RCP-2026-0997",
-    studentId: "STU-2397",
-    student: "Vikram Singh",
-    university: "Lovely Professional University",
-    course: "MBA",
-    instalment: "Sem 2 - Inst 2",
-    amount: 38000,
-    mode: "Card",
-    txnId: "TXN-CARD-22198",
-    proofUrl: "/receipts/p-0997.pdf",
-    submittedDate: "2026-06-15",
-    submittedBy: "Karan Patel",
-    status: "Verified",
-    verifiedBy: "Anita Desai",
-    verificationDate: "2026-06-15",
-  },
-  {
-    id: "P-1006",
-    receiptNo: "RCP-2026-0995",
-    studentId: "STU-2391",
-    student: "Sneha Pillai",
-    university: "Manipal University Jaipur",
-    course: "MBA",
-    instalment: "Sem 1 - Inst 1",
-    amount: 15000,
-    mode: "Cash",
-    txnId: "CASH-0091",
-    proofUrl: "/receipts/p-0995.jpg",
-    submittedDate: "2026-06-14",
-    submittedBy: "Priya Nair",
-    status: "Rejected",
-    rejectionReason: "Proof unreadable",
-    remarks: "Please re-upload a clearer copy of the bank slip.",
-  },
-];
+// Raw invoice row from GET /api/invoices (finance.service.listInvoices). Only IDs
+// + money + dates are returned (no joined display names), plus per-invoice
+// payment_count / total_paid enrichment.
+interface ApiInvoiceRow {
+  id: number | string;
+  university_id: number | string | null;
+  student_id: number | string | null;
+  course_id: number | string | null;
+  payment_status: "pending" | "paid" | string | null;
+  total_amount: number | string | null;
+  discount_amount: number | string | null;
+  payable_amount: number | string | null;
+  date: string | null;
+  due_date: string | null;
+  remarks: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  payment_count?: number;
+  total_paid?: number;
+}
+
+interface InvoiceListResponse {
+  items: ApiInvoiceRow[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+const EMPTY = "—";
+
+const toNumber = (v: number | string | null | undefined): number => {
+  if (v == null) return 0;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const toDay = (value: string | null | undefined): string =>
+  value ? String(value).slice(0, 10) : "";
+
+// Maps a raw invoice row onto the screen's Payment shape. Unprovided fields fall
+// back to "—" / 0 (never fabricated).
+function mapInvoiceRow(inv: ApiInvoiceRow): Payment {
+  const paid = inv.payment_status === "paid";
+  return {
+    id: String(inv.id),
+    receiptNo: `INV-${inv.id}`,
+    studentId: inv.student_id != null ? String(inv.student_id) : EMPTY,
+    student: inv.student_id != null ? `Student #${inv.student_id}` : EMPTY,
+    university: inv.university_id != null ? `University #${inv.university_id}` : EMPTY,
+    course: inv.course_id != null ? `Course #${inv.course_id}` : EMPTY,
+    instalment: EMPTY,
+    amount: toNumber(inv.payable_amount ?? inv.total_amount),
+    mode: EMPTY,
+    txnId: EMPTY,
+    proofUrl: EMPTY,
+    submittedDate: toDay(inv.date ?? inv.created_at) || EMPTY,
+    submittedBy: EMPTY,
+    status: paid ? "Verified" : "Unverified",
+    verifiedBy: paid ? EMPTY : undefined,
+    verificationDate: paid ? toDay(inv.updated_at) || EMPTY : undefined,
+    remarks: inv.remarks ?? undefined,
+  };
+}
 
 const fmtINR = (n: number) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
@@ -214,10 +185,11 @@ function StatusBadge({ s }: { s: Status }) {
 }
 
 // ---------------- Component ----------------
+const PAGE_SIZE = 50;
+
 function PaymentVerification() {
   const { tab } = Route.useSearch();
   const navigate = Route.useNavigate();
-  const [rows, setRows] = useState<Payment[]>(seed);
   const [query, setQuery] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   const [verifyOpen, setVerifyOpen] = useState<Payment | null>(null);
@@ -229,12 +201,52 @@ function PaymentVerification() {
 
   const today = new Date().toISOString().slice(0, 10);
 
+  // Local-only status overrides applied on top of the live invoice data. There is
+  // no payment-verification endpoint, so Verify/Reject mutate this map in place.
+  const [overrides, setOverrides] = useState<
+    Record<string, { status: Status; verifiedBy?: string; verificationDate?: string; rejectionReason?: string; remarks?: string }>
+  >({});
+
+  // Live invoices for the active tab. Pending invoices back the "Unverified" tab;
+  // paid invoices back the "Verified" tab (GET /api/invoices?payment_status=…).
+  const { data, isLoading, isError, error, isFetching } = useQuery({
+    queryKey: ["invoices", "verification", { tab, page: 1, limit: PAGE_SIZE }],
+    queryFn: () =>
+      apiGet<InvoiceListResponse>("/invoices", {
+        page: 1,
+        limit: PAGE_SIZE,
+        payment_status: tab === "verified" ? "paid" : "pending",
+      }),
+  });
+
+  // KPI cards: pending/verified counts come from each invoice-status total. We run
+  // two lightweight count queries (limit 1) so the cards reflect the live totals
+  // regardless of the active tab. Rejected is a local-only concept (0 from API).
+  const { data: pendingCount } = useQuery({
+    queryKey: ["invoices", "count", "pending"],
+    queryFn: () => apiGet<InvoiceListResponse>("/invoices", { page: 1, limit: 1, payment_status: "pending" }),
+    staleTime: 60 * 1000,
+  });
+
+  const rows = useMemo<Payment[]>(() => {
+    const mapped = (data?.items ?? []).map(mapInvoiceRow);
+    return mapped.map((p) => {
+      const o = overrides[p.id];
+      return o ? { ...p, ...o } : p;
+    });
+  }, [data, overrides]);
+
   const kpis = useMemo(() => {
-    const pending = rows.filter((r) => r.status === "Unverified").length;
-    const verifiedToday = rows.filter((r) => r.status === "Verified" && r.verificationDate === today).length;
-    const rejected = rows.filter((r) => r.status === "Rejected").length;
-    return { pending, verifiedToday, rejected };
-  }, [rows, today]);
+    const rejected = Object.values(overrides).filter((o) => o.status === "Rejected").length;
+    const verifiedToday = Object.values(overrides).filter(
+      (o) => o.status === "Verified" && o.verificationDate === today,
+    ).length;
+    return {
+      pending: pendingCount?.total ?? 0,
+      verifiedToday,
+      rejected,
+    };
+  }, [overrides, today, pendingCount]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -256,14 +268,12 @@ function PaymentVerification() {
 
   const handleVerify = () => {
     if (!verifyOpen) return;
-    setRows((prev) =>
-      prev.map((r) =>
-        r.id === verifyOpen.id
-          ? { ...r, status: "Verified", verifiedBy: "Anita Desai", verificationDate: today }
-          : r,
-      ),
-    );
-    toast.success(`Payment ${verifyOpen.receiptNo} verified. Logged in Audit.`);
+    const id = verifyOpen.id;
+    setOverrides((prev) => ({
+      ...prev,
+      [id]: { status: "Verified", verifiedBy: EMPTY, verificationDate: today },
+    }));
+    toast.success(`Payment ${verifyOpen.receiptNo} verified (local view only).`);
     setVerifyOpen(null);
   };
 
@@ -273,14 +283,12 @@ function PaymentVerification() {
       toast.error("Select a rejection reason");
       return;
     }
-    setRows((prev) =>
-      prev.map((r) =>
-        r.id === rejectOpen.id
-          ? { ...r, status: "Rejected", rejectionReason: rejection.reason, remarks: rejection.remarks }
-          : r,
-      ),
-    );
-    toast.success(`Payment ${rejectOpen.receiptNo} rejected. Logged in Audit.`);
+    const id = rejectOpen.id;
+    setOverrides((prev) => ({
+      ...prev,
+      [id]: { status: "Rejected", rejectionReason: rejection.reason, remarks: rejection.remarks },
+    }));
+    toast.success(`Payment ${rejectOpen.receiptNo} rejected (local view only).`);
     setRejectOpen(null);
     setRejection({ reason: "", remarks: "" });
   };
@@ -360,14 +368,19 @@ function PaymentVerification() {
                 <TabsTrigger value="verified">Verified</TabsTrigger>
               </TabsList>
             </Tabs>
-            <div className="relative">
-              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search receipt, student, txn ID…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                className="pl-8 w-72"
-              />
+            <div className="flex items-center gap-2">
+              {isFetching && !isLoading && (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/60" />
+              )}
+              <div className="relative">
+                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search receipt, student, txn ID…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  className="pl-8 w-72"
+                />
+              </div>
             </div>
           </div>
         </CardHeader>
@@ -393,7 +406,24 @@ function PaymentVerification() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filtered.length === 0 ? (
+                    {isLoading ? (
+                      <TableRow>
+                        <TableCell colSpan={12} className="py-10 text-center">
+                          <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground/60" />
+                          <p className="mt-2 text-sm text-muted-foreground">Loading payments…</p>
+                        </TableCell>
+                      </TableRow>
+                    ) : isError ? (
+                      <TableRow>
+                        <TableCell colSpan={12} className="py-10 text-center">
+                          <AlertTriangle className="mx-auto h-7 w-7 text-rose-500/60" />
+                          <p className="mt-2 text-sm font-medium">Couldn’t load payments</p>
+                          <p className="text-xs text-muted-foreground">
+                            {error instanceof Error ? error.message : "Please try again."}
+                          </p>
+                        </TableCell>
+                      </TableRow>
+                    ) : filtered.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={12} className="text-center text-muted-foreground py-8">
                           No unverified payments.
@@ -460,7 +490,24 @@ function PaymentVerification() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filtered.length === 0 ? (
+                    {isLoading ? (
+                      <TableRow>
+                        <TableCell colSpan={10} className="py-10 text-center">
+                          <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground/60" />
+                          <p className="mt-2 text-sm text-muted-foreground">Loading payments…</p>
+                        </TableCell>
+                      </TableRow>
+                    ) : isError ? (
+                      <TableRow>
+                        <TableCell colSpan={10} className="py-10 text-center">
+                          <AlertTriangle className="mx-auto h-7 w-7 text-rose-500/60" />
+                          <p className="mt-2 text-sm font-medium">Couldn’t load payments</p>
+                          <p className="text-xs text-muted-foreground">
+                            {error instanceof Error ? error.message : "Please try again."}
+                          </p>
+                        </TableCell>
+                      </TableRow>
+                    ) : filtered.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
                           No verified payments.
@@ -475,8 +522,8 @@ function PaymentVerification() {
                           <TableCell>{p.course}</TableCell>
                           <TableCell className="text-right">{fmtINR(p.amount)}</TableCell>
                           <TableCell>{p.mode}</TableCell>
-                          <TableCell>{p.verifiedBy}</TableCell>
-                          <TableCell>{p.verificationDate}</TableCell>
+                          <TableCell>{p.verifiedBy ?? EMPTY}</TableCell>
+                          <TableCell>{p.verificationDate ?? EMPTY}</TableCell>
                           <TableCell>
                             <StatusBadge s={p.status} />
                           </TableCell>

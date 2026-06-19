@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Download,
   Search,
@@ -9,6 +11,8 @@ import {
   CalendarRange,
   ArrowUpDown,
   Calendar as CalendarIcon,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react";
 
 export const Route = createFileRoute("/enrollment/intake-wise")({
@@ -24,37 +28,63 @@ export const Route = createFileRoute("/enrollment/intake-wise")({
 const UNIVERSITIES = ["All Universities", "Symbiosis International", "Manipal University", "Amity University", "Christ University", "Lovely Professional University", "Chandigarh University", "SRM Institute", "VIT University"];
 const COURSES = ["All Courses", "MBA", "B.Tech CSE", "BBA", "BCA", "M.Sc Data Science", "B.Com"];
 
-type Status = "Open" | "Closing Soon" | "Closed" | "Completed";
+// ---- Live API wiring (GET /api/reports/enrollments/intake-wise) ----
+// The service (ReportsService.enrollmentsIntakeWise) returns one entry per
+// session/intake, each with a 6-status admission breakdown. admission_status
+// codes: 0 Pending, 1 In Progress, 2 Enrolled, 3 Passout, 4 Dropout, 5 Cancelled.
+const ADMISSION_STATUS = { PENDING: 0, ENROLLED: 2 } as const;
+
+interface ApiIntakeStatus {
+  admission_status: number;
+  label: string;
+  count: number;
+}
+
+interface ApiIntake {
+  session_id: number;
+  session_title: string | null;
+  created_at: string | null; // ISO timestamp
+  total: number;
+  by_status: ApiIntakeStatus[];
+}
+
+interface IntakeWiseResponse {
+  by_intake: ApiIntake[];
+}
+
+// The endpoint has no "Open/Closing/Closed" lifecycle field, so the screen's
+// Status column is always rendered as a placeholder (never fabricated).
+type Status = "—";
 
 type Row = {
   name: string;
   session: string;
   startDate: string;
-  approved: number;
-  enrolled: number;
-  pending: number;
+  approved: number; // mapped to intake total (no separate "approved applications" metric)
+  enrolled: number; // admission_status === 2
+  pending: number; // admission_status === 0
   status: Status;
 };
 
-const rows: Row[] = [
-  { name: "Jan 2026 — Spring", session: "Spring 2026", startDate: "2026-01-15", approved: 412, enrolled: 298, pending: 114, status: "Open" },
-  { name: "Jul 2026 — Monsoon", session: "Monsoon 2026", startDate: "2026-07-10", approved: 356, enrolled: 198, pending: 158, status: "Open" },
-  { name: "Sep 2026 — Fall", session: "Fall 2026", startDate: "2026-09-05", approved: 278, enrolled: 124, pending: 154, status: "Closing Soon" },
-  { name: "Jan 2025 — Spring", session: "Spring 2025", startDate: "2025-01-15", approved: 386, enrolled: 362, pending: 24, status: "Completed" },
-  { name: "Jul 2025 — Monsoon", session: "Monsoon 2025", startDate: "2025-07-10", approved: 342, enrolled: 318, pending: 24, status: "Completed" },
-  { name: "Sep 2025 — Fall", session: "Fall 2025", startDate: "2025-09-05", approved: 298, enrolled: 276, pending: 22, status: "Closed" },
-  { name: "Jan 2024 — Spring", session: "Spring 2024", startDate: "2024-01-15", approved: 320, enrolled: 304, pending: 16, status: "Completed" },
-  { name: "Jul 2024 — Monsoon", session: "Monsoon 2024", startDate: "2024-07-10", approved: 296, enrolled: 288, pending: 8, status: "Completed" },
-];
+function statusCount(by_status: ApiIntakeStatus[], code: number): number {
+  return by_status.find((s) => s.admission_status === code)?.count ?? 0;
+}
+
+function mapApiIntake(intake: ApiIntake): Row {
+  const name = intake.session_title?.trim() || `Intake #${intake.session_id}`;
+  const startDate = intake.created_at ? intake.created_at.slice(0, 10) : "—";
+  return {
+    name,
+    session: name,
+    startDate,
+    approved: intake.total ?? 0,
+    enrolled: statusCount(intake.by_status, ADMISSION_STATUS.ENROLLED),
+    pending: statusCount(intake.by_status, ADMISSION_STATUS.PENDING),
+    status: "—",
+  };
+}
 
 type SortKey = keyof Pick<Row, "approved" | "enrolled" | "pending">;
-
-const statusStyle: Record<Status, string> = {
-  Open: "bg-success/10 text-success",
-  "Closing Soon": "bg-warning/10 text-warning",
-  Closed: "bg-destructive/10 text-destructive",
-  Completed: "bg-accent/10 text-accent",
-};
 
 function IntakeWiseEnrollment() {
   const [university, setUniversity] = useState(UNIVERSITIES[0]);
@@ -65,6 +95,23 @@ function IntakeWiseEnrollment() {
   const [sortKey, setSortKey] = useState<SortKey>("approved");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
+  // Live intake-wise enrollment report. from/to are wired to the date filters
+  // (students.enrollment_date bounds, YYYY-MM-DD). University/course filters
+  // stay client-side as before (the dropdowns hold names, not ids).
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["enrollments-intake-wise", { from, to }],
+    queryFn: () =>
+      apiGet<IntakeWiseResponse>("/reports/enrollments/intake-wise", {
+        from: from || undefined,
+        to: to || undefined,
+      }),
+  });
+
+  const rows = useMemo<Row[]>(
+    () => (data?.by_intake ?? []).map(mapApiIntake),
+    [data],
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     let r = rows.filter(x =>
@@ -72,7 +119,7 @@ function IntakeWiseEnrollment() {
     );
     r = [...r].sort((a, b) => (sortDir === "desc" ? b[sortKey] - a[sortKey] : a[sortKey] - b[sortKey]));
     return r;
-  }, [search, sortKey, sortDir]);
+  }, [rows, search, sortKey, sortDir]);
 
   const totals = useMemo(
     () =>
@@ -229,7 +276,32 @@ function IntakeWiseEnrollment() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((r, i) => (
+              {isLoading ? (
+                <tr>
+                  <td colSpan={7} className="px-6 py-12 text-center">
+                    <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading intakes…
+                    </div>
+                  </td>
+                </tr>
+              ) : isError ? (
+                <tr>
+                  <td colSpan={7} className="px-6 py-12 text-center">
+                    <div className="flex flex-col items-center gap-2 text-sm text-destructive">
+                      <AlertTriangle className="h-5 w-5" />
+                      Failed to load intake enrollment. Please try again.
+                    </div>
+                  </td>
+                </tr>
+              ) : filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-6 py-10 text-center text-sm text-muted-foreground">
+                    No intakes match your filters.
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((r, i) => (
                 <tr key={r.name} className="border-b border-border/70 last:border-0 transition hover:bg-muted/40">
                   <td className="px-6 py-3.5 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
                   <td className="px-6 py-3.5">
@@ -253,7 +325,7 @@ function IntakeWiseEnrollment() {
                     <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-primary">{r.pending}</span>
                   </td>
                   <td className="px-6 py-3.5 text-center">
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${statusStyle[r.status]}`}>
+                    <span className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
                       {r.status}
                     </span>
                   </td>
@@ -263,7 +335,8 @@ function IntakeWiseEnrollment() {
                     </button>
                   </td>
                 </tr>
-              ))}
+                ))
+              )}
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-border bg-muted/30 text-sm font-semibold text-foreground">

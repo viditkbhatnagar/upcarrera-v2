@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   RefreshCw,
   Users,
@@ -16,6 +18,8 @@ import {
   BookOpen,
   CreditCard,
   History,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -82,6 +86,96 @@ interface ReRegRow {
   history: ProgressionEvent[];
 }
 
+// --- Live API wiring (GET /api/students) ----------------------------------
+// There is NO progression / re-registration source in the API: the backend has
+// no concept of a "next semester", a progression status, a re-registration fee,
+// or a due date. The closest honest source is the enrolled-students list, which
+// represents the cohort that COULD be due for re-registration. We map each real,
+// decorated `students` row onto the screen's `ReRegRow` and render every field
+// the API does not provide as "—" / 0 — never fabricated. Progression status
+// defaults to the neutral "Not Due" so no row is invented as pending/confirmed.
+interface ApiStudentRow {
+  id: number | string;
+  student_id: number | string | null;
+  enrollment_id: string | null;
+  enrollment_date: string | null;
+  created_at: string | null;
+  // Decorated display fields (joined server-side).
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  consultant_name: string | null;
+  course_title: string | null;
+  university_title: string | null;
+}
+
+interface StudentsListResponse {
+  items: ApiStudentRow[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+const EMPTY = "—";
+
+function asText(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return EMPTY;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+// Map a real, decorated `students` row onto the screen's existing ReRegRow.
+// Fields the API does not expose (progression stage, next term, due date, fee)
+// fall back to honest placeholders — "—" / 0 / a neutral "Not Due" status.
+function mapApiRow(r: ApiStudentRow): ReRegRow {
+  const displayId =
+    r.enrollment_id != null && String(r.enrollment_id).trim() !== ""
+      ? String(r.enrollment_id)
+      : `STU-${r.student_id ?? r.id}`;
+  const enrolled = formatDate(r.enrollment_date ?? r.created_at);
+
+  return {
+    id: displayId,
+    name: asText(r.name),
+    email: asText(r.email),
+    phone: r.phone != null ? String(r.phone) : EMPTY,
+    university: asText(r.university_title),
+    course: asText(r.course_title),
+    // No semester/term progression data in the API.
+    current: EMPTY,
+    next: EMPTY,
+    // No progression lifecycle in the API — neutral baseline (not fabricated).
+    status: "Not Due",
+    // No re-registration fee tracking in the API.
+    fee: "Pending",
+    feeAmount: 0,
+    feePaid: 0,
+    dueDate: EMPTY,
+    coordinator: asText(r.consultant_name),
+    // The only real timeline event the API supports is the enrolment date.
+    history:
+      enrolled !== EMPTY
+        ? [
+            {
+              date: enrolled,
+              title: "Enrolled",
+              description: "Initial enrolment recorded.",
+              by: "System",
+            },
+          ]
+        : [],
+  };
+}
+
 const STATUSES: ProgressionStatus[] = [
   "Not Due",
   "Due Soon",
@@ -121,103 +215,6 @@ const SEMESTERS = [
   "Year 3",
 ];
 
-const FIRST = ["Aarav", "Vivaan", "Aditya", "Ananya", "Diya", "Saanvi", "Kabir", "Arjun", "Reyansh", "Tara", "Zara", "Nikhil", "Pooja", "Riya", "Myra"];
-const LAST = ["Sharma", "Verma", "Patel", "Reddy", "Iyer", "Nair", "Kapoor", "Singh", "Gupta", "Mehta"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function seed(n: number): ReRegRow[] {
-  let r = 137;
-  const rand = () => ((r = (r * 9301 + 49297) % 233280) / 233280);
-  const rows: ReRegRow[] = [];
-  for (let i = 0; i < n; i++) {
-    const first = FIRST[Math.floor(rand() * FIRST.length)];
-    const last = LAST[Math.floor(rand() * LAST.length)];
-    const status = STATUSES[Math.floor(rand() * STATUSES.length)];
-    const curIdx = Math.floor(rand() * 5) + 1;
-    const current = `Sem ${curIdx}`;
-    const next = `Sem ${curIdx + 1}`;
-    const fee: FeeStatus = (["Paid", "Partial", "Pending", "Overdue"] as FeeStatus[])[
-      Math.floor(rand() * 4)
-    ];
-    const feeAmount = Math.floor(rand() * 60000) + 25000;
-    const feePaid =
-      fee === "Paid" ? feeAmount : fee === "Partial" ? Math.floor(feeAmount * 0.5) : 0;
-    const day = Math.floor(rand() * 28) + 1;
-    const m = MONTHS[Math.floor(rand() * MONTHS.length)];
-    const dueDate = `${String(day).padStart(2, "0")} ${m} 2026`;
-    rows.push({
-      id: `STU-2026-${String(2048 + i).padStart(6, "0")}`,
-      name: `${first} ${last}`,
-      email: `${first.toLowerCase()}.${last.toLowerCase()}@gmail.com`,
-      phone: `+91 9${Math.floor(rand() * 900000000 + 100000000)}`,
-      university: UNIVERSITIES[Math.floor(rand() * UNIVERSITIES.length)],
-      course: COURSES[Math.floor(rand() * COURSES.length)],
-      current,
-      next,
-      status,
-      fee,
-      feeAmount,
-      feePaid,
-      dueDate,
-      coordinator: ["Priya Sharma", "Rahul Verma", "Aisha Khan", "Karan Mehta"][
-        Math.floor(rand() * 4)
-      ],
-      history: [
-        {
-          date: "12 Jan 2026",
-          title: "Enrolled",
-          description: `Initial enrolment confirmed for ${current}.`,
-          by: "System",
-        },
-        {
-          date: "08 May 2026",
-          title: `${current} Completed`,
-          description: "Semester results published. Eligible for progression.",
-          by: "University",
-        },
-        {
-          date: "02 Jun 2026",
-          title: "Re-registration Initiated",
-          description: `Progression window opened for ${next}.`,
-          by: "Ops Team",
-        },
-        ...(fee !== "Paid"
-          ? [
-              {
-                date: "05 Jun 2026",
-                title: "Fee Reminder Sent",
-                description: `Pending fee of ₹${(feeAmount - feePaid).toLocaleString("en-IN")} communicated to student.`,
-                by: "Finance",
-              },
-            ]
-          : []),
-        ...(status === "Submitted to University" || status === "Confirmed"
-          ? [
-              {
-                date: "10 Jun 2026",
-                title: "Submitted to University",
-                description: `Re-registration request for ${next} submitted.`,
-                by: "Ops Team",
-              },
-            ]
-          : []),
-        ...(status === "Confirmed"
-          ? [
-              {
-                date: "14 Jun 2026",
-                title: "Re-registration Confirmed",
-                description: `${next} progression confirmed by university.`,
-                by: "University",
-              },
-            ]
-          : []),
-      ],
-    });
-  }
-  return rows;
-}
-
-const ALL_ROWS = seed(28);
 const inr = (n: number) => "₹" + n.toLocaleString("en-IN");
 
 function ReRegistrationPage() {
@@ -228,7 +225,23 @@ function ReRegistrationPage() {
   const [status, setStatus] = useState<string>("all");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<ReRegRow | null>(null);
-  const [rows, setRows] = useState<ReRegRow[]>(ALL_ROWS);
+  const [rows, setRows] = useState<ReRegRow[]>([]);
+
+  // Live enrolled-students list (GET /api/students). The API has no progression
+  // source, so we fetch a wide page of real students and refine on the client.
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["re-registration", "students", { page: 1, limit: 100 }],
+    queryFn: () =>
+      apiGet<StudentsListResponse>("/students", { page: 1, limit: 100 }),
+  });
+
+  // Seed local rows from the fetched set. Local edits (Mark Confirmed) stay
+  // client-side; a fresh fetch re-seeds them.
+  useEffect(() => {
+    if (data?.items) {
+      setRows(data.items.map(mapApiRow));
+    }
+  }, [data]);
 
   const filtered = useMemo(() => {
     return rows.filter((r) => {
@@ -252,9 +265,14 @@ function ReRegistrationPage() {
   const counts = useMemo(() => {
     const total = rows.length;
     const pending = rows.filter(
-      (r) => r.status === "Progression Pending" || r.status === "Due Soon" || r.status === "Fee Pending",
+      (r) =>
+        r.status === "Progression Pending" ||
+        r.status === "Due Soon" ||
+        r.status === "Fee Pending",
     ).length;
-    const applied = rows.filter((r) => r.status === "Submitted to University").length;
+    const applied = rows.filter(
+      (r) => r.status === "Submitted to University",
+    ).length;
     const reReg = rows.filter((r) => r.status === "Confirmed").length;
     return { total, pending, applied, reReg };
   }, [rows]);
@@ -438,63 +456,84 @@ function ReRegistrationPage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {filtered.length === 0 && (
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={11} className="px-4 py-10 text-center">
+                      <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading students…
+                      </div>
+                    </td>
+                  </tr>
+                ) : isError ? (
+                  <tr>
+                    <td colSpan={11} className="px-4 py-10 text-center">
+                      <div className="flex flex-col items-center gap-2 text-sm text-red-500">
+                        <AlertTriangle className="h-5 w-5" />
+                        {error instanceof Error
+                          ? error.message
+                          : "Failed to load students. Please try again."}
+                      </div>
+                    </td>
+                  </tr>
+                ) : filtered.length === 0 ? (
                   <tr>
                     <td colSpan={11} className="px-4 py-10 text-center text-muted-foreground">
                       No students match the current filters.
                     </td>
                   </tr>
-                )}
-                {filtered.map((r, i) => (
-                  <tr key={r.id} className="transition-colors hover:bg-muted/30">
-                    <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{r.id}</td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{r.name}</div>
-                      <div className="text-xs text-muted-foreground">{r.email}</div>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{r.university}</td>
-                    <td className="px-4 py-3">{r.course}</td>
-                    <td className="px-4 py-3">{r.current}</td>
-                    <td className="px-4 py-3 font-medium">{r.next}</td>
-                    <td className="px-4 py-3">
-                      <span className={cn(
-                        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
-                        STATUS_STYLES[r.status],
-                      )}>
-                        {r.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={cn(
-                        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
-                        FEE_STYLES[r.fee],
-                      )}>
-                        {r.fee}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{r.dueDate}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button variant="ghost" size="sm" onClick={() => openHistory(r)}>
-                          <Eye className="h-4 w-4" />
-                          View Progression
-                        </Button>
-                        {r.status !== "Confirmed" && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-emerald-700 hover:text-emerald-800"
-                            onClick={() => markConfirmed(r)}
-                          >
-                            <CheckCheck className="h-4 w-4" />
-                            Mark Confirmed
+                ) : (
+                  filtered.map((r, i) => (
+                    <tr key={r.id} className="transition-colors hover:bg-muted/30">
+                      <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{r.id}</td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{r.name}</div>
+                        <div className="text-xs text-muted-foreground">{r.email}</div>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{r.university}</td>
+                      <td className="px-4 py-3">{r.course}</td>
+                      <td className="px-4 py-3">{r.current}</td>
+                      <td className="px-4 py-3 font-medium">{r.next}</td>
+                      <td className="px-4 py-3">
+                        <span className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
+                          STATUS_STYLES[r.status],
+                        )}>
+                          {r.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
+                          FEE_STYLES[r.fee],
+                        )}>
+                          {r.fee}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{r.dueDate}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => openHistory(r)}>
+                            <Eye className="h-4 w-4" />
+                            View Progression
                           </Button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          {r.status !== "Confirmed" && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-emerald-700 hover:text-emerald-800"
+                              onClick={() => markConfirmed(r)}
+                            >
+                              <CheckCheck className="h-4 w-4" />
+                              Mark Confirmed
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -556,26 +595,32 @@ function ReRegistrationPage() {
               <div className="mt-6">
                 <div className="mb-3 text-sm font-semibold">Timeline</div>
                 <ScrollArea className="max-h-[50vh] pr-3">
-                  <ol className="relative space-y-5 border-l border-border pl-5">
-                    {active.history
-                      .slice()
-                      .reverse()
-                      .map((e, i) => (
-                        <li key={i} className="relative">
-                          <span className="absolute -left-[26px] top-1 flex h-3 w-3 items-center justify-center rounded-full bg-primary ring-4 ring-background" />
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-sm font-medium">{e.title}</div>
-                            <div className="text-xs text-muted-foreground">{e.date}</div>
-                          </div>
-                          <p className="mt-0.5 text-sm text-muted-foreground">{e.description}</p>
-                          {e.by && (
-                            <Badge variant="secondary" className="mt-1 text-[10px]">
-                              by {e.by}
-                            </Badge>
-                          )}
-                        </li>
-                      ))}
-                  </ol>
+                  {active.history.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No progression events recorded.
+                    </p>
+                  ) : (
+                    <ol className="relative space-y-5 border-l border-border pl-5">
+                      {active.history
+                        .slice()
+                        .reverse()
+                        .map((e, i) => (
+                          <li key={i} className="relative">
+                            <span className="absolute -left-[26px] top-1 flex h-3 w-3 items-center justify-center rounded-full bg-primary ring-4 ring-background" />
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-medium">{e.title}</div>
+                              <div className="text-xs text-muted-foreground">{e.date}</div>
+                            </div>
+                            <p className="mt-0.5 text-sm text-muted-foreground">{e.description}</p>
+                            {e.by && (
+                              <Badge variant="secondary" className="mt-1 text-[10px]">
+                                by {e.by}
+                              </Badge>
+                            )}
+                          </li>
+                        ))}
+                    </ol>
+                  )}
                 </ScrollArea>
               </div>
 
