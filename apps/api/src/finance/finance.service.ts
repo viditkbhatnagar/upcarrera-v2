@@ -125,7 +125,7 @@ export class FinanceService {
 
     // Per-invoice payment_count + total_paid (ported from Invoice::index).
     // Additive enrichment — existing fields are untouched.
-    const items = await Promise.all(
+    const withPayments = await Promise.all(
       rows.map(async (inv) => {
         const agg = await this.prisma.payment.aggregate({
           where: { invoice_id: inv.id, deleted_at: null },
@@ -139,6 +139,81 @@ export class FinanceService {
         };
       }),
     );
+
+    // Resolve related display names for the page in ONE bulk query per table
+    // (legacy had no FKs; the old CRM joined these manually):
+    //   student_name   <- users   (invoice.student_id  -> users.name)
+    //   course_title   <- course  (invoice.course_id   -> course.title)
+    //   semester_title <- semester(invoice.semester_id -> semester.title)
+    const studentIds = [
+      ...new Set(
+        rows.map((r) => r.student_id).filter((v): v is number => v != null),
+      ),
+    ];
+    const courseIds = [
+      ...new Set(
+        rows.map((r) => r.course_id).filter((v): v is number => v != null),
+      ),
+    ];
+    const semesterIds = [
+      ...new Set(
+        rows.map((r) => r.semester_id).filter((v): v is number => v != null),
+      ),
+    ];
+
+    const [users, courses, semesters] = await Promise.all([
+      studentIds.length > 0
+        ? this.prisma.users.findMany({
+            where: { id: { in: studentIds } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+      courseIds.length > 0
+        ? this.prisma.course.findMany({
+            where: { id: { in: courseIds } },
+            select: { id: true, title: true },
+          })
+        : Promise.resolve([]),
+      semesterIds.length > 0
+        ? this.prisma.semester.findMany({
+            where: { id: { in: semesterIds } },
+            select: { id: true, title: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const userNameById = new Map(users.map((u) => [u.id, u.name ?? null]));
+    const courseTitleById = new Map(courses.map((c) => [c.id, c.title ?? null]));
+    const semesterTitleById = new Map(
+      semesters.map((s) => [s.id, s.title ?? null]),
+    );
+
+    const items = withPayments.map((inv) => {
+      const balance = this.toMoney(inv.payable_amount) - inv.total_paid;
+      const status_label =
+        balance <= 0
+          ? 'Fully Paid'
+          : inv.total_paid <= 0
+            ? 'Pending'
+            : 'Partially Paid';
+      return {
+        ...inv,
+        student_name:
+          inv.student_id != null
+            ? (userNameById.get(inv.student_id) ?? null)
+            : null,
+        course_title:
+          inv.course_id != null
+            ? (courseTitleById.get(inv.course_id) ?? null)
+            : null,
+        semester_title:
+          inv.semester_id != null
+            ? (semesterTitleById.get(inv.semester_id) ?? null)
+            : null,
+        balance,
+        status_label,
+      };
+    });
 
     return { items, total, page, limit };
   }
@@ -440,7 +515,7 @@ export class FinanceService {
     const where: Prisma.paymentWhereInput = { deleted_at: null };
     if (params.invoice_id !== undefined) where.invoice_id = params.invoice_id;
 
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.payment.findMany({
         where,
         skip,
@@ -450,7 +525,114 @@ export class FinanceService {
       this.prisma.payment.count({ where }),
     ]);
 
+    // Resolve related display names for the page. The legacy schema has no FKs,
+    // so we walk the chain manually in bulk (no N+1):
+    //   payment.invoice_id  -> invoice.student_id -> users.name   (student_name)
+    //   payment.invoice_id  -> invoice.course_id  -> course.title (course_title)
+    //   course.university_id -> university.title                  (university_title)
+    const invoiceIds = [
+      ...new Set(
+        rows.map((r) => r.invoice_id).filter((v): v is number => v != null),
+      ),
+    ];
+    const invoices =
+      invoiceIds.length > 0
+        ? await this.prisma.invoice.findMany({
+            where: { id: { in: invoiceIds } },
+            select: { id: true, student_id: true, course_id: true },
+          })
+        : [];
+    const invoiceById = new Map(invoices.map((i) => [i.id, i]));
+
+    const studentIds = [
+      ...new Set(
+        invoices
+          .map((i) => i.student_id)
+          .filter((v): v is number => v != null),
+      ),
+    ];
+    const courseIds = [
+      ...new Set(
+        invoices.map((i) => i.course_id).filter((v): v is number => v != null),
+      ),
+    ];
+
+    const [users, courses] = await Promise.all([
+      studentIds.length > 0
+        ? this.prisma.users.findMany({
+            where: { id: { in: studentIds } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+      courseIds.length > 0
+        ? this.prisma.course.findMany({
+            where: { id: { in: courseIds } },
+            select: { id: true, title: true, university_id: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    const userNameById = new Map(users.map((u) => [u.id, u.name ?? null]));
+    const courseById = new Map(courses.map((c) => [c.id, c]));
+
+    const universityIds = [
+      ...new Set(
+        courses
+          .map((c) => c.university_id)
+          .filter((v): v is number => v != null),
+      ),
+    ];
+    const universities =
+      universityIds.length > 0
+        ? await this.prisma.university.findMany({
+            where: { id: { in: universityIds } },
+            select: { id: true, title: true },
+          })
+        : [];
+    const universityTitleById = new Map(
+      universities.map((u) => [u.id, u.title ?? null]),
+    );
+
+    const items = rows.map((pay) => {
+      const invoice =
+        pay.invoice_id != null ? invoiceById.get(pay.invoice_id) : undefined;
+      const course =
+        invoice?.course_id != null
+          ? courseById.get(invoice.course_id)
+          : undefined;
+      const universityId = course?.university_id ?? null;
+      return {
+        ...pay,
+        student_name:
+          invoice?.student_id != null
+            ? (userNameById.get(invoice.student_id) ?? null)
+            : null,
+        course_title: course?.title ?? null,
+        university_title:
+          universityId != null
+            ? (universityTitleById.get(universityId) ?? null)
+            : null,
+        mode_label: this.paymentModeLabel(pay.payment_type),
+      };
+    });
+
     return { items, total, page, limit };
+  }
+
+  /**
+   * Maps a payment_type enum to a human label:
+   *   cash -> 'Cash', cheque -> 'Cheque', bank -> 'Bank Transfer'.
+   * Fallback: Title-case the raw value; '—' when null/blank.
+   */
+  private paymentModeLabel(value: string | null | undefined): string {
+    if (value === null || value === undefined || value === '') return '—';
+    const known: Record<string, string> = {
+      cash: 'Cash',
+      cheque: 'Cheque',
+      bank: 'Bank Transfer',
+    };
+    return (
+      known[value] ?? value.charAt(0).toUpperCase() + value.slice(1).toLowerCase()
+    );
   }
 
   async getPayment(id: number) {
