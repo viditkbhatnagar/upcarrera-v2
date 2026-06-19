@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Download,
   Search,
@@ -9,6 +11,8 @@ import {
   Building2,
   ArrowUpDown,
   Calendar as CalendarIcon,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react";
 
 export const Route = createFileRoute("/enrollment/university-wise")({
@@ -35,20 +39,138 @@ type Row = {
   rejected: number;
 };
 
-const rows: Row[] = [
-  { name: "Symbiosis International University", short: "SIU", location: "Pune", approved: 318, ready: 48, submitted: 126, confirmed: 184, rejected: 6 },
-  { name: "Manipal University", short: "MU", location: "Manipal", approved: 286, ready: 36, submitted: 98, confirmed: 142, rejected: 10 },
-  { name: "Amity University", short: "AU", location: "Noida", approved: 342, ready: 54, submitted: 108, confirmed: 156, rejected: 14 },
-  { name: "Christ University", short: "CU", location: "Bangalore", approved: 198, ready: 22, submitted: 74, confirmed: 96, rejected: 4 },
-  { name: "Lovely Professional University", short: "LPU", location: "Jalandhar", approved: 254, ready: 41, submitted: 88, confirmed: 124, rejected: 8 },
-  { name: "Chandigarh University", short: "CGU", location: "Mohali", approved: 178, ready: 29, submitted: 62, confirmed: 88, rejected: 5 },
-  { name: "SRM Institute of Science & Tech.", short: "SRM", location: "Chennai", approved: 212, ready: 34, submitted: 78, confirmed: 112, rejected: 7 },
-  { name: "VIT University", short: "VIT", location: "Vellore", approved: 168, ready: 26, submitted: 58, confirmed: 84, rejected: 3 },
-];
+// ---- Live API wiring ----
+// There is no single "enrollments by university" endpoint, so we derive this
+// view from two real endpoints and group client-side:
+//   1. GET /applications  -> decorated rows carrying university_id /
+//      university_title / status_label. We bucket each application's status_label
+//      into the screen's columns.
+//   2. GET /universities  -> the university master, used only to enrich each
+//      group with a real location (state/address); applications carry no location.
+//
+// The applications status_label is one of Active | Inactive | Archived |
+// Converted (see applicationStatusLabel in students.service.ts). The granular
+// "Ready for Submission" lifecycle does NOT exist in the API, so that column is
+// always 0 — we never fabricate a value.
+
+interface ApiApplication {
+  university_id: number | null;
+  university_title: string | null;
+  status_label: string | null;
+}
+
+interface ApiUniversity {
+  id: number;
+  title: string | null;
+  state?: string | null;
+  address?: string | null;
+}
+
+const APPLICATIONS_LIMIT = 500;
+const UNIVERSITIES_LIMIT = 200;
+
+function deriveShort(name: string): string {
+  const words = name
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w && !/^(University|College|Institute|of|the|and|&)$/i.test(w));
+  const initials = words
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("")
+    .slice(0, 3);
+  return initials || name.slice(0, 3).toUpperCase() || "UNI";
+}
+
+/** Build the grouped rows from the live applications + universities payloads. */
+function buildRows(
+  applications: ApiApplication[],
+  universities: ApiUniversity[],
+): Row[] {
+  // university_id -> { state | address } for the location column.
+  const locationById = new Map<number, string>(
+    universities.map((u) => [u.id, u.state?.trim() || u.address?.trim() || "—"]),
+  );
+
+  type Bucket = Row & { _id: number | null };
+  const groups = new Map<string, Bucket>();
+
+  for (const app of applications) {
+    const id = app.university_id;
+    const name = app.university_title?.trim() || (id != null ? `University #${id}` : "Unassigned");
+    const key = id != null ? `id:${id}` : `name:${name}`;
+
+    let bucket = groups.get(key);
+    if (!bucket) {
+      bucket = {
+        _id: id,
+        name,
+        short: deriveShort(name),
+        location: id != null ? (locationById.get(id) ?? "—") : "—",
+        approved: 0,
+        ready: 0,
+        submitted: 0,
+        confirmed: 0,
+        rejected: 0,
+      };
+      groups.set(key, bucket);
+    }
+
+    // Total applications for the university.
+    bucket.approved += 1;
+    // Map the real status_label onto the available columns. "Ready for
+    // Submission" has no API equivalent, so it stays 0.
+    switch ((app.status_label ?? "").toLowerCase()) {
+      case "converted":
+        bucket.confirmed += 1;
+        break;
+      case "active":
+        bucket.submitted += 1;
+        break;
+      case "inactive":
+      case "archived":
+        bucket.rejected += 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return Array.from(groups.values()).map(({ _id, ...row }) => row);
+}
 
 type SortKey = keyof Pick<Row, "approved" | "ready" | "submitted" | "confirmed" | "rejected">;
 
 function UniversityWiseEnrollment() {
+  // Live applications (grouped client-side) + universities (for location).
+  const applicationsQuery = useQuery({
+    queryKey: ["applications", { page: 1, limit: APPLICATIONS_LIMIT }],
+    queryFn: () =>
+      apiGet<{ items: ApiApplication[]; total: number; page: number; limit: number }>(
+        "/applications",
+        { page: 1, limit: APPLICATIONS_LIMIT },
+      ),
+  });
+  const universitiesQuery = useQuery({
+    queryKey: ["universities", { page: 1, limit: UNIVERSITIES_LIMIT }],
+    queryFn: () =>
+      apiGet<{ items: ApiUniversity[]; total: number; page: number; limit: number }>(
+        "/universities",
+        { page: 1, limit: UNIVERSITIES_LIMIT },
+      ),
+  });
+
+  const isLoading = applicationsQuery.isLoading || universitiesQuery.isLoading;
+  const isError = applicationsQuery.isError;
+
+  const rows = useMemo(
+    () =>
+      buildRows(
+        applicationsQuery.data?.items ?? [],
+        universitiesQuery.data?.items ?? [],
+      ),
+    [applicationsQuery.data, universitiesQuery.data],
+  );
+
   const [course, setCourse] = useState(COURSES[0]);
   const [intake, setIntake] = useState(INTAKES[0]);
   const [from, setFrom] = useState("");
@@ -64,7 +186,7 @@ function UniversityWiseEnrollment() {
     );
     r = [...r].sort((a, b) => (sortDir === "desc" ? b[sortKey] - a[sortKey] : a[sortKey] - b[sortKey]));
     return r;
-  }, [search, sortKey, sortDir]);
+  }, [rows, search, sortKey, sortDir]);
 
   const totals = useMemo(
     () =>
@@ -224,7 +346,32 @@ function UniversityWiseEnrollment() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((r, i) => (
+              {isLoading ? (
+                <tr>
+                  <td colSpan={8} className="px-6 py-12 text-center">
+                    <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading enrollment data…
+                    </div>
+                  </td>
+                </tr>
+              ) : isError ? (
+                <tr>
+                  <td colSpan={8} className="px-6 py-12 text-center">
+                    <div className="flex flex-col items-center gap-2 text-sm text-destructive">
+                      <AlertTriangle className="h-5 w-5" />
+                      Failed to load enrollment data. Please try again.
+                    </div>
+                  </td>
+                </tr>
+              ) : filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-6 py-12 text-center text-sm text-muted-foreground">
+                    No universities match your filters.
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((r, i) => (
                 <tr key={r.name} className="border-b border-border/70 last:border-0 transition hover:bg-muted/40">
                   <td className="px-6 py-3.5 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
                   <td className="px-6 py-3.5">
@@ -259,7 +406,8 @@ function UniversityWiseEnrollment() {
                     </button>
                   </td>
                 </tr>
-              ))}
+                ))
+              )}
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-border bg-muted/30 text-sm font-semibold text-foreground">

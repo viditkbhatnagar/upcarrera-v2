@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Download,
   Search,
@@ -9,8 +11,7 @@ import {
   IndianRupee,
   Percent,
   AlertTriangle,
-  CheckCircle2,
-  Clock,
+  Loader2,
   Receipt,
   Activity,
   X,
@@ -18,7 +19,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -45,7 +45,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { formatINR, ALL_STUDENTS, UNIVERSITIES, COURSES, BATCHES } from "@/lib/students-data";
+import { formatINR, UNIVERSITIES, COURSES, BATCHES } from "@/lib/students-data";
 
 export const Route = createFileRoute("/fees/summary")({
   head: () => ({
@@ -61,140 +61,63 @@ export const Route = createFileRoute("/fees/summary")({
   component: FeeSummary,
 });
 
+// --- Live API wiring (GET /api/students/finance) -------------------------
+// Each item is the raw `users` row (id, name, email, phone, register_number,
+// code, university_id …) spread by the API and layered with the student's
+// finance row fields: tuitionFees / examFees / miscFees / scholarship_details /
+// payment_status (all null when the student has no finance row yet). The
+// endpoint joins NO university/course/batch names and carries NO paid /
+// outstanding / installment / receipt data — those are rendered "—" / 0 / empty
+// rather than fabricated. Source of truth: StudentsService.listFinance
+// (apps/api/src/students/students.service.ts).
+const EMPTY = "—";
+
+type PaymentStatusRaw = string | null;
+
+interface ApiFinanceRow {
+  id: number | string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  register_number: string | null;
+  code: number | string | null;
+  university_id: number | string | null;
+  finance_id: number | string | null;
+  tuitionFees: number | null;
+  examFees: number | null;
+  miscFees: number | null;
+  scholarship_details: string | null;
+  payment_status: PaymentStatusRaw;
+}
+
+interface FinanceListResponse {
+  items: ApiFinanceRow[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 // ---------- Types ----------
 type FeeStatus = "Fully Paid" | "Partially Paid" | "Due Soon" | "Overdue";
-type PaymentMode = "UPI" | "NEFT" | "RTGS" | "Cash" | "Card" | "Cheque";
-type VerifyStatus = "Verified" | "Unverified" | "Rejected";
-
-interface Installment {
-  no: number;
-  due: string;
-  amount: number;
-  paid: number;
-  status: "Paid" | "Partial" | "Pending" | "Overdue";
-  // merged payment info
-  receiptNo?: string;
-  paidOn?: string;
-  mode?: PaymentMode;
-  txnId?: string;
-  verification?: VerifyStatus;
-}
-
-interface Ledger {
-  totalFee: number;
-  discount: number;
-  scholarship: number;
-  netFee: number;
-  paid: number;
-  outstanding: number;
-  collectionPct: number;
-  nextDue: string;
-  installments: Installment[];
-  activity: { date: string; text: string; type: "payment" | "verify" | "reminder" | "system" }[];
-}
 
 interface SummaryRow {
+  rowId: string;
   id: string;
   name: string;
   university: string;
   course: string;
   intake: string;
+  tuitionFees: number;
+  examFees: number;
+  miscFees: number;
+  scholarshipDetails: string;
   totalFee: number;
   paid: number;
-  outstanding: number;
+  outstanding: number | null; // null when API provides no paid figure
   nextDue: string;
+  paymentStatus: string;
   status: FeeStatus;
-  ledger: Ledger;
 }
-
-// ---------- Mock seed (derive from ALL_STUDENTS) ----------
-const MODES: PaymentMode[] = ["UPI", "NEFT", "RTGS", "Cash", "Card", "Cheque"];
-
-function buildLedger(total: number, paid: number, seedNum: number): Ledger {
-  let s = seedNum * 31 + 7;
-  const rnd = () => {
-    s = (s * 9301 + 49297) % 233280;
-    return s / 233280;
-  };
-  const discount = Math.round(total * 0.05);
-  const scholarship = rnd() > 0.7 ? Math.round(total * 0.08) : 0;
-  const netFee = total - discount - scholarship;
-  const outstanding = Math.max(0, netFee - paid);
-  const collectionPct = Math.round((paid / netFee) * 100);
-
-  const count = 4;
-  const each = Math.round(netFee / count);
-  const baseMonth = ["15 Jan 2026", "15 Apr 2026", "15 Jul 2026", "15 Oct 2026"];
-  let remainingPaid = paid;
-  const installments: Installment[] = [];
-  for (let i = 0; i < count; i++) {
-    const amt = i === count - 1 ? netFee - each * (count - 1) : each;
-    const p = Math.min(amt, Math.max(0, remainingPaid));
-    remainingPaid -= p;
-    const isPaid = p >= amt;
-    const isPartial = p > 0 && p < amt;
-    const overdue = !isPaid && i < 2;
-    installments.push({
-      no: i + 1,
-      due: baseMonth[i],
-      amount: amt,
-      paid: p,
-      status: isPaid ? "Paid" : isPartial ? "Partial" : overdue ? "Overdue" : "Pending",
-      receiptNo: p > 0 ? `RCPT-${10240 + seedNum * 10 + i}` : undefined,
-      paidOn: p > 0 ? baseMonth[i].replace("15", String(10 + i)) : undefined,
-      mode: p > 0 ? MODES[Math.floor(rnd() * MODES.length)] : undefined,
-      txnId: p > 0 ? `TXN${(seedNum * 1000 + i * 17).toString().padStart(8, "0")}` : undefined,
-      verification: p > 0 ? (rnd() > 0.15 ? "Verified" : "Unverified") : undefined,
-    });
-  }
-
-  const nextDue = installments.find((i) => i.status !== "Paid")?.due ?? "—";
-
-  const activity: Ledger["activity"] = [];
-  installments.forEach((i) => {
-    if (i.paidOn) {
-      activity.push({ date: i.paidOn, text: `Payment of ${formatINR(i.paid)} recorded for Instalment ${i.no}`, type: "payment" });
-      if (i.verification === "Verified") {
-        activity.push({ date: i.paidOn, text: `Payment ${i.receiptNo} verified by Finance`, type: "verify" });
-      }
-    }
-  });
-  activity.push({ date: "01 Jan 2026", text: "Fee structure assigned to student", type: "system" });
-
-  return {
-    totalFee: total,
-    discount,
-    scholarship,
-    netFee,
-    paid,
-    outstanding,
-    collectionPct,
-    nextDue,
-    installments,
-    activity: activity.reverse(),
-  };
-}
-
-const ROWS: SummaryRow[] = ALL_STUDENTS.map((st, idx) => {
-  const ledger = buildLedger(st.totalFee, st.paid, idx + 1);
-  let status: FeeStatus = "Partially Paid";
-  if (ledger.outstanding === 0) status = "Fully Paid";
-  else if (ledger.installments.some((i) => i.status === "Overdue")) status = "Overdue";
-  else if (ledger.outstanding > 0 && ledger.collectionPct >= 50) status = "Due Soon";
-  return {
-    id: st.id,
-    name: st.name,
-    university: st.university,
-    course: st.course,
-    intake: st.batch,
-    totalFee: ledger.totalFee,
-    paid: ledger.paid,
-    outstanding: ledger.outstanding,
-    nextDue: ledger.nextDue,
-    status,
-    ledger,
-  };
-});
 
 const STATUS_STYLES: Record<FeeStatus, string> = {
   "Fully Paid": "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200",
@@ -202,6 +125,58 @@ const STATUS_STYLES: Record<FeeStatus, string> = {
   "Due Soon": "bg-amber-100 text-amber-700 ring-1 ring-amber-200",
   Overdue: "bg-red-100 text-red-700 ring-1 ring-red-200",
 };
+
+function asText(value: string | number | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
+}
+
+function toNum(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+// Map the free-text finance.payment_status onto the UI badge union. Anything we
+// don't recognise falls back to "Partially Paid" so styling still resolves.
+function toFeeStatus(raw: PaymentStatusRaw): FeeStatus {
+  const s = (raw ?? "").trim().toLowerCase();
+  if (["paid", "fully paid", "complete", "completed", "success"].includes(s)) return "Fully Paid";
+  if (["overdue", "due", "unpaid", "pending"].includes(s)) return "Overdue";
+  if (["due soon", "upcoming"].includes(s)) return "Due Soon";
+  return "Partially Paid";
+}
+
+function mapApiRow(r: ApiFinanceRow): SummaryRow {
+  const tuition = toNum(r.tuitionFees);
+  const exam = toNum(r.examFees);
+  const misc = toNum(r.miscFees);
+  const totalFee = tuition + exam + misc;
+  const displayId =
+    r.register_number != null && String(r.register_number).trim() !== ""
+      ? String(r.register_number)
+      : r.code != null && String(r.code).trim() !== ""
+        ? String(r.code)
+        : `STU-${r.id}`;
+  return {
+    rowId: String(r.id),
+    id: displayId,
+    name: asText(r.name),
+    // listFinance joins no university/course/batch names.
+    university: EMPTY,
+    course: EMPTY,
+    intake: EMPTY,
+    tuitionFees: tuition,
+    examFees: exam,
+    miscFees: misc,
+    scholarshipDetails: asText(r.scholarship_details),
+    totalFee,
+    paid: 0, // endpoint provides no paid amount
+    outstanding: null, // unknown without a paid figure
+    nextDue: EMPTY,
+    paymentStatus: asText(r.payment_status),
+    status: toFeeStatus(r.payment_status),
+  };
+}
+
+const PAGE_SIZE = 50;
 
 // ---------- Component ----------
 function FeeSummary() {
@@ -213,9 +188,19 @@ function FeeSummary() {
   const [exportOpen, setExportOpen] = useState(false);
   const [activeStudent, setActiveStudent] = useState<SummaryRow | null>(null);
 
+  // Live student finance list. Pagination/date/university_id are supported
+  // server-side; the text + dropdown filters below refine the fetched page over
+  // the real decorated values.
+  const { data, isLoading, isError, error, isFetching } = useQuery({
+    queryKey: ["students", "finance", { page: 1, limit: PAGE_SIZE }],
+    queryFn: () => apiGet<FinanceListResponse>("/students/finance", { page: 1, limit: PAGE_SIZE }),
+  });
+
+  const allRows = useMemo(() => (data?.items ?? []).map(mapApiRow), [data]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return ROWS.filter((r) => {
+    return allRows.filter((r) => {
       if (q && !`${r.name} ${r.id}`.toLowerCase().includes(q)) return false;
       if (statusFilter !== "all" && r.status !== statusFilter) return false;
       if (uniFilter !== "all" && r.university !== uniFilter) return false;
@@ -223,17 +208,20 @@ function FeeSummary() {
       if (intakeFilter !== "all" && r.intake !== intakeFilter) return false;
       return true;
     });
-  }, [query, statusFilter, uniFilter, courseFilter, intakeFilter]);
+  }, [allRows, query, statusFilter, uniFilter, courseFilter, intakeFilter]);
 
   const totals = useMemo(() => {
     return filtered.reduce(
       (acc, r) => {
         acc.total += r.totalFee;
         acc.paid += r.paid;
-        acc.out += r.outstanding;
+        if (r.outstanding != null) {
+          acc.out += r.outstanding;
+          acc.hasOut = true;
+        }
         return acc;
       },
-      { total: 0, paid: 0, out: 0 },
+      { total: 0, paid: 0, out: 0, hasOut: false },
     );
   }, [filtered]);
 
@@ -257,7 +245,11 @@ function FeeSummary() {
         <KpiCard label="Students" value={String(filtered.length)} icon={Activity} />
         <KpiCard label="Total Receivable" value={formatINR(totals.total)} icon={IndianRupee} />
         <KpiCard label="Collected" value={formatINR(totals.paid)} icon={Wallet} />
-        <KpiCard label="Outstanding" value={formatINR(totals.out)} icon={AlertTriangle} />
+        <KpiCard
+          label="Outstanding"
+          value={totals.hasOut ? formatINR(totals.out) : EMPTY}
+          icon={AlertTriangle}
+        />
       </div>
 
       {/* Filters */}
@@ -284,7 +276,12 @@ function FeeSummary() {
       {/* Table */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">Fee Ledger</CardTitle>
+          <CardTitle className="text-base">
+            Fee Ledger
+            {isFetching && !isLoading && (
+              <Loader2 className="ml-2 inline h-3.5 w-3.5 animate-spin text-muted-foreground/60 align-text-bottom" />
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
@@ -304,33 +301,57 @@ function FeeSummary() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell className="font-mono text-xs">{r.id}</TableCell>
-                  <TableCell className="font-medium">{r.name}</TableCell>
-                  <TableCell className="text-sm">{r.university}</TableCell>
-                  <TableCell className="text-sm">{r.course}</TableCell>
-                  <TableCell className="text-sm">{r.intake}</TableCell>
-                  <TableCell className="text-right">{formatINR(r.totalFee)}</TableCell>
-                  <TableCell className="text-right text-emerald-700">{formatINR(r.paid)}</TableCell>
-                  <TableCell className="text-right text-red-600">{formatINR(r.outstanding)}</TableCell>
-                  <TableCell className="text-sm">{r.nextDue}</TableCell>
-                  <TableCell>
-                    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[r.status]}`}>{r.status}</span>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button size="sm" variant="outline" onClick={() => setActiveStudent(r)}>
-                      <Eye className="h-3.5 w-3.5" /> View Ledger
-                    </Button>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={11} className="py-12 text-center">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/50" />
+                      <div className="text-sm text-muted-foreground">Loading fee ledger…</div>
+                    </div>
                   </TableCell>
                 </TableRow>
-              ))}
-              {filtered.length === 0 && (
+              ) : isError ? (
+                <TableRow>
+                  <TableCell colSpan={11} className="py-12 text-center">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <AlertTriangle className="h-8 w-8 text-red-500/60" />
+                      <div className="text-sm font-medium text-foreground">Couldn’t load fee ledger</div>
+                      <div className="text-xs text-muted-foreground">
+                        {error instanceof Error ? error.message : "Please try again."}
+                      </div>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : filtered.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={11} className="text-center text-sm text-muted-foreground py-10">
                     No matching students.
                   </TableCell>
                 </TableRow>
+              ) : (
+                filtered.map((r) => (
+                  <TableRow key={r.rowId}>
+                    <TableCell className="font-mono text-xs">{r.id}</TableCell>
+                    <TableCell className="font-medium">{r.name}</TableCell>
+                    <TableCell className="text-sm">{r.university}</TableCell>
+                    <TableCell className="text-sm">{r.course}</TableCell>
+                    <TableCell className="text-sm">{r.intake}</TableCell>
+                    <TableCell className="text-right">{formatINR(r.totalFee)}</TableCell>
+                    <TableCell className="text-right text-emerald-700">{formatINR(r.paid)}</TableCell>
+                    <TableCell className="text-right text-red-600">
+                      {r.outstanding != null ? formatINR(r.outstanding) : EMPTY}
+                    </TableCell>
+                    <TableCell className="text-sm">{r.nextDue}</TableCell>
+                    <TableCell>
+                      <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[r.status]}`}>{r.status}</span>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button size="sm" variant="outline" onClick={() => setActiveStudent(r)}>
+                        <Eye className="h-3.5 w-3.5" /> View Ledger
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
               )}
             </TableBody>
           </Table>
@@ -476,7 +497,7 @@ function ProfileDrawer({ student, onClose }: { student: SummaryRow | null; onClo
 }
 
 function ProfileTabs({ row }: { row: SummaryRow }) {
-  const { ledger } = row;
+  const outstandingLabel = row.outstanding != null ? formatINR(row.outstanding) : EMPTY;
   return (
     <Tabs defaultValue="overview" className="w-full">
       <TabsList className="grid w-full grid-cols-4">
@@ -489,14 +510,14 @@ function ProfileTabs({ row }: { row: SummaryRow }) {
       {/* Overview */}
       <TabsContent value="overview" className="mt-4">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <MiniStat label="Total Fee" value={formatINR(ledger.totalFee)} />
-          <MiniStat label="Discount" value={formatINR(ledger.discount)} />
-          <MiniStat label="Scholarship" value={formatINR(ledger.scholarship)} />
-          <MiniStat label="Net Fee" value={formatINR(ledger.netFee)} />
-          <MiniStat label="Paid Amount" value={formatINR(ledger.paid)} tone="success" />
-          <MiniStat label="Outstanding" value={formatINR(ledger.outstanding)} tone="danger" />
-          <MiniStat label="Collection %" value={`${ledger.collectionPct}%`} tone="primary" />
-          <MiniStat label="Next Due Date" value={ledger.nextDue} />
+          <MiniStat label="Total Fee" value={formatINR(row.totalFee)} />
+          <MiniStat label="Discount" value={EMPTY} />
+          <MiniStat label="Scholarship" value={row.scholarshipDetails} />
+          <MiniStat label="Net Fee" value={formatINR(row.totalFee)} />
+          <MiniStat label="Paid Amount" value={formatINR(row.paid)} tone="success" />
+          <MiniStat label="Outstanding" value={outstandingLabel} tone="danger" />
+          <MiniStat label="Payment Status" value={row.paymentStatus} tone="primary" />
+          <MiniStat label="Next Due Date" value={row.nextDue} />
         </div>
       </TabsContent>
 
@@ -505,13 +526,13 @@ function ProfileTabs({ row }: { row: SummaryRow }) {
         <Card>
           <CardContent className="p-4 text-sm">
             <dl className="grid grid-cols-2 gap-y-3 md:grid-cols-4">
-              <DefItem label="Tuition Fee" value={formatINR(Math.round(ledger.totalFee * 0.85))} />
-              <DefItem label="Registration" value={formatINR(Math.round(ledger.totalFee * 0.05))} />
-              <DefItem label="Exam Fee" value={formatINR(Math.round(ledger.totalFee * 0.07))} />
-              <DefItem label="Misc / Library" value={formatINR(Math.round(ledger.totalFee * 0.03))} />
-              <DefItem label="Discount" value={`- ${formatINR(ledger.discount)}`} />
-              <DefItem label="Scholarship" value={`- ${formatINR(ledger.scholarship)}`} />
-              <DefItem label="Net Payable" value={formatINR(ledger.netFee)} highlight />
+              <DefItem label="Tuition Fee" value={formatINR(row.tuitionFees)} />
+              <DefItem label="Registration" value={EMPTY} />
+              <DefItem label="Exam Fee" value={formatINR(row.examFees)} />
+              <DefItem label="Misc / Library" value={formatINR(row.miscFees)} />
+              <DefItem label="Discount" value={EMPTY} />
+              <DefItem label="Scholarship" value={row.scholarshipDetails} />
+              <DefItem label="Net Payable" value={formatINR(row.totalFee)} highlight />
             </dl>
           </CardContent>
         </Card>
@@ -539,28 +560,11 @@ function ProfileTabs({ row }: { row: SummaryRow }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {ledger.installments.map((i) => (
-                  <TableRow key={i.no}>
-                    <TableCell className="font-medium">{i.no}</TableCell>
-                    <TableCell>{i.due}</TableCell>
-                    <TableCell className="text-right">{formatINR(i.amount)}</TableCell>
-                    <TableCell className="text-right text-emerald-700">{formatINR(i.paid)}</TableCell>
-                    <TableCell className="text-right text-red-600">{formatINR(i.amount - i.paid)}</TableCell>
-                    <TableCell><InstStatus s={i.status} /></TableCell>
-                    <TableCell className="font-mono text-xs">{i.receiptNo ?? "—"}</TableCell>
-                    <TableCell className="text-xs">{i.paidOn ?? "—"}</TableCell>
-                    <TableCell className="text-xs">{i.mode ?? "—"}</TableCell>
-                    <TableCell className="font-mono text-xs">{i.txnId ?? "—"}</TableCell>
-                    <TableCell>{i.verification ? <VerifBadge v={i.verification} /> : <span className="text-xs text-muted-foreground">—</span>}</TableCell>
-                    <TableCell className="text-right">
-                      {i.paid > 0 && (
-                        <Button size="sm" variant="outline" onClick={() => toast.success(`Opened receipt ${i.receiptNo}`)}>
-                          <Receipt className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                <TableRow>
+                  <TableCell colSpan={12} className="text-center text-sm text-muted-foreground py-10">
+                    No installment schedule available.
+                  </TableCell>
+                </TableRow>
               </TableBody>
             </Table>
           </CardContent>
@@ -571,17 +575,10 @@ function ProfileTabs({ row }: { row: SummaryRow }) {
       <TabsContent value="activity" className="mt-4">
         <Card>
           <CardContent className="p-4">
-            <ol className="relative space-y-4 border-l pl-5">
-              {ledger.activity.map((a, idx) => (
-                <li key={idx} className="relative">
-                  <span className="absolute -left-[26px] top-1 grid h-4 w-4 place-items-center rounded-full bg-primary/15 text-primary">
-                    <span className="h-2 w-2 rounded-full bg-primary" />
-                  </span>
-                  <div className="text-sm">{a.text}</div>
-                  <div className="text-xs text-muted-foreground">{a.date}</div>
-                </li>
-              ))}
-            </ol>
+            <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
+              <Receipt className="h-8 w-8 text-muted-foreground/40" />
+              <div className="text-sm text-muted-foreground">No activity recorded.</div>
+            </div>
           </CardContent>
         </Card>
       </TabsContent>
@@ -609,30 +606,6 @@ function DefItem({ label, value, highlight }: { label: string; value: string; hi
       <dd className={`mt-0.5 ${highlight ? "text-base font-semibold" : "text-sm font-medium"}`}>{value}</dd>
     </div>
   );
-}
-
-function InstStatus({ s }: { s: Installment["status"] }) {
-  const map: Record<Installment["status"], { cls: string; icon: any }> = {
-    Paid: { cls: "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200", icon: CheckCircle2 },
-    Partial: { cls: "bg-sky-100 text-sky-700 ring-1 ring-sky-200", icon: Activity },
-    Pending: { cls: "bg-amber-100 text-amber-700 ring-1 ring-amber-200", icon: Clock },
-    Overdue: { cls: "bg-red-100 text-red-700 ring-1 ring-red-200", icon: AlertTriangle },
-  };
-  const Icon = map[s].icon;
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${map[s].cls}`}>
-      <Icon className="h-3 w-3" /> {s}
-    </span>
-  );
-}
-
-function VerifBadge({ v }: { v: VerifyStatus }) {
-  const map: Record<VerifyStatus, string> = {
-    Verified: "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200",
-    Unverified: "bg-amber-100 text-amber-700 ring-1 ring-amber-200",
-    Rejected: "bg-red-100 text-red-700 ring-1 ring-red-200",
-  };
-  return <Badge className={`${map[v]} border-0`}>{v}</Badge>;
 }
 
 // keep import used

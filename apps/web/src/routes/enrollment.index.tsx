@@ -1,14 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
-  CheckCircle2,
   Clock,
   Send,
   GraduationCap,
   RefreshCw,
   FileCheck2,
-  ArrowUpRight,
-  ArrowDownRight,
   MoreHorizontal,
   Filter,
   Download,
@@ -16,7 +15,8 @@ import {
   CalendarRange,
   Activity,
   FileSignature,
-  BadgeCheck,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react";
 
 export const Route = createFileRoute("/enrollment/")({
@@ -31,23 +31,6 @@ export const Route = createFileRoute("/enrollment/")({
 
 type Tint = "primary" | "accent" | "success" | "warning" | "info";
 
-const kpis: {
-  label: string;
-  value: string;
-  delta: string;
-  up: boolean;
-  icon: any;
-  tint: Tint;
-  hint: string;
-}[] = [
-  { label: "Approved Applications", value: "1,284", delta: "+9.2%", up: true, icon: FileCheck2, tint: "primary", hint: "Cleared by admissions" },
-  { label: "Enrollment Pending", value: "342", delta: "+4.1%", up: true, icon: Clock, tint: "warning", hint: "Awaiting processing" },
-  { label: "Ready for Submission", value: "186", delta: "+12.6%", up: true, icon: FileSignature, tint: "info", hint: "Docs verified" },
-  { label: "Submitted to University", value: "742", delta: "+6.8%", up: true, icon: Send, tint: "accent", hint: "In confirmation" },
-  { label: "Successfully Enrolled", value: "968", delta: "+15.3%", up: true, icon: GraduationCap, tint: "success", hint: "Confirmed by university" },
-  { label: "Re-registration Pending", value: "214", delta: "-2.4%", up: false, icon: RefreshCw, tint: "primary", hint: "Continuing students" },
-];
-
 const tintMap: Record<Tint, string> = {
   primary: "bg-primary/10 text-primary",
   accent: "bg-accent/10 text-accent",
@@ -56,49 +39,70 @@ const tintMap: Record<Tint, string> = {
   info: "bg-primary/10 text-primary",
 };
 
-const funnel = [
-  { stage: "Approved Applications", count: 1284, icon: FileCheck2, tint: "primary" as Tint },
-  { stage: "Enrollment Pending", count: 342, icon: Clock, tint: "warning" as Tint },
-  { stage: "Ready for Submission", count: 186, icon: FileSignature, tint: "info" as Tint },
-  { stage: "Submitted to University", count: 742, icon: Send, tint: "accent" as Tint },
-  { stage: "Enrolled", count: 968, icon: GraduationCap, tint: "success" as Tint },
-];
-
-const trendByYear: Record<string, number[]> = {
-  "2026": [62, 74, 88, 96, 110, 124, 138, 152, 168, 180, 198, 212],
-  "2025": [48, 56, 70, 82, 90, 104, 118, 130, 142, 158, 174, 188],
-  "2024": [32, 40, 52, 64, 72, 84, 92, 104, 116, 128, 138, 150],
-};
-
 const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-const universities = [
-  { name: "Symbiosis International", pending: 48, submitted: 126, confirmed: 184, due: 32 },
-  { name: "Manipal University", pending: 36, submitted: 98, confirmed: 142, due: 28 },
-  { name: "Amity University", pending: 54, submitted: 108, confirmed: 156, due: 41 },
-  { name: "Christ University", pending: 22, submitted: 74, confirmed: 96, due: 18 },
-  { name: "Lovely Professional", pending: 41, submitted: 88, confirmed: 124, due: 36 },
-  { name: "Chandigarh University", pending: 29, submitted: 62, confirmed: 88, due: 24 },
+// --- Live API wiring -------------------------------------------------------
+// KPI counts come from GET /students/stats, whose service method studentStats()
+// returns { total, by_status: { Pending, "In Progress", Enrolled, "Passed Out",
+// Dropout, Cancelled } } (admissionStatusCounts groupBy over admission_status).
+// The total applications count comes from GET /applications, whose
+// listApplications() returns { items, total, page, limit }.
+//
+// Fields the API does NOT provide on this dashboard — the monthly enrolment
+// trend series, per-university pending/submitted/confirmed/progression-due
+// breakdown, per-intake approved/enrolled/pending split, and a live activity
+// feed — are rendered as empty states / 0 rather than fabricated.
+interface StudentStats {
+  total: number;
+  by_status: Record<string, number>;
+}
+
+interface ApplicationsList {
+  items: unknown[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+type KpiDef = {
+  label: string;
+  statusKey: string | null; // null -> use applications total
+  icon: typeof FileCheck2;
+  tint: Tint;
+  hint: string;
+};
+
+// Each card maps to a real admission_status bucket from /students/stats, except
+// "Total Applications" which is sourced from /applications total.
+const KPI_DEFS: KpiDef[] = [
+  { label: "Total Applications", statusKey: null, icon: FileCheck2, tint: "primary", hint: "All admission applications" },
+  { label: "Enrollment Pending", statusKey: "Pending", icon: Clock, tint: "warning", hint: "Awaiting processing" },
+  { label: "In Progress", statusKey: "In Progress", icon: FileSignature, tint: "info", hint: "Being processed" },
+  { label: "Successfully Enrolled", statusKey: "Enrolled", icon: GraduationCap, tint: "success", hint: "Confirmed enrolment" },
+  { label: "Passed Out", statusKey: "Passed Out", icon: Send, tint: "accent", hint: "Completed students" },
+  { label: "Re-registration Pending", statusKey: "Dropout", icon: RefreshCw, tint: "primary", hint: "Dropout / continuing" },
 ];
 
-const intakes = [
-  { intake: "Jan 2026 — Spring", approved: 412, enrolled: 348, pending: 64 },
-  { intake: "Jul 2026 — Monsoon", approved: 538, enrolled: 0, pending: 142 },
-  { intake: "Sep 2026 — Fall", approved: 286, enrolled: 0, pending: 96 },
-  { intake: "Jul 2025 — Monsoon", approved: 612, enrolled: 568, pending: 12 },
-  { intake: "Jan 2025 — Spring", approved: 484, enrolled: 470, pending: 8 },
+// Funnel stages mapped onto the same real admission_status buckets.
+const FUNNEL_DEFS: { stage: string; statusKey: string; icon: typeof FileCheck2; tint: Tint }[] = [
+  { stage: "Pending", statusKey: "Pending", icon: Clock, tint: "warning" },
+  { stage: "In Progress", statusKey: "In Progress", icon: FileSignature, tint: "info" },
+  { stage: "Enrolled", statusKey: "Enrolled", icon: GraduationCap, tint: "success" },
+  { stage: "Passed Out", statusKey: "Passed Out", icon: Send, tint: "accent" },
+  { stage: "Dropout", statusKey: "Dropout", icon: RefreshCw, tint: "primary" },
 ];
 
-const activities = [
-  { type: "Enrollment Submitted", who: "Operations Team", target: "Ananya Sharma → Symbiosis (MBA)", time: "8m ago", icon: Send, tint: "accent" as Tint },
-  { type: "Confirmation Received", who: "Manipal University", target: "Karan Verma — B.Tech CSE", time: "24m ago", icon: BadgeCheck, tint: "success" as Tint },
-  { type: "Re-registration Completed", who: "Priya Iyer", target: "Year 2 — BBA (Amity)", time: "1h ago", icon: RefreshCw, tint: "primary" as Tint },
-  { type: "Enrollment Submitted", who: "Operations Team", target: "Aarav Singh → Christ (M.Sc DS)", time: "2h ago", icon: Send, tint: "accent" as Tint },
-  { type: "Confirmation Received", who: "Amity University", target: "Megha Nair — BBA", time: "3h ago", icon: BadgeCheck, tint: "success" as Tint },
-  { type: "Re-registration Completed", who: "Rohit Mehra", target: "Year 3 — B.Tech (Manipal)", time: "5h ago", icon: RefreshCw, tint: "primary" as Tint },
-];
+const EMPTY = "—";
 
-function KPICard({ k }: { k: (typeof kpis)[number] }) {
+function KPICard({
+  k,
+  value,
+  loading,
+}: {
+  k: KpiDef;
+  value: number;
+  loading: boolean;
+}) {
   const Icon = k.icon;
   return (
     <button className="group text-left rounded-2xl border border-border bg-surface p-5 shadow-card transition hover:shadow-card-hover hover:-translate-y-0.5">
@@ -110,11 +114,13 @@ function KPICard({ k }: { k: (typeof kpis)[number] }) {
       </div>
       <div className="mt-5 text-[13px] font-medium text-muted-foreground">{k.label}</div>
       <div className="mt-1 flex items-baseline gap-2">
-        <div className="text-2xl font-bold tracking-tight text-foreground">{k.value}</div>
-        <span className={`inline-flex items-center gap-0.5 text-xs font-semibold ${k.up ? "text-success" : "text-destructive"}`}>
-          {k.up ? <ArrowUpRight className="h-3.5 w-3.5" /> : <ArrowDownRight className="h-3.5 w-3.5" />}
-          {k.delta}
-        </span>
+        {loading ? (
+          <div className="h-7 w-16 animate-pulse rounded bg-muted" />
+        ) : (
+          <div className="text-2xl font-bold tracking-tight text-foreground">
+            {value.toLocaleString()}
+          </div>
+        )}
       </div>
       <div className="mt-1 text-[11px] text-muted-foreground">{k.hint}</div>
     </button>
@@ -122,10 +128,53 @@ function KPICard({ k }: { k: (typeof kpis)[number] }) {
 }
 
 function EnrollmentDashboard() {
-  const [year, setYear] = useState("2026");
-  const trend = trendByYear[year];
-  const maxTrend = useMemo(() => Math.max(...trend), [trend]);
-  const maxFunnel = useMemo(() => Math.max(...funnel.map(f => f.count)), []);
+  // Live admission-status counts (drives KPIs + funnel).
+  const statsQuery = useQuery({
+    queryKey: ["enrollment", "student-stats"],
+    queryFn: () => apiGet<StudentStats>("/students/stats"),
+  });
+
+  // Live total applications count (drives the "Total Applications" KPI).
+  const applicationsQuery = useQuery({
+    queryKey: ["enrollment", "applications", "count"],
+    queryFn: () => apiGet<ApplicationsList>("/applications", { page: 1, limit: 1 }),
+  });
+
+  const byStatus = statsQuery.data?.by_status;
+  const applicationsTotal = applicationsQuery.data?.total ?? 0;
+
+  const statsLoading = statsQuery.isLoading;
+  const statsError = statsQuery.isError;
+
+  const kpiValueFor = (k: KpiDef): number => {
+    if (k.statusKey === null) return applicationsTotal;
+    return byStatus?.[k.statusKey] ?? 0;
+  };
+
+  const kpiLoadingFor = (k: KpiDef): boolean =>
+    k.statusKey === null ? applicationsQuery.isLoading : statsLoading;
+
+  // Funnel bars from the same real status buckets.
+  const funnel = useMemo(
+    () =>
+      FUNNEL_DEFS.map((f) => ({
+        ...f,
+        count: byStatus?.[f.statusKey] ?? 0,
+      })),
+    [byStatus],
+  );
+  const maxFunnel = useMemo(() => Math.max(1, ...funnel.map((f) => f.count)), [funnel]);
+
+  // The monthly trend series is not provided by the API — render an empty chart
+  // state rather than fabricate a series.
+  const trend: number[] = [];
+  const hasTrend = trend.length > 0;
+
+  // University / intake / activity breakdowns are not exposed by the API for
+  // this dashboard — render explicit empty states (no fabricated rows).
+  const universities: never[] = [];
+  const intakes: never[] = [];
+  const activities: never[] = [];
 
   return (
     <div className="space-y-6">
@@ -151,9 +200,21 @@ function EnrollmentDashboard() {
       </div>
 
       {/* KPIs */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        {kpis.map(k => <KPICard key={k.label} k={k} />)}
-      </div>
+      {statsError ? (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-border bg-surface py-12 text-center shadow-card">
+          <AlertTriangle className="h-10 w-10 text-red-500/60" />
+          <div className="text-sm font-semibold text-foreground">Couldn’t load enrollment stats</div>
+          <div className="text-xs text-muted-foreground">
+            {statsQuery.error instanceof Error ? statsQuery.error.message : "Please try again."}
+          </div>
+        </div>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          {KPI_DEFS.map((k) => (
+            <KPICard key={k.label} k={k} value={kpiValueFor(k)} loading={kpiLoadingFor(k)} />
+          ))}
+        </div>
+      )}
 
       {/* Funnel + Trend */}
       <div className="grid gap-6 xl:grid-cols-5">
@@ -164,74 +225,83 @@ function EnrollmentDashboard() {
               <p className="text-xs text-muted-foreground">Application → Enrollment lifecycle</p>
             </div>
           </div>
-          <div className="mt-5 space-y-2.5">
-            {funnel.map((f, i) => {
-              const Icon = f.icon;
-              const pct = (f.count / maxFunnel) * 100;
-              return (
-                <div key={f.stage}>
-                  <div className="rounded-xl border border-border/70 p-3 transition hover:bg-muted/40">
-                    <div className="flex items-center gap-3">
-                      <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${tintMap[f.tint]}`}>
-                        <Icon className="h-4 w-4" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="font-medium text-foreground">{f.stage}</span>
-                          <span className="font-semibold tabular-nums text-foreground">{f.count.toLocaleString()}</span>
+          {statsLoading ? (
+            <div className="mt-8 flex flex-col items-center justify-center gap-2 py-10 text-center">
+              <Loader2 className="h-7 w-7 animate-spin text-muted-foreground/50" />
+              <div className="text-sm text-muted-foreground">Loading funnel…</div>
+            </div>
+          ) : (
+            <div className="mt-5 space-y-2.5">
+              {funnel.map((f, i) => {
+                const Icon = f.icon;
+                const pct = (f.count / maxFunnel) * 100;
+                return (
+                  <div key={f.stage}>
+                    <div className="rounded-xl border border-border/70 p-3 transition hover:bg-muted/40">
+                      <div className="flex items-center gap-3">
+                        <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${tintMap[f.tint]}`}>
+                          <Icon className="h-4 w-4" />
                         </div>
-                        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                          <div className={`h-full rounded-full ${tintMap[f.tint].split(" ")[0].replace("/10", "")}`} style={{ width: `${pct}%` }} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-medium text-foreground">{f.stage}</span>
+                            <span className="font-semibold tabular-nums text-foreground">{f.count.toLocaleString()}</span>
+                          </div>
+                          <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                            <div className={`h-full rounded-full ${tintMap[f.tint].split(" ")[0].replace("/10", "")}`} style={{ width: `${pct}%` }} />
+                          </div>
                         </div>
                       </div>
                     </div>
+                    {i < funnel.length - 1 && (
+                      <div className="my-1 flex justify-center">
+                        <div className="h-3 w-px bg-border" />
+                      </div>
+                    )}
                   </div>
-                  {i < funnel.length - 1 && (
-                    <div className="my-1 flex justify-center">
-                      <div className="h-3 w-px bg-border" />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="xl:col-span-3 rounded-2xl border border-border bg-surface p-6 shadow-card">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-base font-semibold tracking-tight text-foreground">Enrollment Trend</h3>
-              <p className="text-xs text-muted-foreground">Monthly enrolled students across {year}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <select
-                value={year}
-                onChange={(e) => setYear(e.target.value)}
-                className="h-9 rounded-lg border border-border bg-surface px-3 text-sm font-medium text-foreground hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/30"
-              >
-                {Object.keys(trendByYear).map(y => <option key={y} value={y}>{y}</option>)}
-              </select>
+              <p className="text-xs text-muted-foreground">Monthly enrolled students</p>
             </div>
           </div>
 
-          <div className="mt-6 flex h-56 items-end gap-2.5">
-            {trend.map((v, i) => {
-              const h = (v / maxTrend) * 100;
-              return (
-                <div key={i} className="group relative flex flex-1 flex-col items-center gap-1.5">
-                  <div className="relative w-full">
-                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 rounded bg-foreground px-1.5 py-0.5 text-[10px] font-semibold text-background opacity-0 transition group-hover:opacity-100">
-                      {v}
+          {hasTrend ? (
+            <div className="mt-6 flex h-56 items-end gap-2.5">
+              {trend.map((v, i) => {
+                const maxTrend = Math.max(1, ...trend);
+                const h = (v / maxTrend) * 100;
+                return (
+                  <div key={i} className="group relative flex flex-1 flex-col items-center gap-1.5">
+                    <div className="relative w-full">
+                      <div className="absolute -top-6 left-1/2 -translate-x-1/2 rounded bg-foreground px-1.5 py-0.5 text-[10px] font-semibold text-background opacity-0 transition group-hover:opacity-100">
+                        {v}
+                      </div>
+                      <div
+                        className="w-full rounded-md bg-gradient-to-t from-primary to-primary/60 transition-all group-hover:from-accent group-hover:to-accent/70"
+                        style={{ height: `${Math.max(h * 1.6, 12)}px` }}
+                      />
                     </div>
-                    <div
-                      className="w-full rounded-md bg-gradient-to-t from-primary to-primary/60 transition-all group-hover:from-accent group-hover:to-accent/70"
-                      style={{ height: `${Math.max(h * 1.6, 12)}px` }}
-                    />
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="mt-6 flex h-56 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border text-center">
+              <CalendarRange className="h-8 w-8 text-muted-foreground/40" />
+              <div className="text-sm font-semibold text-foreground">No trend data</div>
+              <div className="max-w-xs text-xs text-muted-foreground">
+                Monthly enrolment history isn’t available from the API yet.
+              </div>
+            </div>
+          )}
           <div className="mt-3 flex justify-between text-[11px] font-medium text-muted-foreground">
             {months.map(m => <span key={m} className="flex-1 text-center">{m}</span>)}
           </div>
@@ -240,20 +310,16 @@ function EnrollmentDashboard() {
             <div>
               <div className="text-[11px] text-muted-foreground">Total Enrolled</div>
               <div className="mt-0.5 text-lg font-semibold text-foreground tabular-nums">
-                {trend.reduce((a, b) => a + b, 0).toLocaleString()}
+                {statsLoading ? EMPTY : (byStatus?.["Enrolled"] ?? 0).toLocaleString()}
               </div>
             </div>
             <div>
               <div className="text-[11px] text-muted-foreground">Peak Month</div>
-              <div className="mt-0.5 text-lg font-semibold text-foreground">
-                {months[trend.indexOf(maxTrend)]}
-              </div>
+              <div className="mt-0.5 text-lg font-semibold text-foreground">{EMPTY}</div>
             </div>
             <div>
               <div className="text-[11px] text-muted-foreground">Avg / Month</div>
-              <div className="mt-0.5 text-lg font-semibold text-foreground tabular-nums">
-                {Math.round(trend.reduce((a, b) => a + b, 0) / trend.length)}
-              </div>
+              <div className="mt-0.5 text-lg font-semibold text-foreground tabular-nums">{EMPTY}</div>
             </div>
           </div>
         </div>
@@ -287,23 +353,19 @@ function EnrollmentDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {universities.map((u, i) => (
-                  <tr key={u.name} className="border-b border-border/70 last:border-0 transition hover:bg-muted/40">
-                    <td className="px-6 py-3.5 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
-                    <td className="px-6 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <div className="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-[11px] font-semibold text-primary">
-                          {u.name.split(" ").map(w => w[0]).slice(0, 2).join("")}
+                {universities.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-12 text-center">
+                      <div className="flex flex-col items-center gap-2">
+                        <Building2 className="h-8 w-8 text-muted-foreground/40" />
+                        <div className="text-sm font-semibold text-foreground">No university breakdown</div>
+                        <div className="text-xs text-muted-foreground">
+                          Per-university enrolment status isn’t available from the API yet.
                         </div>
-                        <span className="font-medium text-foreground">{u.name}</span>
                       </div>
                     </td>
-                    <td className="px-3 py-3.5 text-right tabular-nums text-warning-foreground">{u.pending}</td>
-                    <td className="px-3 py-3.5 text-right tabular-nums text-accent">{u.submitted}</td>
-                    <td className="px-3 py-3.5 text-right tabular-nums font-semibold text-success">{u.confirmed}</td>
-                    <td className="px-6 py-3.5 text-right tabular-nums text-foreground">{u.due}</td>
                   </tr>
-                ))}
+                ) : null}
               </tbody>
             </table>
           </div>
@@ -334,23 +396,19 @@ function EnrollmentDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {intakes.map((it, i) => {
-                  const pct = it.approved ? (it.enrolled / it.approved) * 100 : 0;
-                  return (
-                    <tr key={it.intake} className="border-b border-border/70 last:border-0 transition hover:bg-muted/40">
-                      <td className="px-6 py-3.5 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
-                      <td className="px-6 py-3.5">
-                        <div className="font-medium text-foreground">{it.intake}</div>
-                        <div className="mt-1.5 h-1.5 w-40 overflow-hidden rounded-full bg-muted">
-                          <div className="h-full rounded-full bg-success" style={{ width: `${pct}%` }} />
+                {intakes.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center">
+                      <div className="flex flex-col items-center gap-2">
+                        <CalendarRange className="h-8 w-8 text-muted-foreground/40" />
+                        <div className="text-sm font-semibold text-foreground">No intake breakdown</div>
+                        <div className="text-xs text-muted-foreground">
+                          Per-intake enrolment status isn’t available from the API yet.
                         </div>
-                      </td>
-                      <td className="px-3 py-3.5 text-right tabular-nums text-foreground">{it.approved}</td>
-                      <td className="px-3 py-3.5 text-right tabular-nums font-semibold text-success">{it.enrolled}</td>
-                      <td className="px-6 py-3.5 text-right tabular-nums text-warning-foreground">{it.pending}</td>
-                    </tr>
-                  );
-                })}
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </div>
@@ -369,40 +427,17 @@ function EnrollmentDashboard() {
               <p className="text-xs text-muted-foreground">Live enrollment events across teams &amp; universities</p>
             </div>
           </div>
-          <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-semibold text-success">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
-            Live
-          </span>
         </div>
 
-        <ol className="relative mt-6 space-y-5 border-l border-border pl-6">
-          {activities.map((a, i) => {
-            const Icon = a.icon;
-            return (
-              <li key={i} className="relative">
-                <span className={`absolute -left-[33px] grid h-7 w-7 place-items-center rounded-full ring-4 ring-surface ${tintMap[a.tint]}`}>
-                  <Icon className="h-3.5 w-3.5" />
-                </span>
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-foreground">{a.type}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${tintMap[a.tint]}`}>
-                        {a.tint === "success" ? "Confirmed" : a.tint === "accent" ? "Submitted" : "Updated"}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 text-sm text-muted-foreground">
-                      <span className="font-medium text-foreground">{a.who}</span> · {a.target}
-                    </div>
-                  </div>
-                  <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                    <Clock className="h-3 w-3" /> {a.time}
-                  </div>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
+        {activities.length === 0 ? (
+          <div className="mt-6 flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border py-10 text-center">
+            <Activity className="h-8 w-8 text-muted-foreground/40" />
+            <div className="text-sm font-semibold text-foreground">No recent activity</div>
+            <div className="max-w-sm text-xs text-muted-foreground">
+              An enrolment activity feed isn’t available from the API yet.
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

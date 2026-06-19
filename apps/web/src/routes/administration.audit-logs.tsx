@@ -37,8 +37,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ALL_COUNSELLORS } from "@/lib/counsellors-data";
-
 export const Route = createFileRoute("/administration/audit-logs")({
   head: () => ({ meta: [{ title: "Audit Logs — upCarrera" }] }),
   component: AuditLogsPage,
@@ -113,154 +111,11 @@ const MODULES: ModuleName[] = [
   "Security",
 ];
 
-const ACTIONS_BY_CATEGORY: Record<AuditCategory, { action: string; field: string; oldV: string; newV: string }[]> = {
-  User: [
-    { action: "User Created", field: "Account", oldV: "—", newV: "Active" },
-    { action: "User Updated", field: "Designation", oldV: "Counsellor", newV: "Senior Counsellor" },
-    { action: "User Activated", field: "Status", oldV: "Inactive", newV: "Active" },
-    { action: "User Deactivated", field: "Status", oldV: "Active", newV: "Inactive" },
-    { action: "Password Reset", field: "Password", oldV: "********", newV: "********" },
-  ],
-  Student: [
-    { action: "Student Created", field: "Record", oldV: "—", newV: "Created" },
-    { action: "Student Status Changed", field: "Status", oldV: "Active", newV: "At Risk" },
-    { action: "Risk Level Changed", field: "Risk Level", oldV: "Low", newV: "High" },
-    { action: "Support Executive Assigned", field: "Support Exec", oldV: "—", newV: "Priya Sharma" },
-    { action: "Student Dropped", field: "Status", oldV: "Active", newV: "Dropped" },
-  ],
-  Admission: [
-    { action: "Application Created", field: "Application", oldV: "—", newV: "Submitted" },
-    { action: "Application Updated", field: "Course", oldV: "MBA", newV: "MCA" },
-    { action: "Verification Approved", field: "Verification", oldV: "Pending", newV: "Approved" },
-    { action: "Verification Rejected", field: "Verification", oldV: "Pending", newV: "Rejected" },
-    { action: "Enrollment Confirmed", field: "Enrollment", oldV: "Submitted", newV: "Confirmed" },
-  ],
-  Finance: [
-    { action: "Payment Added", field: "Amount", oldV: "—", newV: "₹ 25,000" },
-    { action: "Payment Verified", field: "Status", oldV: "Pending", newV: "Verified" },
-    { action: "Refund Approved", field: "Refund", oldV: "Requested", newV: "Approved" },
-    { action: "Installment Updated", field: "Installment 2", oldV: "₹ 15,000", newV: "₹ 18,000" },
-    { action: "Commission Updated", field: "Commission %", oldV: "8%", newV: "10%" },
-  ],
-  Security: [
-    { action: "Failed Login", field: "Login", oldV: "—", newV: "Invalid Password" },
-    { action: "Login", field: "Session", oldV: "—", newV: "Started" },
-    { action: "Logout", field: "Session", oldV: "Active", newV: "Ended" },
-    { action: "Suspicious Login", field: "Location", oldV: "Mumbai, IN", newV: "Lagos, NG" },
-    { action: "Forced Logout", field: "Session", oldV: "Active", newV: "Terminated" },
-  ],
-  Permission: [
-    { action: "Role Created", field: "Role", oldV: "—", newV: "Finance Reviewer" },
-    { action: "Permission Added", field: "Permission", oldV: "—", newV: "Finance.Approve" },
-    { action: "Permission Removed", field: "Permission", oldV: "Reports.Export", newV: "—" },
-    { action: "User Assigned Role", field: "Role", oldV: "Counsellor", newV: "Team Leader" },
-    { action: "Role Updated", field: "Access Level", oldV: "Standard", newV: "Elevated" },
-  ],
-  University: [
-    { action: "University Created", field: "Record", oldV: "—", newV: "Amity University" },
-    { action: "Course Tagged", field: "Course", oldV: "—", newV: "MBA - Finance" },
-    { action: "Fee Structure Created", field: "Fee Plan", oldV: "—", newV: "FY26 Plan" },
-    { action: "Agreement Uploaded", field: "Agreement", oldV: "—", newV: "MOU-2026.pdf" },
-  ],
-  Counsellor: [
-    { action: "Counsellor Created", field: "Record", oldV: "—", newV: "Created" },
-    { action: "Team Created", field: "Team", oldV: "—", newV: "Alpha" },
-    { action: "Target Assigned", field: "Target", oldV: "—", newV: "25 Admissions" },
-    { action: "Counsellor Transferred", field: "Team", oldV: "Bravo", newV: "Charlie" },
-    { action: "Team Leader Changed", field: "Team Leader", oldV: "Priya Sharma", newV: "Rohit Verma" },
-  ],
-};
-
-const CATEGORY_TO_MODULE: Record<AuditCategory, ModuleName> = {
-  User: "User Management",
-  Student: "Students",
-  Admission: "Applications",
-  Finance: "Finance",
-  Security: "Security",
-  Permission: "Role & Permission",
-  University: "University Master",
-  Counsellor: "Counsellor Management",
-};
-
-const CATEGORY_TO_DEPT: Record<AuditCategory, Department> = {
-  User: "Administration",
-  Student: "Student Support",
-  Admission: "Admissions",
-  Finance: "Finance",
-  Security: "Administration",
-  Permission: "Administration",
-  University: "Operations",
-  Counsellor: "Operations",
-};
-
-const RECORD_PREFIX: Record<ModuleName, string> = {
-  Applications: "APP-2026-",
-  Students: "STU-2026-",
-  Finance: "FEE-2026-",
-  "University Master": "UNI-",
-  "User Management": "USR-",
-  "Role & Permission": "ROLE-",
-  "Counsellor Management": "CNS-",
-  Reports: "RPT-",
-  Security: "SEC-",
-};
-
-const CATEGORIES: AuditCategory[] = [
-  "User",
-  "Student",
-  "Admission",
-  "Finance",
-  "Security",
-  "Permission",
-  "University",
-  "Counsellor",
-];
-
-const BROWSERS = ["Chrome 124", "Edge 124", "Safari 17", "Firefox 125"];
-const DEVICES = ["Windows 11", "macOS Sonoma", "Android 14", "iOS 17"];
-const LOCATIONS = ["Mumbai, IN", "Delhi, IN", "Bengaluru, IN", "Pune, IN", "Hyderabad, IN", "Lagos, NG"];
-
-function pad(n: number, w = 4) {
-  return String(n).padStart(w, "0");
-}
-
-const ALL_LOGS: AuditLog[] = Array.from({ length: 220 }).map((_, i) => {
-  const c = ALL_COUNSELLORS[i % ALL_COUNSELLORS.length];
-  const category = CATEGORIES[i % CATEGORIES.length];
-  const variants = ACTIONS_BY_CATEGORY[category];
-  const v = variants[i % variants.length];
-  const moduleName = CATEGORY_TO_MODULE[category];
-  const department = CATEGORY_TO_DEPT[category];
-  const dt = new Date();
-  dt.setMinutes(dt.getMinutes() - i * 37);
-  let status: AuditStatus = "Success";
-  if (v.action === "Failed Login") status = "Failed";
-  else if (v.action === "Suspicious Login" || v.action === "Forced Logout") status = "Critical";
-  else if (v.action === "Verification Rejected" || v.action === "Permission Removed") status = "Warning";
-
-  return {
-    id: `LOG-${pad(100000 + i, 6)}`,
-    timestamp: dt.toISOString(),
-    userName: c.name,
-    userEmail: c.email,
-    empId: c.empId,
-    designation: c.designation,
-    department,
-    module: moduleName,
-    recordId: `${RECORD_PREFIX[moduleName]}${pad(i + 12, 6)}`,
-    action: v.action,
-    oldValue: v.oldV,
-    newValue: v.newV,
-    field: v.field,
-    ipAddress: `10.${(i * 7) % 250}.${(i * 11) % 250}.${(i * 13) % 250}`,
-    browser: BROWSERS[i % BROWSERS.length],
-    device: DEVICES[i % DEVICES.length],
-    location: LOCATIONS[i % LOCATIONS.length],
-    sessionId: `SES-${pad(900000 + i, 7)}`,
-    status,
-    category,
-  };
-});
+// Audit logging is not implemented in the backend — there is no audit table or
+// API endpoint in this system. We intentionally ship an honest empty state
+// instead of fabricated rows. When an audit backend exists, replace this with a
+// useQuery against the real endpoint.
+const ALL_LOGS: AuditLog[] = [];
 
 /* ---------------- Status styles ---------------- */
 
@@ -410,6 +265,18 @@ function AuditLogsPage() {
             <FileText className="h-4 w-4" />
             Download Report
           </button>
+        </div>
+      </div>
+
+      {/* Honest notice: no audit backend exists */}
+      <div className="flex items-start gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-800">
+        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+        <div>
+          <div className="font-semibold">Audit logging isn&apos;t enabled yet</div>
+          <p className="mt-0.5 text-xs text-amber-800/90">
+            This system has no audit trail backend, so there is no activity to display. The
+            filters and counters below stay at zero until audit logging is enabled.
+          </p>
         </div>
       </div>
 
@@ -763,9 +630,12 @@ function EmptyState() {
       <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted">
         <Activity className="h-7 w-7 text-muted-foreground/60" />
       </div>
-      <div className="text-sm font-semibold text-foreground">No audit logs available</div>
+      <div className="text-sm font-semibold text-foreground">
+        Audit logging isn&apos;t enabled yet
+      </div>
       <div className="max-w-sm text-xs text-muted-foreground">
-        System activities will appear here automatically as users interact with the platform.
+        There is no audit trail backend connected to this system, so there is no activity to
+        display. Once audit logging is enabled, recorded actions will appear here automatically.
       </div>
     </div>
   );

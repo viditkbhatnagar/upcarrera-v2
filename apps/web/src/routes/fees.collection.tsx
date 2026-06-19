@@ -2,6 +2,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
 import { z } from "zod";
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Wallet,
   Download,
@@ -22,6 +24,7 @@ import {
   IndianRupee,
   CreditCard,
   X,
+  Loader2,
 } from "lucide-react";
 import {
   Dialog,
@@ -94,60 +97,65 @@ interface Installment {
 
 const today = new Date();
 const iso = (d: Date) => d.toISOString().slice(0, 10);
-const addDays = (n: number) => {
-  const d = new Date(today);
-  d.setDate(d.getDate() + n);
-  return iso(d);
-};
 
+// Filter-dropdown option lists. The /payments endpoint has no university /
+// course / intake / executive joins, so these stay as static filter choices.
 const EXECS = ["Priya Sharma", "Rahul Verma", "Aisha Khan", "Karan Mehta", "Neha Iyer"];
 const UNIS = ["Amity University Online", "Manipal University", "Jain University", "LPU Online", "NMIMS Global"];
 const COURSES = ["MBA", "BBA", "MCA", "BCA", "M.Com", "MA Psychology"];
 const INTAKES = ["Jan 2026", "Apr 2026", "Jul 2026", "Oct 2026"];
-const INSTALLMENTS = ["1st Installment", "2nd Installment", "3rd Installment", "4th Installment", "Final Installment"];
-const NAMES = [
-  "Ananya Sharma", "Aarav Singh", "Diya Patel", "Ishaan Reddy", "Sai Iyer",
-  "Myra Nair", "Kabir Kapoor", "Reyansh Gupta", "Tara Mehta", "Zara Khan",
-  "Nikhil Joshi", "Pooja Das", "Krishna Bose", "Saanvi Mishra", "Dhruv Verma",
-  "Riya Sharma", "Arjun Patel", "Aanya Iyer", "Vivaan Nair", "Aditya Kapoor",
-];
 
-function seed(): Installment[] {
-  const rows: Installment[] = [];
-  let r = 71;
-  const rand = () => ((r = (r * 9301 + 49297) % 233280) / 233280);
-  for (let i = 0; i < 48; i++) {
-    const offset = Math.floor(rand() * 120) - 60; // -60..+60 days
-    const paid = offset < -10 ? rand() < 0.6 : offset < 0 ? rand() < 0.3 : false;
-    const amount = Math.floor(rand() * 80000) + 15000;
-    rows.push({
-      id: `INS-${String(2001 + i)}`,
-      studentId: `STU-2026-${String(1024 + i).padStart(6, "0")}`,
-      student: NAMES[Math.floor(rand() * NAMES.length)],
-      university: UNIS[Math.floor(rand() * UNIS.length)],
-      course: COURSES[Math.floor(rand() * COURSES.length)],
-      intake: INTAKES[Math.floor(rand() * INTAKES.length)],
-      installmentName: INSTALLMENTS[Math.floor(rand() * INSTALLMENTS.length)],
-      dueDate: addDays(offset),
-      amount,
-      executive: EXECS[Math.floor(rand() * EXECS.length)],
-      lastFollowup: rand() > 0.4 ? addDays(offset - Math.floor(rand() * 5) - 1) : undefined,
-      followupStatus: rand() > 0.5 ? (["Promised", "No Response", "Disputed", "Committed"] as const)[Math.floor(rand() * 4)] : undefined,
-      ...(paid
-        ? {
-            paidDate: addDays(offset + Math.floor(rand() * 5)),
-            paidMode: (["UPI", "NEFT", "Card", "Cash", "Cheque"] as const)[Math.floor(rand() * 5)],
-            txnId: `TXN${Math.floor(rand() * 9_000_000 + 1_000_000)}`,
-            receipt: `RCP-${String(5001 + i)}`,
-            verification: (["Verified", "Pending", "Rejected"] as const)[Math.floor(rand() * 3)],
-          }
-        : {}),
-    });
-  }
-  return rows;
+// ---- Live API wiring (GET /api/payments) ----
+// Each item is a raw `payment` row (no joins): the endpoint lists every
+// recorded payment receipt. Because these are *received* payments, each maps
+// into the screen's "paid" bucket. The raw row exposes only:
+//   id, user_id, invoice_id, payment_type (cash|cheque|bank), paid_amount,
+//   payment_date, reference_no, remark.
+// It has NO student name / university / course / intake / installment name /
+// executive / verification / due-date — those render "—" (or are omitted),
+// never fabricated. Consequently overdue/due/upcoming buckets are always empty
+// against this endpoint and the follow-up columns show "—".
+interface ApiPayment {
+  id: number;
+  user_id?: number | null;
+  invoice_id?: number | null;
+  payment_type?: "cash" | "cheque" | "bank" | null;
+  paid_amount?: number | string | null;
+  payment_date?: string | null;
+  reference_no?: string | null;
+  remark?: string | null;
 }
 
-const ALL = seed();
+const DASH = "—";
+
+function mapApiPayment(p: ApiPayment): Installment {
+  const paidDate = p.payment_date ? String(p.payment_date).slice(0, 10) : undefined;
+  const amount = Number(p.paid_amount ?? 0) || 0;
+  return {
+    id: `PAY-${p.id}`,
+    // No student join on this endpoint — show the linked user/invoice ids.
+    studentId: p.user_id != null ? `USR-${p.user_id}` : DASH,
+    student: p.invoice_id != null ? `Invoice #${p.invoice_id}` : `Payment #${p.id}`,
+    university: DASH,
+    course: DASH,
+    intake: DASH,
+    installmentName: DASH,
+    // The raw payment row carries no due date; use the payment date so the row
+    // classifies as "paid" and the Due/Paid column stays meaningful.
+    dueDate: paidDate ?? iso(today),
+    amount,
+    executive: DASH,
+    // All listed rows are settled receipts.
+    paidDate: paidDate ?? iso(today),
+    paidMode: p.payment_type
+      ? p.payment_type.charAt(0).toUpperCase() + p.payment_type.slice(1)
+      : DASH,
+    txnId: p.reference_no?.trim() || DASH,
+    receipt: `RCP-${p.id}`,
+    // The endpoint exposes no verification status.
+    verification: undefined,
+  };
+}
 
 const fmtINR = (n: number) => "₹" + n.toLocaleString("en-IN");
 const fmtDate = (s: string) =>
@@ -214,6 +222,22 @@ function FeeCollection() {
   const tab = search.tab;
   const dueFilter = search.due;
 
+  // Live payments list (GET /api/payments). Fetch a wide page; the screen
+  // refines/buckets on the client like the wired reference screens.
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["payments", { page: 1, limit: 200 }],
+    queryFn: () =>
+      apiGet<{ items: ApiPayment[]; total: number; page: number; limit: number }>(
+        "/payments",
+        { page: 1, limit: 200 },
+      ),
+  });
+
+  const ALL = useMemo<Installment[]>(
+    () => (data?.items ?? []).map(mapApiPayment),
+    [data],
+  );
+
   type S = { tab: typeof tab; due: string };
   const setTab = (t: typeof tab) => navigate({ search: (p: S) => ({ ...p, tab: t }) });
 
@@ -257,7 +281,7 @@ function FeeCollection() {
     }
     const achievement = targetAmt ? Math.round((paidAmt / targetAmt) * 100) : 0;
     return { overdue, dueToday, dueWeek, upcoming, paidMonth, achievement };
-  }, []);
+  }, [ALL]);
 
   // filtered rows for current tab
   const rows = useMemo(() => {
@@ -276,7 +300,7 @@ function FeeCollection() {
       if (fExec !== "all" && r.executive !== fExec) return false;
       return true;
     });
-  }, [tab, dueFilter, q, fUni, fCourse, fIntake, fExec]);
+  }, [ALL, tab, dueFilter, q, fUni, fCourse, fIntake, fExec]);
 
   const toggleSel = (id: string) => {
     setSelected((s) => {
@@ -460,10 +484,26 @@ function FeeCollection() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {rows.length === 0 && (
+              {isLoading && (
+                <tr><td colSpan={12} className="px-3 py-12 text-center">
+                  <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading payments…
+                  </div>
+                </td></tr>
+              )}
+              {!isLoading && isError && (
+                <tr><td colSpan={12} className="px-3 py-12 text-center">
+                  <div className="flex flex-col items-center gap-2 text-sm text-destructive">
+                    <AlertTriangle className="h-5 w-5" />
+                    Failed to load payments. Please try again.
+                  </div>
+                </td></tr>
+              )}
+              {!isLoading && !isError && rows.length === 0 && (
                 <tr><td colSpan={12} className="px-3 py-10 text-center text-muted-foreground">No installments match the current filters.</td></tr>
               )}
-              {rows.map((r, idx) => {
+              {!isLoading && !isError && rows.map((r, idx) => {
                 const b = bucketOf(r);
                 const dueD = startOfDay(new Date(r.dueDate));
                 const diff = daysBetween(TODAY, dueD); // pos = overdue
