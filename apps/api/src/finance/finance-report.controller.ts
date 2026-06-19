@@ -37,6 +37,20 @@ export class FinanceReportController {
     return this.finance.universityCommissionReport(query);
   }
 
+  // Dashboard aggregates (literal paths).
+  @Get('collection-trend')
+  @ResponseMessage('Collection trend fetched')
+  collectionTrend(@Query('months') months?: string) {
+    const n = months ? parseInt(months, 10) : 12;
+    return this.finance.collectionTrend(Number.isFinite(n) ? n : 12);
+  }
+
+  @Get('outstanding-by-university')
+  @ResponseMessage('Outstanding by university fetched')
+  outstandingByUniversity() {
+    return this.finance.outstandingByUniversity();
+  }
+
   // Literal list path — declared above 'students/:id'.
   @Get('students')
   @ResponseMessage('Finance students fetched')
