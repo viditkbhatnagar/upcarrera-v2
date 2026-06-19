@@ -33,10 +33,14 @@ export const Route = createFileRoute("/enrollment/students")({
 // --- Live API wiring (GET /api/students) ---------------------------------
 // Each list item is the raw `students` row decorated by the API with its joined
 // display fields: name (from users), course_title + university_title
-// (course -> university) and a human admission_status_label. The list response
+// (course -> university), consultant_name (counsellor, from users), session_title
+// (intake), enrollment_date and a human admission_status_label. The list response
 // also carries `counts.by_status`, which drives the KPI cards (live, no mock seed).
 // The admission_status pipeline is the source of truth for the status taxonomy:
 // Pending / In Progress / Enrolled / Passed Out / Dropout / Cancelled.
+// Column set mirrors the old CRM enrollment list (all_enrollments.php):
+// Student ID ("UPC00"+id) · Student · University · Course · Counsellor ·
+// Intake · Enrollment Date · Status.
 interface ApiStudentRow {
   id: number | string;
   student_id: number | string | null;
@@ -46,11 +50,17 @@ interface ApiStudentRow {
   admission_status_label: string | null;
   course_id: number | string | null;
   consultant_id: number | string | null;
+  enrollment_date: string | null;
   // Decorated display fields (joined server-side).
   name: string | null;
   email: string | null;
+  phone: string | null;
   course_title: string | null;
   university_title: string | null;
+  consultant_name: string | null;
+  session_title: string | null;
+  register_number: string | null;
+  code: string | null;
 }
 
 interface StatusCounts {
@@ -102,6 +112,13 @@ const statusStyle: Record<StudentStatus, string> = {
   Cancelled: "bg-destructive/10 text-destructive",
 };
 
+function formatDate(value: string | null): string {
+  if (!value) return EMPTY;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
 // A decorated row, normalised for rendering (real values, blank-safe).
 interface Row {
   rowId: string;
@@ -111,29 +128,42 @@ interface Row {
   university: string;
   uniShort: string;
   course: string;
-  specialisation: string;
+  counsellor: string;
   intake: string;
+  enrollmentDate: string;
   status: StudentStatus;
 }
 
 function mapApiRow(r: ApiStudentRow): Row {
+  // Old-CRM Student ID display = "UPC00" + students.id (the row's id).
+  const studentId = `UPC00${r.id}`;
+  // Old CRM shows the register number / code as the enrollment reference;
+  // fall back to the raw enrollment_id, then a dash.
+  const enrollmentId = asText(r.register_number ?? r.code ?? r.enrollment_id);
   return {
     rowId: String(r.id),
-    studentId:
-      r.student_id != null && String(r.student_id).trim() !== ""
-        ? `STU-${r.student_id}`
-        : `STU-${r.id}`,
-    enrollmentId: asText(r.enrollment_id),
+    studentId,
+    enrollmentId,
     studentName: asText(r.name),
     university: asText(r.university_title),
-    // No short-code field on the API — derive nothing, show a dash.
-    uniShort: EMPTY,
+    // No short-code field on the API — derive initials from the university name.
+    uniShort: uniInitials(r.university_title),
     course: asText(r.course_title),
-    // Not provided by the API for the students list.
-    specialisation: EMPTY,
-    intake: EMPTY,
+    counsellor: asText(r.consultant_name),
+    intake: asText(r.session_title),
+    enrollmentDate: formatDate(r.enrollment_date),
     status: toStudentStatus(r.admission_status_label),
   };
+}
+
+function uniInitials(name: string | null | undefined): string {
+  if (name == null || String(name).trim() === "") return EMPTY;
+  const parts = String(name).trim().split(/\s+/).filter(Boolean);
+  return parts
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 }
 
 function StudentEnrollments() {
@@ -371,8 +401,9 @@ function StudentEnrollments() {
                 <th className="px-3 py-2.5 font-semibold">Student Name</th>
                 <th className="px-3 py-2.5 font-semibold">University</th>
                 <th className="px-3 py-2.5 font-semibold">Course</th>
-                <th className="px-3 py-2.5 font-semibold">Specialisation</th>
+                <th className="px-3 py-2.5 font-semibold">Counsellor</th>
                 <th className="px-3 py-2.5 font-semibold">Intake</th>
+                <th className="px-3 py-2.5 font-semibold">Enrollment Date</th>
                 <th className="px-3 py-2.5 font-semibold">Status</th>
                 <th className="px-6 py-2.5 font-semibold text-right">Action</th>
               </tr>
@@ -380,7 +411,7 @@ function StudentEnrollments() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={9} className="px-6 py-12">
+                  <td colSpan={10} className="px-6 py-12">
                     <div className="flex flex-col items-center justify-center gap-2 text-center">
                       <RefreshCcw className="h-7 w-7 animate-spin text-muted-foreground/50" />
                       <div className="text-sm font-semibold text-foreground">Loading enrollments…</div>
@@ -389,7 +420,7 @@ function StudentEnrollments() {
                 </tr>
               ) : isError ? (
                 <tr>
-                  <td colSpan={9} className="px-6 py-12">
+                  <td colSpan={10} className="px-6 py-12">
                     <div className="flex flex-col items-center justify-center gap-2 text-center">
                       <AlertTriangle className="h-9 w-9 text-destructive/60" />
                       <div className="text-sm font-semibold text-foreground">Couldn’t load enrollments</div>
@@ -401,7 +432,7 @@ function StudentEnrollments() {
                 </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-6 py-12">
+                  <td colSpan={10} className="px-6 py-12">
                     <div className="flex flex-col items-center justify-center gap-2 text-center">
                       <GraduationCap className="h-9 w-9 text-muted-foreground/50" />
                       <div className="text-sm font-semibold text-foreground">No enrollments found</div>
@@ -427,8 +458,9 @@ function StudentEnrollments() {
                       </div>
                     </td>
                     <td className="px-3 py-3.5 text-xs text-foreground">{r.course}</td>
-                    <td className="px-3 py-3.5 text-xs text-muted-foreground">{r.specialisation}</td>
+                    <td className="px-3 py-3.5 text-xs text-foreground">{r.counsellor}</td>
                     <td className="px-3 py-3.5 text-xs text-foreground">{r.intake}</td>
+                    <td className="px-3 py-3.5 text-xs text-muted-foreground">{r.enrollmentDate}</td>
                     <td className="px-3 py-3.5">
                       <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusStyle[r.status]}`}>
                         {r.status}

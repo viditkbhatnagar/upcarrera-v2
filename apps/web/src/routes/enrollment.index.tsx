@@ -11,12 +11,12 @@ import {
   MoreHorizontal,
   Filter,
   Download,
-  Building2,
   CalendarRange,
   Activity,
   FileSignature,
   Loader2,
   AlertTriangle,
+  Users,
 } from "lucide-react";
 
 export const Route = createFileRoute("/enrollment/")({
@@ -62,6 +62,49 @@ interface ApplicationsList {
   total: number;
   page: number;
   limit: number;
+}
+
+// Recent-enrollments table source: GET /students returns each `students` row
+// decorated server-side with its joined display fields — name (users),
+// university_title (course -> university), course_title (course) and a human
+// admission_status_label — plus the raw enrollment_date column. We render those
+// real values directly (no #id fallbacks).
+interface ApiStudentRow {
+  id: number | string;
+  enrollment_date: string | null;
+  created_at: string | null;
+  name: string | null;
+  university_title: string | null;
+  course_title: string | null;
+  admission_status_label: string | null;
+}
+
+interface StudentsListResponse {
+  items: ApiStudentRow[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+// admission_status_label -> badge styling. Falls back to neutral for unmapped.
+const STATUS_BADGE: Record<string, string> = {
+  Pending: "bg-warning/15 text-warning-foreground ring-warning/20",
+  "In Progress": "bg-primary/10 text-primary ring-primary/20",
+  Enrolled: "bg-success/10 text-success ring-success/20",
+  "Passed Out": "bg-accent/10 text-accent ring-accent/20",
+  Dropout: "bg-muted text-muted-foreground ring-border",
+  Cancelled: "bg-destructive/10 text-destructive ring-destructive/20",
+};
+
+function statusBadge(label: string | null): string {
+  return (label && STATUS_BADGE[label]) || "bg-muted text-muted-foreground ring-border";
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return EMPTY;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 type KpiDef = {
@@ -140,8 +183,19 @@ function EnrollmentDashboard() {
     queryFn: () => apiGet<ApplicationsList>("/applications", { page: 1, limit: 1 }),
   });
 
+  // Live recent enrollments — newest students with their joined university /
+  // course / status names for the recent-enrollments table.
+  const recentQuery = useQuery({
+    queryKey: ["enrollment", "recent-students"],
+    queryFn: () => apiGet<StudentsListResponse>("/students", { page: 1, limit: 8 }),
+  });
+
   const byStatus = statsQuery.data?.by_status;
   const applicationsTotal = applicationsQuery.data?.total ?? 0;
+
+  const recentRows = useMemo(() => recentQuery.data?.items ?? [], [recentQuery.data]);
+  const recentLoading = recentQuery.isLoading;
+  const recentError = recentQuery.isError;
 
   const statsLoading = statsQuery.isLoading;
   const statsError = statsQuery.isError;
@@ -170,9 +224,8 @@ function EnrollmentDashboard() {
   const trend: number[] = [];
   const hasTrend = trend.length > 0;
 
-  // University / intake / activity breakdowns are not exposed by the API for
-  // this dashboard — render explicit empty states (no fabricated rows).
-  const universities: never[] = [];
+  // Intake / activity breakdowns are not exposed by the API for this dashboard —
+  // render explicit empty states (no fabricated rows).
   const intakes: never[] = [];
   const activities: never[] = [];
 
@@ -331,11 +384,11 @@ function EnrollmentDashboard() {
           <div className="flex items-center justify-between p-6 pb-4">
             <div className="flex items-center gap-2">
               <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary">
-                <Building2 className="h-4 w-4" />
+                <Users className="h-4 w-4" />
               </div>
               <div>
-                <h3 className="text-base font-semibold tracking-tight text-foreground">University Summary</h3>
-                <p className="text-xs text-muted-foreground">Processing status by partner university</p>
+                <h3 className="text-base font-semibold tracking-tight text-foreground">Recent Enrollments</h3>
+                <p className="text-xs text-muted-foreground">Newest students by university, course &amp; status</p>
               </div>
             </div>
             <button className="text-xs font-semibold text-accent hover:underline">View all</button>
@@ -344,28 +397,77 @@ function EnrollmentDashboard() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-y border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
-                  <th className="px-6 py-2.5 font-semibold w-16">Sl No</th>
-                  <th className="px-6 py-2.5 font-semibold">University</th>
-                  <th className="px-3 py-2.5 font-semibold text-right">Pending</th>
-                  <th className="px-3 py-2.5 font-semibold text-right">Submitted</th>
-                  <th className="px-3 py-2.5 font-semibold text-right">Confirmed</th>
-                  <th className="px-6 py-2.5 font-semibold text-right">Progression Due</th>
+                  <th className="px-6 py-2.5 font-semibold">Student</th>
+                  <th className="px-3 py-2.5 font-semibold">University</th>
+                  <th className="px-3 py-2.5 font-semibold">Course</th>
+                  <th className="px-3 py-2.5 font-semibold">Status</th>
+                  <th className="px-6 py-2.5 font-semibold text-right">Enrolled</th>
                 </tr>
               </thead>
               <tbody>
-                {universities.length === 0 ? (
+                {recentLoading ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-12 text-center">
+                    <td colSpan={5} className="px-6 py-12 text-center">
                       <div className="flex flex-col items-center gap-2">
-                        <Building2 className="h-8 w-8 text-muted-foreground/40" />
-                        <div className="text-sm font-semibold text-foreground">No university breakdown</div>
+                        <Loader2 className="h-7 w-7 animate-spin text-muted-foreground/50" />
+                        <div className="text-sm text-muted-foreground">Loading recent enrollments…</div>
+                      </div>
+                    </td>
+                  </tr>
+                ) : recentError ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center">
+                      <div className="flex flex-col items-center gap-2">
+                        <AlertTriangle className="h-8 w-8 text-red-500/60" />
+                        <div className="text-sm font-semibold text-foreground">Couldn’t load recent enrollments</div>
                         <div className="text-xs text-muted-foreground">
-                          Per-university enrolment status isn’t available from the API yet.
+                          {recentQuery.error instanceof Error ? recentQuery.error.message : "Please try again."}
                         </div>
                       </div>
                     </td>
                   </tr>
-                ) : null}
+                ) : recentRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center">
+                      <div className="flex flex-col items-center gap-2">
+                        <Users className="h-8 w-8 text-muted-foreground/40" />
+                        <div className="text-sm font-semibold text-foreground">No recent enrollments</div>
+                        <div className="text-xs text-muted-foreground">
+                          No students have been enrolled yet.
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  recentRows.map((s) => (
+                    <tr key={String(s.id)} className="border-b border-border last:border-0 transition hover:bg-muted/40">
+                      <td className="px-6 py-3">
+                        <div className="font-medium text-foreground">
+                          {s.name && s.name.trim() !== "" ? s.name : EMPTY}
+                        </div>
+                        <div className="font-mono text-[11px] text-muted-foreground">UPC00{s.id}</div>
+                      </td>
+                      <td className="px-3 py-3 text-foreground">
+                        {s.university_title && s.university_title.trim() !== "" ? s.university_title : EMPTY}
+                      </td>
+                      <td className="px-3 py-3 text-foreground">
+                        {s.course_title && s.course_title.trim() !== "" ? s.course_title : EMPTY}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span
+                          className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset ${statusBadge(s.admission_status_label)}`}
+                        >
+                          {s.admission_status_label && s.admission_status_label.trim() !== ""
+                            ? s.admission_status_label
+                            : EMPTY}
+                        </span>
+                      </td>
+                      <td className="px-6 py-3 text-right text-muted-foreground tabular-nums">
+                        {formatDate(s.enrollment_date ?? s.created_at)}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

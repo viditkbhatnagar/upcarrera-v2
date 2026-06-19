@@ -75,15 +75,19 @@ export const Route = createFileRoute("/fees/payment-verification")({
 });
 
 // ---------------- Types ----------------
-// This screen models a finance "payment verification" workflow. The closest real
-// data is the `invoice` model (GET /api/invoices, finance.controller.ts ->
-// finance.service.listInvoices). Its `payment_status` enum is {pending, paid}, so
-// we treat pending invoices as "Unverified" and paid invoices as "Verified".
-// Verify/Reject are local-only actions: there is NO payment-verification endpoint
-// in the API, so they update the in-memory view but do not persist server-side.
-// Fields the invoice list does not provide (student/university/course names,
-// payment mode, txn id, receipt no, submitted-by, verified-by) render as "—".
-type Status = "Unverified" | "Verified" | "Rejected";
+// This screen models a finance "payment verification" workflow. The real data
+// source is the `payment` model (GET /api/payments, finance.controller.ts ->
+// finance.service.listPayments). Each row is an actually-recorded payment,
+// decorated server-side with its joined display fields: student_name (payment ->
+// invoice.student_id -> users.name), course_title + university_title (invoice ->
+// course -> university) and a human mode_label (payment_type). The legacy data has
+// NO verified/unverified flag — every row is a recorded payment — so the status UI
+// stays but is driven by a neutral "Recorded" label (no fabricated verify flag).
+// Verify/Reject remain local-only actions (there is no verification endpoint): they
+// update the in-memory view but do not persist server-side. Fields the payments
+// list does not provide (instalment, txn id, proof, submitted-by, verified-by)
+// render as "—".
+type Status = "Unverified" | "Verified" | "Rejected" | "Recorded";
 type PaymentMode = "UPI" | "NEFT" | "RTGS" | "Cash" | "Card" | "Cheque";
 
 interface Payment {
@@ -97,6 +101,7 @@ interface Payment {
   amount: number;
   mode: PaymentMode | string;
   txnId: string;
+  reference: string;
   proofUrl: string;
   submittedDate: string;
   submittedBy: string;
@@ -107,29 +112,26 @@ interface Payment {
   remarks?: string;
 }
 
-// Raw invoice row from GET /api/invoices (finance.service.listInvoices). Only IDs
-// + money + dates are returned (no joined display names), plus per-invoice
-// payment_count / total_paid enrichment.
-interface ApiInvoiceRow {
+// Raw payment row from GET /api/payments (finance.service.listPayments). The raw
+// `payment` columns (id/invoice_id/paid_amount/payment_date/reference_no/remark)
+// are returned alongside the decorated joined display fields below. The legacy
+// schema has no FKs, so the names are resolved server-side in bulk.
+interface ApiPaymentRow {
   id: number | string;
-  university_id: number | string | null;
-  student_id: number | string | null;
-  course_id: number | string | null;
-  payment_status: "pending" | "paid" | string | null;
-  total_amount: number | string | null;
-  discount_amount: number | string | null;
-  payable_amount: number | string | null;
-  date: string | null;
-  due_date: string | null;
-  remarks: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-  payment_count?: number;
-  total_paid?: number;
+  invoice_id: number | string | null;
+  paid_amount: number | string | null;
+  payment_date: string | null;
+  reference_no: string | null;
+  remark: string | null;
+  // Decorated display fields (joined server-side).
+  student_name: string | null;
+  course_title: string | null;
+  university_title: string | null;
+  mode_label: string | null;
 }
 
-interface InvoiceListResponse {
-  items: ApiInvoiceRow[];
+interface PaymentListResponse {
+  items: ApiPaymentRow[];
   total: number;
   page: number;
   limit: number;
@@ -146,28 +148,33 @@ const toNumber = (v: number | string | null | undefined): number => {
 const toDay = (value: string | null | undefined): string =>
   value ? String(value).slice(0, 10) : "";
 
-// Maps a raw invoice row onto the screen's Payment shape. Unprovided fields fall
-// back to "—" / 0 (never fabricated).
-function mapInvoiceRow(inv: ApiInvoiceRow): Payment {
-  const paid = inv.payment_status === "paid";
+const asText = (value: string | null | undefined): string =>
+  value != null && String(value).trim() !== "" ? String(value) : EMPTY;
+
+// Maps a raw payment row onto the screen's Payment shape, rendering the real joined
+// values. Fields the payments contract does not provide fall back to "—" / 0
+// (never fabricated). There is no verification flag in the data, so every recorded
+// payment carries the neutral "Recorded" status.
+function mapPaymentRow(pay: ApiPaymentRow): Payment {
   return {
-    id: String(inv.id),
-    receiptNo: `INV-${inv.id}`,
-    studentId: inv.student_id != null ? String(inv.student_id) : EMPTY,
-    student: inv.student_id != null ? `Student #${inv.student_id}` : EMPTY,
-    university: inv.university_id != null ? `University #${inv.university_id}` : EMPTY,
-    course: inv.course_id != null ? `Course #${inv.course_id}` : EMPTY,
+    id: String(pay.id),
+    receiptNo: `PAY-${pay.id}`,
+    studentId: EMPTY,
+    student: asText(pay.student_name),
+    university: asText(pay.university_title),
+    course: asText(pay.course_title),
     instalment: EMPTY,
-    amount: toNumber(inv.payable_amount ?? inv.total_amount),
-    mode: EMPTY,
+    amount: toNumber(pay.paid_amount),
+    mode: asText(pay.mode_label),
     txnId: EMPTY,
+    reference: asText(pay.reference_no),
     proofUrl: EMPTY,
-    submittedDate: toDay(inv.date ?? inv.created_at) || EMPTY,
+    submittedDate: toDay(pay.payment_date) || EMPTY,
     submittedBy: EMPTY,
-    status: paid ? "Verified" : "Unverified",
-    verifiedBy: paid ? EMPTY : undefined,
-    verificationDate: paid ? toDay(inv.updated_at) || EMPTY : undefined,
-    remarks: inv.remarks ?? undefined,
+    status: "Recorded",
+    verifiedBy: EMPTY,
+    verificationDate: toDay(pay.payment_date) || EMPTY,
+    remarks: pay.remark ?? undefined,
   };
 }
 
@@ -181,6 +188,10 @@ function StatusBadge({ s }: { s: Status }) {
     );
   if (s === "Rejected")
     return <Badge className="bg-rose-500/10 text-rose-600 border border-rose-500/20">Rejected</Badge>;
+  if (s === "Recorded")
+    return (
+      <Badge className="bg-sky-500/10 text-sky-600 border border-sky-500/20">Recorded</Badge>
+    );
   return <Badge className="bg-amber-500/10 text-amber-600 border border-amber-500/20">Unverified</Badge>;
 }
 
@@ -201,63 +212,64 @@ function PaymentVerification() {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  // Local-only status overrides applied on top of the live invoice data. There is
+  // Local-only status overrides applied on top of the live payment data. There is
   // no payment-verification endpoint, so Verify/Reject mutate this map in place.
   const [overrides, setOverrides] = useState<
     Record<string, { status: Status; verifiedBy?: string; verificationDate?: string; rejectionReason?: string; remarks?: string }>
   >({});
 
-  // Live invoices for the active tab. Pending invoices back the "Unverified" tab;
-  // paid invoices back the "Verified" tab (GET /api/invoices?payment_status=…).
+  // Live recorded payments (GET /api/payments). The legacy data has no
+  // verified/unverified flag, so both tabs are backed by the same payment list;
+  // local Verify/Reject overrides then move individual rows between the tabs.
   const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: ["invoices", "verification", { tab, page: 1, limit: PAGE_SIZE }],
+    queryKey: ["payments", "verification", { page: 1, limit: PAGE_SIZE }],
     queryFn: () =>
-      apiGet<InvoiceListResponse>("/invoices", {
+      apiGet<PaymentListResponse>("/payments", {
         page: 1,
         limit: PAGE_SIZE,
-        payment_status: tab === "verified" ? "paid" : "pending",
       }),
   });
 
-  // KPI cards: pending/verified counts come from each invoice-status total. We run
-  // two lightweight count queries (limit 1) so the cards reflect the live totals
-  // regardless of the active tab. Rejected is a local-only concept (0 from API).
-  const { data: pendingCount } = useQuery({
-    queryKey: ["invoices", "count", "pending"],
-    queryFn: () => apiGet<InvoiceListResponse>("/invoices", { page: 1, limit: 1, payment_status: "pending" }),
-    staleTime: 60 * 1000,
-  });
-
   const rows = useMemo<Payment[]>(() => {
-    const mapped = (data?.items ?? []).map(mapInvoiceRow);
+    const mapped = (data?.items ?? []).map(mapPaymentRow);
     return mapped.map((p) => {
       const o = overrides[p.id];
       return o ? { ...p, ...o } : p;
     });
   }, [data, overrides]);
 
+  // KPI cards: "pending" reflects the live recorded-payment total minus any rows
+  // locally verified/rejected. Verified-today + rejected come from the local
+  // overrides (no verification endpoint exists to persist them).
   const kpis = useMemo(() => {
     const rejected = Object.values(overrides).filter((o) => o.status === "Rejected").length;
     const verifiedToday = Object.values(overrides).filter(
       (o) => o.status === "Verified" && o.verificationDate === today,
     ).length;
+    const total = data?.total ?? rows.length;
+    const acted = Object.values(overrides).filter(
+      (o) => o.status === "Verified" || o.status === "Rejected",
+    ).length;
     return {
-      pending: pendingCount?.total ?? 0,
+      pending: Math.max(0, total - acted),
       verifiedToday,
       rejected,
     };
-  }, [overrides, today, pendingCount]);
+  }, [overrides, today, data, rows]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows.filter((r) => {
-      if (tab === "unverified" && r.status !== "Unverified") return false;
+      // Recorded (un-acted) payments populate the "Unverified" tab; locally
+      // verified rows move to the "Verified" tab. Rejected rows drop from both.
+      if (tab === "unverified" && !(r.status === "Recorded" || r.status === "Unverified"))
+        return false;
       if (tab === "verified" && r.status !== "Verified") return false;
       if (!q) return true;
       return (
         r.student.toLowerCase().includes(q) ||
         r.receiptNo.toLowerCase().includes(q) ||
-        r.txnId.toLowerCase().includes(q) ||
+        r.reference.toLowerCase().includes(q) ||
         r.university.toLowerCase().includes(q)
       );
     });
@@ -294,7 +306,7 @@ function PaymentVerification() {
   };
 
   const downloadReceipt = (p: Payment) => {
-    const text = `Receipt\n\nReceipt No: ${p.receiptNo}\nStudent: ${p.student}\nUniversity: ${p.university}\nCourse: ${p.course}\nInstalment: ${p.instalment}\nAmount: ${fmtINR(p.amount)}\nMode: ${p.mode}\nTxn ID: ${p.txnId}\nVerified By: ${p.verifiedBy ?? "-"}\nVerification Date: ${p.verificationDate ?? "-"}\n`;
+    const text = `Receipt\n\nReceipt No: ${p.receiptNo}\nStudent: ${p.student}\nUniversity: ${p.university}\nCourse: ${p.course}\nInstalment: ${p.instalment}\nAmount: ${fmtINR(p.amount)}\nMode: ${p.mode}\nReference: ${p.reference}\nDate: ${p.submittedDate}\n`;
     const blob = new Blob([text], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -398,9 +410,9 @@ function PaymentVerification() {
                       <TableHead>Instalment</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
                       <TableHead>Mode</TableHead>
-                      <TableHead>Txn ID</TableHead>
+                      <TableHead>Reference</TableHead>
                       <TableHead>Proof</TableHead>
-                      <TableHead>Submitted</TableHead>
+                      <TableHead>Date</TableHead>
                       <TableHead>Submitted By</TableHead>
                       <TableHead className="text-right">Action</TableHead>
                     </TableRow>
@@ -439,7 +451,7 @@ function PaymentVerification() {
                           <TableCell>{p.instalment}</TableCell>
                           <TableCell className="text-right">{fmtINR(p.amount)}</TableCell>
                           <TableCell>{p.mode}</TableCell>
-                          <TableCell className="font-mono text-xs">{p.txnId}</TableCell>
+                          <TableCell className="font-mono text-xs">{p.reference}</TableCell>
                           <TableCell>
                             <Button size="sm" variant="ghost" onClick={() => setProofOpen(p)}>
                               <Eye className="h-4 w-4" /> View
@@ -483,8 +495,8 @@ function PaymentVerification() {
                       <TableHead>Course</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
                       <TableHead>Mode</TableHead>
-                      <TableHead>Verified By</TableHead>
-                      <TableHead>Verification Date</TableHead>
+                      <TableHead>Reference</TableHead>
+                      <TableHead>Date</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="text-right">Action</TableHead>
                     </TableRow>
@@ -522,8 +534,8 @@ function PaymentVerification() {
                           <TableCell>{p.course}</TableCell>
                           <TableCell className="text-right">{fmtINR(p.amount)}</TableCell>
                           <TableCell>{p.mode}</TableCell>
-                          <TableCell>{p.verifiedBy ?? EMPTY}</TableCell>
-                          <TableCell>{p.verificationDate ?? EMPTY}</TableCell>
+                          <TableCell className="font-mono text-xs">{p.reference}</TableCell>
+                          <TableCell>{p.submittedDate}</TableCell>
                           <TableCell>
                             <StatusBadge s={p.status} />
                           </TableCell>
@@ -561,10 +573,11 @@ function PaymentVerification() {
           {verifyOpen && (
             <div className="space-y-3 text-sm">
               <Row k="Student" v={verifyOpen.student} />
+              <Row k="Course" v={verifyOpen.course} />
               <Row k="Amount" v={fmtINR(verifyOpen.amount)} />
               <Row k="Payment Date" v={verifyOpen.submittedDate} />
               <Row k="Payment Mode" v={verifyOpen.mode} />
-              <Row k="Transaction ID" v={verifyOpen.txnId} />
+              <Row k="Reference" v={verifyOpen.reference} />
               <div className="mt-2 rounded-md border bg-muted/30 p-4 text-center">
                 <FileText className="mx-auto h-10 w-10 text-muted-foreground" />
                 <p className="mt-2 text-xs text-muted-foreground">Proof preview: {verifyOpen.proofUrl}</p>
@@ -653,7 +666,7 @@ function PaymentVerification() {
                   <Row k="Student" v={proofOpen.student} />
                   <Row k="Amount" v={fmtINR(proofOpen.amount)} />
                   <Row k="Mode" v={proofOpen.mode} />
-                  <Row k="Txn ID" v={proofOpen.txnId} />
+                  <Row k="Reference" v={proofOpen.reference} />
                 </div>
                 <div className="rounded-md border bg-muted/30 p-10 text-center">
                   <FileText className="mx-auto h-16 w-16 text-muted-foreground" />
@@ -684,9 +697,8 @@ function PaymentVerification() {
               <Row k="Instalment" v={receiptOpen.instalment} />
               <Row k="Amount" v={fmtINR(receiptOpen.amount)} />
               <Row k="Mode" v={receiptOpen.mode} />
-              <Row k="Txn ID" v={receiptOpen.txnId} />
-              <Row k="Verified By" v={receiptOpen.verifiedBy ?? "-"} />
-              <Row k="Verification Date" v={receiptOpen.verificationDate ?? "-"} />
+              <Row k="Reference" v={receiptOpen.reference} />
+              <Row k="Date" v={receiptOpen.submittedDate} />
             </div>
           )}
           <DialogFooter>
@@ -717,8 +729,8 @@ function PaymentVerification() {
                   <Row k="Instalment" v={paymentOpen.instalment} />
                   <Row k="Amount" v={fmtINR(paymentOpen.amount)} />
                   <Row k="Mode" v={paymentOpen.mode} />
-                  <Row k="Txn ID" v={paymentOpen.txnId} />
-                  <Row k="Submitted" v={paymentOpen.submittedDate} />
+                  <Row k="Reference" v={paymentOpen.reference} />
+                  <Row k="Date" v={paymentOpen.submittedDate} />
                   <Row k="Submitted By" v={paymentOpen.submittedBy} />
                   <Row k="Verified By" v={paymentOpen.verifiedBy ?? "-"} />
                   <Row k="Verification Date" v={paymentOpen.verificationDate ?? "-"} />
