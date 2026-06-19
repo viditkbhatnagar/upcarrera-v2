@@ -75,9 +75,10 @@ interface ReRegRow {
   phone: string;
   university: string;
   course: string;
-  current: string;
+  intake: string;
   next: string;
   status: ProgressionStatus;
+  admissionStatusLabel: string;
   fee: FeeStatus;
   feeAmount: number;
   feePaid: number;
@@ -87,19 +88,20 @@ interface ReRegRow {
 }
 
 // --- Live API wiring (GET /api/students) ----------------------------------
-// There is NO progression / re-registration source in the API: the backend has
-// no concept of a "next semester", a progression status, a re-registration fee,
-// or a due date. The closest honest source is the enrolled-students list, which
-// represents the cohort that COULD be due for re-registration. We map each real,
-// decorated `students` row onto the screen's `ReRegRow` and render every field
-// the API does not provide as "—" / 0 — never fabricated. Progression status
-// defaults to the neutral "Not Due" so no row is invented as pending/confirmed.
+// The re-registration cohort is the set of students who have completed their
+// current programme — i.e. admission_status_label === "Passed Out" — and are the
+// real candidates to re-register. We fetch the decorated students list and keep
+// only those rows. Each row carries its joined display fields (name, university_
+// title, course_title, session_title -> Intake) plus the human admission_status_
+// label, which we render directly. Fields the API genuinely does not provide
+// (next term, re-registration fee, due date) stay as honest "—" / 0 placeholders.
 interface ApiStudentRow {
   id: number | string;
   student_id: number | string | null;
   enrollment_id: string | null;
   enrollment_date: string | null;
   created_at: string | null;
+  admission_status_label: string | null;
   // Decorated display fields (joined server-side).
   name: string | null;
   email: string | null;
@@ -107,6 +109,7 @@ interface ApiStudentRow {
   consultant_name: string | null;
   course_title: string | null;
   university_title: string | null;
+  session_title: string | null;
 }
 
 interface StudentsListResponse {
@@ -134,14 +137,14 @@ function formatDate(value: string | null): string {
 }
 
 // Map a real, decorated `students` row onto the screen's existing ReRegRow.
-// Fields the API does not expose (progression stage, next term, due date, fee)
-// fall back to honest placeholders — "—" / 0 / a neutral "Not Due" status.
+// Student ID display matches the old CRM: "UPC00" + students.id (the row id).
+// Intake comes from the joined session_title; Status from admission_status_label.
+// Fields the API does not expose (next term, re-registration fee, due date) fall
+// back to honest placeholders — "—" / 0 — never fabricated.
 function mapApiRow(r: ApiStudentRow): ReRegRow {
-  const displayId =
-    r.enrollment_id != null && String(r.enrollment_id).trim() !== ""
-      ? String(r.enrollment_id)
-      : `STU-${r.student_id ?? r.id}`;
+  const displayId = `UPC00${r.id}`;
   const enrolled = formatDate(r.enrollment_date ?? r.created_at);
+  const label = asText(r.admission_status_label);
 
   return {
     id: displayId,
@@ -150,11 +153,14 @@ function mapApiRow(r: ApiStudentRow): ReRegRow {
     phone: r.phone != null ? String(r.phone) : EMPTY,
     university: asText(r.university_title),
     course: asText(r.course_title),
-    // No semester/term progression data in the API.
-    current: EMPTY,
+    // Real joined intake/session for this student.
+    intake: asText(r.session_title),
+    // No "next term" concept in the API.
     next: EMPTY,
-    // No progression lifecycle in the API — neutral baseline (not fabricated).
-    status: "Not Due",
+    // Real admission lifecycle status drives the badge style; keep the raw label
+    // for display so the exact API value shows verbatim.
+    status: toProgressionStatus(label),
+    admissionStatusLabel: label,
     // No re-registration fee tracking in the API.
     fee: "Pending",
     feeAmount: 0,
@@ -176,15 +182,12 @@ function mapApiRow(r: ApiStudentRow): ReRegRow {
   };
 }
 
-const STATUSES: ProgressionStatus[] = [
-  "Not Due",
-  "Due Soon",
-  "Progression Pending",
-  "Fee Pending",
-  "Submitted to University",
-  "Confirmed",
-  "On Hold",
-];
+// The badge palette is keyed by ProgressionStatus; the real admission status
+// label maps onto a neutral progression bucket purely for styling. The actual
+// label text (e.g. "Passed Out") is what we render in the cell.
+function toProgressionStatus(_label: string): ProgressionStatus {
+  return "Not Due";
+}
 
 const STATUS_STYLES: Record<ProgressionStatus, string> = {
   "Not Due": "bg-slate-100 text-slate-700 ring-slate-200",
@@ -227,19 +230,25 @@ function ReRegistrationPage() {
   const [active, setActive] = useState<ReRegRow | null>(null);
   const [rows, setRows] = useState<ReRegRow[]>([]);
 
-  // Live enrolled-students list (GET /api/students). The API has no progression
-  // source, so we fetch a wide page of real students and refine on the client.
+  // Live students list (GET /api/students). The re-registration cohort is the
+  // "Passed Out" students, so we fetch a wide page and filter to that label.
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["re-registration", "students", { page: 1, limit: 100 }],
+    queryKey: ["re-registration", "students", { page: 1, limit: 1000 }],
     queryFn: () =>
-      apiGet<StudentsListResponse>("/students", { page: 1, limit: 100 }),
+      apiGet<StudentsListResponse>("/students", { page: 1, limit: 1000 }),
   });
 
-  // Seed local rows from the fetched set. Local edits (Mark Confirmed) stay
-  // client-side; a fresh fetch re-seeds them.
+  // Seed local rows from the fetched set, keeping only the re-registration
+  // candidates (admission_status_label === "Passed Out"). Local edits (Mark
+  // Confirmed) stay client-side; a fresh fetch re-seeds them. An empty result is
+  // a valid empty state — we do not fabricate rows.
   useEffect(() => {
     if (data?.items) {
-      setRows(data.items.map(mapApiRow));
+      setRows(
+        data.items
+          .filter((r) => r.admission_status_label === "Passed Out")
+          .map(mapApiRow),
+      );
     }
   }, [data]);
 
@@ -256,11 +265,20 @@ function ReRegistrationPage() {
       }
       if (university !== "all" && r.university !== university) return false;
       if (course !== "all" && r.course !== course) return false;
-      if (semester !== "all" && r.current !== semester) return false;
-      if (status !== "all" && r.status !== status) return false;
+      if (semester !== "all" && r.intake !== semester) return false;
+      if (status !== "all" && r.admissionStatusLabel !== status) return false;
       return true;
     });
   }, [rows, query, university, course, semester, status]);
+
+  // Status filter options come from the real admission status labels present in
+  // the loaded cohort (rather than the legacy progression buckets), so the filter
+  // matches what the Status column actually renders.
+  const statusOptions = useMemo(() => {
+    return Array.from(
+      new Set(rows.map((r) => r.admissionStatusLabel).filter((l) => l !== EMPTY)),
+    ).sort();
+  }, [rows]);
 
   const counts = useMemo(() => {
     const total = rows.length;
@@ -298,7 +316,7 @@ function ReRegistrationPage() {
                     year: "numeric",
                   }),
                   title: "Re-registration Confirmed",
-                  description: `${r.next} progression marked confirmed.`,
+                  description: "Re-registration marked confirmed.",
                   by: "You",
                 },
               ],
@@ -422,10 +440,10 @@ function ReRegistrationPage() {
               </SelectContent>
             </Select>
             <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger><SelectValue placeholder="Progression Status" /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Statuses</SelectItem>
-                {STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                {statusOptions.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -447,9 +465,9 @@ function ReRegistrationPage() {
                   <th className="px-4 py-3 text-left font-medium">Student Name</th>
                   <th className="px-4 py-3 text-left font-medium">University</th>
                   <th className="px-4 py-3 text-left font-medium">Course</th>
-                  <th className="px-4 py-3 text-left font-medium">Current</th>
+                  <th className="px-4 py-3 text-left font-medium">Intake</th>
                   <th className="px-4 py-3 text-left font-medium">Next</th>
-                  <th className="px-4 py-3 text-left font-medium">Progression</th>
+                  <th className="px-4 py-3 text-left font-medium">Status</th>
                   <th className="px-4 py-3 text-left font-medium">Fee</th>
                   <th className="px-4 py-3 text-left font-medium">Due Date</th>
                   <th className="px-4 py-3 text-right font-medium">Action</th>
@@ -493,14 +511,14 @@ function ReRegistrationPage() {
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{r.university}</td>
                       <td className="px-4 py-3">{r.course}</td>
-                      <td className="px-4 py-3">{r.current}</td>
+                      <td className="px-4 py-3">{r.intake}</td>
                       <td className="px-4 py-3 font-medium">{r.next}</td>
                       <td className="px-4 py-3">
                         <span className={cn(
                           "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
                           STATUS_STYLES[r.status],
                         )}>
-                          {r.status}
+                          {r.admissionStatusLabel}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -569,14 +587,14 @@ function ReRegistrationPage() {
                     "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
                     STATUS_STYLES[active.status],
                   )}>
-                    {active.status}
+                    {active.admissionStatusLabel}
                   </span>
                 </div>
                 <Separator className="my-3" />
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <Info icon={Building2} label="University" value={active.university} />
                   <Info icon={BookOpen} label="Course" value={active.course} />
-                  <Info icon={GraduationCap} label="Current" value={active.current} />
+                  <Info icon={GraduationCap} label="Intake" value={active.intake} />
                   <Info icon={GraduationCap} label="Next" value={active.next} />
                   <Info icon={CalendarDays} label="Due Date" value={active.dueDate} />
                   <Info

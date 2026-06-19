@@ -169,6 +169,7 @@ export class StudentsService {
    *   - consultant_name                        <- users (students.consultant_id)
    *   - course_title + university_id           <- course (students.course_id)
    *   - university_title                       <- university (course.university_id)
+   *   - session_title                          <- sessions (students.session_id; PK is session_id)
    *   - admission_status_label                 <- ADMISSION_STATUS_LABELS
    *
    * The student-user and consultant ids both point at `users`, so they share a
@@ -180,6 +181,7 @@ export class StudentsService {
       student_id: number;
       consultant_id: number;
       course_id: number | null;
+      session_id: number | null;
       admission_status: number | null;
     },
   >(rows: T[]) {
@@ -196,9 +198,16 @@ export class StudentsService {
         rows.map((r) => r.course_id).filter((c): c is number => c != null),
       ),
     ];
+    // sessions PK is session_id (NOT id), so the page's session ids come from
+    // students.session_id and are looked up by sessions.session_id below.
+    const sessionIds = [
+      ...new Set(
+        rows.map((r) => r.session_id).filter((s): s is number => s != null),
+      ),
+    ];
 
     // ONE bulk query per related table.
-    const [users, courses] = await Promise.all([
+    const [users, courses, sessions] = await Promise.all([
       userIds.length > 0
         ? this.prisma.users.findMany({
             where: { id: { in: userIds } },
@@ -215,6 +224,12 @@ export class StudentsService {
         ? this.prisma.course.findMany({
             where: { id: { in: courseIds } },
             select: { id: true, title: true, university_id: true },
+          })
+        : Promise.resolve([]),
+      sessionIds.length > 0
+        ? this.prisma.sessions.findMany({
+            where: { session_id: { in: sessionIds } },
+            select: { session_id: true, session_title: true },
           })
         : Promise.resolve([]),
     ]);
@@ -241,6 +256,9 @@ export class StudentsService {
     const universityTitleById = new Map(
       universities.map((u) => [u.id, u.title ?? null]),
     );
+    const sessionTitleById = new Map(
+      sessions.map((s) => [s.session_id, s.session_title ?? null]),
+    );
 
     return rows.map((row) => {
       const studentUser = userById.get(row.student_id);
@@ -260,6 +278,10 @@ export class StudentsService {
         university_title:
           universityId != null
             ? (universityTitleById.get(universityId) ?? null)
+            : null,
+        session_title:
+          row.session_id != null
+            ? (sessionTitleById.get(row.session_id) ?? null)
             : null,
         admission_status_label: admissionStatusLabel(row.admission_status),
       };
@@ -1047,6 +1069,14 @@ export class StudentsService {
    * Ports App/Students::finance: optional date range on users.created_at and a
    * university_id filter. Paginated. Each item is the user row plus the finance
    * fields (null finance fields when the student has no finance row yet).
+   *
+   * Each item is additionally decorated with the student's enrolment display
+   * names, resolved by bulk-fetching (no N+1) the related rows for the page:
+   *   - course_title     <- course (students.course_id; students.student_id = user.id)
+   *   - university_title <- university (course.university_id)
+   *   - session_title    <- sessions (students.session_id; sessions PK is session_id)
+   * These are null when the user has no students row (or the referenced row is
+   * missing). No existing field is removed or renamed.
    */
   async listFinance(query: ListFinanceDto) {
     const page = query.page ?? DEFAULT_PAGE;
@@ -1090,8 +1120,82 @@ export class StudentsService {
       financeRows.map((f) => [f.student_id, f]),
     );
 
+    // Resolve each user's enrolment display names (course / university / session)
+    // via their students row (students.student_id = users.id). One bulk findMany
+    // per related table, keyed by id, then mapped onto the page (no N+1).
+    const studentRows = userIds.length
+      ? await this.prisma.students.findMany({
+          where: { student_id: { in: userIds }, deleted_at: null },
+          select: { student_id: true, course_id: true, session_id: true },
+        })
+      : [];
+    const studentByUserId = new Map(
+      studentRows.map((s) => [s.student_id, s]),
+    );
+
+    const financeCourseIds = [
+      ...new Set(
+        studentRows
+          .map((s) => s.course_id)
+          .filter((c): c is number => c != null),
+      ),
+    ];
+    const financeSessionIds = [
+      ...new Set(
+        studentRows
+          .map((s) => s.session_id)
+          .filter((s): s is number => s != null),
+      ),
+    ];
+
+    const [financeCourses, financeSessions] = await Promise.all([
+      financeCourseIds.length > 0
+        ? this.prisma.course.findMany({
+            where: { id: { in: financeCourseIds } },
+            select: { id: true, title: true, university_id: true },
+          })
+        : Promise.resolve([]),
+      financeSessionIds.length > 0
+        ? this.prisma.sessions.findMany({
+            where: { session_id: { in: financeSessionIds } },
+            select: { session_id: true, session_title: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const financeUniversityIds = [
+      ...new Set(
+        financeCourses
+          .map((c) => c.university_id)
+          .filter((u): u is number => u != null),
+      ),
+    ];
+    const financeUniversities =
+      financeUniversityIds.length > 0
+        ? await this.prisma.university.findMany({
+            where: { id: { in: financeUniversityIds } },
+            select: { id: true, title: true },
+          })
+        : [];
+
+    const financeCourseById = new Map(
+      financeCourses.map((c) => [c.id, c]),
+    );
+    const financeUniversityTitleById = new Map(
+      financeUniversities.map((u) => [u.id, u.title ?? null]),
+    );
+    const financeSessionTitleById = new Map(
+      financeSessions.map((s) => [s.session_id, s.session_title ?? null]),
+    );
+
     const items = users.map((u) => {
       const fin = financeByStudent.get(u.id);
+      const studentRow = studentByUserId.get(u.id);
+      const course =
+        studentRow?.course_id != null
+          ? financeCourseById.get(studentRow.course_id)
+          : undefined;
+      const courseUniversityId = course?.university_id ?? null;
       return {
         ...u,
         finance_id: fin?.id ?? null,
@@ -1100,6 +1204,15 @@ export class StudentsService {
         miscFees: fin?.miscFees ?? null,
         scholarship_details: fin?.scholarship_details ?? null,
         payment_status: fin?.payment_status ?? null,
+        course_title: course?.title ?? null,
+        university_title:
+          courseUniversityId != null
+            ? (financeUniversityTitleById.get(courseUniversityId) ?? null)
+            : null,
+        session_title:
+          studentRow?.session_id != null
+            ? (financeSessionTitleById.get(studentRow.session_id) ?? null)
+            : null,
       };
     });
 

@@ -66,10 +66,11 @@ export const Route = createFileRoute("/fees/summary")({
 // code, university_id …) spread by the API and layered with the student's
 // finance row fields: tuitionFees / examFees / miscFees / scholarship_details /
 // payment_status (all null when the student has no finance row yet). The
-// endpoint joins NO university/course/batch names and carries NO paid /
-// outstanding / installment / receipt data — those are rendered "—" / 0 / empty
-// rather than fabricated. Source of truth: StudentsService.listFinance
-// (apps/api/src/students/students.service.ts).
+// endpoint now also joins display names — university_title (university),
+// course_title (course) and session_title (intake) — which fill the previously
+// blank columns. It still carries NO paid / outstanding / installment / receipt
+// data, so those remain rendered "—" / 0 / empty rather than fabricated. Source
+// of truth: StudentsService.listFinance (apps/api/src/students/students.service.ts).
 const EMPTY = "—";
 
 type PaymentStatusRaw = string | null;
@@ -88,6 +89,10 @@ interface ApiFinanceRow {
   miscFees: number | null;
   scholarship_details: string | null;
   payment_status: PaymentStatusRaw;
+  // Decorated display fields (joined server-side).
+  university_title: string | null;
+  course_title: string | null;
+  session_title: string | null;
 }
 
 interface FinanceListResponse {
@@ -159,10 +164,10 @@ function mapApiRow(r: ApiFinanceRow): SummaryRow {
     rowId: String(r.id),
     id: displayId,
     name: asText(r.name),
-    // listFinance joins no university/course/batch names.
-    university: EMPTY,
-    course: EMPTY,
-    intake: EMPTY,
+    // listFinance now joins display names for university / course / intake.
+    university: asText(r.university_title),
+    course: asText(r.course_title),
+    intake: asText(r.session_title),
     tuitionFees: tuition,
     examFees: exam,
     miscFees: misc,

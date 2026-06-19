@@ -28,46 +28,55 @@ export const Route = createFileRoute("/enrollment/university-wise")({
 const COURSES = ["All Courses", "MBA", "B.Tech CSE", "BBA", "BCA", "M.Sc Data Science", "B.Com"];
 const INTAKES = ["All Intakes", "Jan 2026 — Spring", "Jul 2026 — Monsoon", "Sep 2026 — Fall", "Jul 2025 — Monsoon"];
 
+// The six real admission_status_label values the API emits, in the order the old
+// CRM university_wise report displayed its count columns.
+const STATUS_COLUMNS = [
+  "Pending",
+  "In Progress",
+  "Enrolled",
+  "Passed Out",
+  "Dropout",
+  "Cancelled",
+] as const;
+type StatusColumn = (typeof STATUS_COLUMNS)[number];
+
+type StatusCounts = Record<StatusColumn, number>;
+
 type Row = {
   name: string;
   short: string;
-  location: string;
-  approved: number;
-  ready: number;
-  submitted: number;
-  confirmed: number;
-  rejected: number;
+  counts: StatusCounts;
+  total: number;
 };
 
 // ---- Live API wiring ----
-// There is no single "enrollments by university" endpoint, so we derive this
-// view from two real endpoints and group client-side:
-//   1. GET /applications  -> decorated rows carrying university_id /
-//      university_title / status_label. We bucket each application's status_label
-//      into the screen's columns.
-//   2. GET /universities  -> the university master, used only to enrich each
-//      group with a real location (state/address); applications carry no location.
-//
-// The applications status_label is one of Active | Inactive | Archived |
-// Converted (see applicationStatusLabel in students.service.ts). The granular
-// "Ready for Submission" lifecycle does NOT exist in the API, so that column is
-// always 0 — we never fabricate a value.
+// The old-CRM "university_wise" report is one row per university with a count of
+// students in each admission status, plus a row total. We reproduce it from the
+// single real students endpoint:
+//   GET /students { page: 1, limit: 1000 } -> decorated rows carrying
+//   university_title + a human admission_status_label.
+// We group the rows by university_title and tally each group's
+// admission_status_label into the six status columns. Groups with no university
+// (null/empty title) are skipped — the old report never showed an "Unassigned"
+// university bucket.
 
-interface ApiApplication {
-  university_id: number | null;
+interface ApiStudentRow {
   university_title: string | null;
-  status_label: string | null;
+  admission_status_label: string | null;
 }
 
-interface ApiUniversity {
-  id: number;
-  title: string | null;
-  state?: string | null;
-  address?: string | null;
-}
+const STUDENTS_LIMIT = 1000;
 
-const APPLICATIONS_LIMIT = 500;
-const UNIVERSITIES_LIMIT = 200;
+function emptyCounts(): StatusCounts {
+  return {
+    Pending: 0,
+    "In Progress": 0,
+    Enrolled: 0,
+    "Passed Out": 0,
+    Dropout: 0,
+    Cancelled: 0,
+  };
+}
 
 function deriveShort(name: string): string {
   const words = name
@@ -81,94 +90,53 @@ function deriveShort(name: string): string {
   return initials || name.slice(0, 3).toUpperCase() || "UNI";
 }
 
-/** Build the grouped rows from the live applications + universities payloads. */
-function buildRows(
-  applications: ApiApplication[],
-  universities: ApiUniversity[],
-): Row[] {
-  // university_id -> { state | address } for the location column.
-  const locationById = new Map<number, string>(
-    universities.map((u) => [u.id, u.state?.trim() || u.address?.trim() || "—"]),
-  );
-
-  type Bucket = Row & { _id: number | null };
+/** Group the live students payload by university and tally status counts. */
+function buildRows(students: ApiStudentRow[]): Row[] {
+  type Bucket = Omit<Row, "total">;
   const groups = new Map<string, Bucket>();
 
-  for (const app of applications) {
-    const id = app.university_id;
-    const name = app.university_title?.trim() || (id != null ? `University #${id}` : "Unassigned");
-    const key = id != null ? `id:${id}` : `name:${name}`;
+  for (const student of students) {
+    const name = student.university_title?.trim();
+    // Skip students with no university — they don't belong to any report row.
+    if (!name) continue;
 
-    let bucket = groups.get(key);
+    let bucket = groups.get(name);
     if (!bucket) {
-      bucket = {
-        _id: id,
-        name,
-        short: deriveShort(name),
-        location: id != null ? (locationById.get(id) ?? "—") : "—",
-        approved: 0,
-        ready: 0,
-        submitted: 0,
-        confirmed: 0,
-        rejected: 0,
-      };
-      groups.set(key, bucket);
+      bucket = { name, short: deriveShort(name), counts: emptyCounts() };
+      groups.set(name, bucket);
     }
 
-    // Total applications for the university.
-    bucket.approved += 1;
-    // Map the real status_label onto the available columns. "Ready for
-    // Submission" has no API equivalent, so it stays 0.
-    switch ((app.status_label ?? "").toLowerCase()) {
-      case "converted":
-        bucket.confirmed += 1;
-        break;
-      case "active":
-        bucket.submitted += 1;
-        break;
-      case "inactive":
-      case "archived":
-        bucket.rejected += 1;
-        break;
-      default:
-        break;
+    const label = student.admission_status_label?.trim();
+    if (label && label in bucket.counts) {
+      bucket.counts[label as StatusColumn] += 1;
     }
   }
 
-  return Array.from(groups.values()).map(({ _id, ...row }) => row);
+  return Array.from(groups.values()).map((bucket) => ({
+    ...bucket,
+    total: STATUS_COLUMNS.reduce((sum, key) => sum + bucket.counts[key], 0),
+  }));
 }
 
-type SortKey = keyof Pick<Row, "approved" | "ready" | "submitted" | "confirmed" | "rejected">;
+type SortKey = StatusColumn | "total";
 
 function UniversityWiseEnrollment() {
-  // Live applications (grouped client-side) + universities (for location).
-  const applicationsQuery = useQuery({
-    queryKey: ["applications", { page: 1, limit: APPLICATIONS_LIMIT }],
+  // Live students (grouped by university client-side into per-status counts).
+  const studentsQuery = useQuery({
+    queryKey: ["students", "university-wise", { page: 1, limit: STUDENTS_LIMIT }],
     queryFn: () =>
-      apiGet<{ items: ApiApplication[]; total: number; page: number; limit: number }>(
-        "/applications",
-        { page: 1, limit: APPLICATIONS_LIMIT },
-      ),
-  });
-  const universitiesQuery = useQuery({
-    queryKey: ["universities", { page: 1, limit: UNIVERSITIES_LIMIT }],
-    queryFn: () =>
-      apiGet<{ items: ApiUniversity[]; total: number; page: number; limit: number }>(
-        "/universities",
-        { page: 1, limit: UNIVERSITIES_LIMIT },
+      apiGet<{ items: ApiStudentRow[]; total: number; page: number; limit: number }>(
+        "/students",
+        { page: 1, limit: STUDENTS_LIMIT },
       ),
   });
 
-  const isLoading = applicationsQuery.isLoading || universitiesQuery.isLoading;
-  const isError = applicationsQuery.isError;
+  const isLoading = studentsQuery.isLoading;
+  const isError = studentsQuery.isError;
 
   const rows = useMemo(
-    () =>
-      buildRows(
-        applicationsQuery.data?.items ?? [],
-        universitiesQuery.data?.items ?? [],
-      ),
-    [applicationsQuery.data, universitiesQuery.data],
+    () => buildRows(studentsQuery.data?.items ?? []),
+    [studentsQuery.data],
   );
 
   const [course, setCourse] = useState(COURSES[0]);
@@ -176,29 +144,34 @@ function UniversityWiseEnrollment() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("approved");
+  const [sortKey, setSortKey] = useState<SortKey>("total");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  const sortValue = (r: Row, key: SortKey) =>
+    key === "total" ? r.total : r.counts[key];
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     let r = rows.filter(x =>
-      !q || x.name.toLowerCase().includes(q) || x.short.toLowerCase().includes(q) || x.location.toLowerCase().includes(q),
+      !q || x.name.toLowerCase().includes(q) || x.short.toLowerCase().includes(q),
     );
-    r = [...r].sort((a, b) => (sortDir === "desc" ? b[sortKey] - a[sortKey] : a[sortKey] - b[sortKey]));
+    r = [...r].sort((a, b) =>
+      sortDir === "desc"
+        ? sortValue(b, sortKey) - sortValue(a, sortKey)
+        : sortValue(a, sortKey) - sortValue(b, sortKey),
+    );
     return r;
   }, [rows, search, sortKey, sortDir]);
 
   const totals = useMemo(
     () =>
       filtered.reduce(
-        (acc, r) => ({
-          approved: acc.approved + r.approved,
-          ready: acc.ready + r.ready,
-          submitted: acc.submitted + r.submitted,
-          confirmed: acc.confirmed + r.confirmed,
-          rejected: acc.rejected + r.rejected,
-        }),
-        { approved: 0, ready: 0, submitted: 0, confirmed: 0, rejected: 0 },
+        (acc, r) => {
+          for (const key of STATUS_COLUMNS) acc.counts[key] += r.counts[key];
+          acc.total += r.total;
+          return acc;
+        },
+        { counts: emptyCounts(), total: 0 },
       ),
     [filtered],
   );
@@ -264,7 +237,7 @@ function UniversityWiseEnrollment() {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Name, code, location"
+                placeholder="Name or code"
                 className="h-9 w-full rounded-lg border border-border bg-surface pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-2 focus:ring-primary/30"
               />
             </div>
@@ -337,18 +310,20 @@ function UniversityWiseEnrollment() {
               <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                 <th className="px-6 py-2.5 font-semibold w-16">Sl No</th>
                 <th className="px-6 py-2.5 font-semibold">University</th>
-                <TH k="approved" label="Approved" />
-                <TH k="ready" label="Ready for Submission" />
-                <TH k="submitted" label="Submitted" />
-                <TH k="confirmed" label="Confirmed" />
-                <TH k="rejected" label="Rejected" />
+                <TH k="Pending" label="Pending" />
+                <TH k="In Progress" label="In Progress" />
+                <TH k="Enrolled" label="Enrolled" />
+                <TH k="Passed Out" label="Passed Out" />
+                <TH k="Dropout" label="Dropout" />
+                <TH k="Cancelled" label="Cancelled" />
+                <TH k="total" label="Total" />
                 <th className="px-6 py-2.5 font-semibold text-right">Action</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center">
+                  <td colSpan={10} className="px-6 py-12 text-center">
                     <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       Loading enrollment data…
@@ -357,7 +332,7 @@ function UniversityWiseEnrollment() {
                 </tr>
               ) : isError ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center">
+                  <td colSpan={10} className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center gap-2 text-sm text-destructive">
                       <AlertTriangle className="h-5 w-5" />
                       Failed to load enrollment data. Please try again.
@@ -366,7 +341,7 @@ function UniversityWiseEnrollment() {
                 </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={10} className="px-6 py-12 text-center text-sm text-muted-foreground">
                     No universities match your filters.
                   </td>
                 </tr>
@@ -382,24 +357,28 @@ function UniversityWiseEnrollment() {
                       <div className="min-w-0">
                         <div className="truncate font-medium text-foreground">{r.name}</div>
                         <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                          <Building2 className="h-3 w-3" /> {r.location}
+                          <Building2 className="h-3 w-3" /> University
                         </div>
                       </div>
                     </div>
                   </td>
-                  <td className="px-3 py-3.5 text-right tabular-nums font-semibold text-foreground">{r.approved}</td>
+                  <td className="px-3 py-3.5 text-right tabular-nums font-semibold text-foreground">{r.counts["Pending"]}</td>
                   <td className="px-3 py-3.5 text-right">
-                    <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-primary">{r.ready}</span>
+                    <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-primary">{r.counts["In Progress"]}</span>
                   </td>
                   <td className="px-3 py-3.5 text-right">
-                    <span className="inline-flex items-center rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">{r.submitted}</span>
+                    <span className="inline-flex items-center rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-success">{r.counts["Enrolled"]}</span>
                   </td>
                   <td className="px-3 py-3.5 text-right">
-                    <span className="inline-flex items-center rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-success">{r.confirmed}</span>
+                    <span className="inline-flex items-center rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-accent">{r.counts["Passed Out"]}</span>
                   </td>
                   <td className="px-3 py-3.5 text-right">
-                    <span className="inline-flex items-center rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-destructive">{r.rejected}</span>
+                    <span className="inline-flex items-center rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-destructive">{r.counts["Dropout"]}</span>
                   </td>
+                  <td className="px-3 py-3.5 text-right">
+                    <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold tabular-nums text-muted-foreground">{r.counts["Cancelled"]}</span>
+                  </td>
+                  <td className="px-3 py-3.5 text-right tabular-nums font-semibold text-foreground">{r.total}</td>
                   <td className="px-6 py-3.5 text-right">
                     <button className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted">
                       <Eye className="h-3.5 w-3.5" /> View Students
@@ -413,11 +392,13 @@ function UniversityWiseEnrollment() {
               <tr className="border-t-2 border-border bg-muted/30 text-sm font-semibold text-foreground">
                 <td className="px-6 py-3" />
                 <td className="px-6 py-3">Totals</td>
-                <td className="px-3 py-3 text-right tabular-nums">{totals.approved}</td>
-                <td className="px-3 py-3 text-right tabular-nums">{totals.ready}</td>
-                <td className="px-3 py-3 text-right tabular-nums">{totals.submitted}</td>
-                <td className="px-3 py-3 text-right tabular-nums text-success">{totals.confirmed}</td>
-                <td className="px-3 py-3 text-right tabular-nums text-destructive">{totals.rejected}</td>
+                <td className="px-3 py-3 text-right tabular-nums">{totals.counts["Pending"]}</td>
+                <td className="px-3 py-3 text-right tabular-nums">{totals.counts["In Progress"]}</td>
+                <td className="px-3 py-3 text-right tabular-nums text-success">{totals.counts["Enrolled"]}</td>
+                <td className="px-3 py-3 text-right tabular-nums">{totals.counts["Passed Out"]}</td>
+                <td className="px-3 py-3 text-right tabular-nums text-destructive">{totals.counts["Dropout"]}</td>
+                <td className="px-3 py-3 text-right tabular-nums">{totals.counts["Cancelled"]}</td>
+                <td className="px-3 py-3 text-right tabular-nums">{totals.total}</td>
                 <td className="px-6 py-3" />
               </tr>
             </tfoot>

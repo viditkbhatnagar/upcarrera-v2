@@ -106,15 +106,19 @@ const COURSES = ["MBA", "BBA", "MCA", "BCA", "M.Com", "MA Psychology"];
 const INTAKES = ["Jan 2026", "Apr 2026", "Jul 2026", "Oct 2026"];
 
 // ---- Live API wiring (GET /api/payments) ----
-// Each item is a raw `payment` row (no joins): the endpoint lists every
-// recorded payment receipt. Because these are *received* payments, each maps
-// into the screen's "paid" bucket. The raw row exposes only:
+// Each item is a `payment` row decorated server-side with its joined display
+// fields: the endpoint lists every recorded payment receipt. Because these are
+// *received* payments, each maps into the screen's "paid" bucket. The decorated
+// row now exposes the real related values from the live DB:
 //   id, user_id, invoice_id, payment_type (cash|cheque|bank), paid_amount,
-//   payment_date, reference_no, remark.
-// It has NO student name / university / course / intake / installment name /
-// executive / verification / due-date — those render "—" (or are omitted),
-// never fabricated. Consequently overdue/due/upcoming buckets are always empty
-// against this endpoint and the follow-up columns show "—".
+//   payment_date, reference_no, remark, plus the joins:
+//   student_name (student), course_title (course), university_title,
+//   mode_label (human payment mode).
+// This mirrors how the OLD CRM payment-ledger rendered Student / Course /
+// Amount / Mode / Date / Reference. Intake / installment name / executive /
+// verification / due-date are still not provided by this endpoint, so those
+// render "—" (or are omitted), never fabricated. Consequently overdue/due/
+// upcoming buckets are always empty against this endpoint.
 interface ApiPayment {
   id: number;
   user_id?: number | null;
@@ -124,32 +128,44 @@ interface ApiPayment {
   payment_date?: string | null;
   reference_no?: string | null;
   remark?: string | null;
+  // Decorated display fields (joined server-side).
+  student_name?: string | null;
+  course_title?: string | null;
+  university_title?: string | null;
+  mode_label?: string | null;
 }
 
 const DASH = "—";
 
+function asText(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : DASH;
+}
+
 function mapApiPayment(p: ApiPayment): Installment {
   const paidDate = p.payment_date ? String(p.payment_date).slice(0, 10) : undefined;
   const amount = Number(p.paid_amount ?? 0) || 0;
+  // Prefer the human mode_label join; fall back to the raw payment_type code.
+  const mode = asText(
+    p.mode_label ??
+      (p.payment_type ? p.payment_type.charAt(0).toUpperCase() + p.payment_type.slice(1) : null),
+  );
   return {
     id: `PAY-${p.id}`,
-    // No student join on this endpoint — show the linked user/invoice ids.
+    // Real student (joined). The linked user id is kept as the secondary line.
     studentId: p.user_id != null ? `USR-${p.user_id}` : DASH,
-    student: p.invoice_id != null ? `Invoice #${p.invoice_id}` : `Payment #${p.id}`,
-    university: DASH,
-    course: DASH,
+    student: asText(p.student_name),
+    university: asText(p.university_title),
+    course: asText(p.course_title),
     intake: DASH,
     installmentName: DASH,
-    // The raw payment row carries no due date; use the payment date so the row
+    // The payment row carries no due date; use the payment date so the row
     // classifies as "paid" and the Due/Paid column stays meaningful.
     dueDate: paidDate ?? iso(today),
     amount,
     executive: DASH,
     // All listed rows are settled receipts.
     paidDate: paidDate ?? iso(today),
-    paidMode: p.payment_type
-      ? p.payment_type.charAt(0).toUpperCase() + p.payment_type.slice(1)
-      : DASH,
+    paidMode: mode,
     txnId: p.reference_no?.trim() || DASH,
     receipt: `RCP-${p.id}`,
     // The endpoint exposes no verification status.

@@ -38,17 +38,18 @@ export const Route = createFileRoute("/fees/dashboard")({
 // live sources:
 //   GET /students/finance-summary -> { count, totals:{tuitionFees,examFees,
 //     miscFees,grandTotal}, byPaymentStatus } (apps/api/src/students/students.service.ts)
-//   GET /invoices -> { items:[invoice + total_paid + payment_count], total, page,
+//   GET /invoices -> { items:[invoice + joined display fields], total, page,
 //     limit } (apps/api/src/finance/finance.service.ts). Each invoice row carries
-//     real payable_amount + total_paid, so "collected" = SUM(total_paid) and
-//     "billed" = SUM(payable_amount) over the fetched invoice page.
-// Recent activity is the live payments feed: GET /payments -> raw payment rows
-// (paid_amount, payment_type, payment_date, reference_no, user_id, invoice_id).
+//     real payable_amount + total_paid + balance, plus joined student_name /
+//     course_title / semester_title / status_label, so "collected" =
+//     SUM(total_paid) and "billed" = SUM(payable_amount) over the fetched page.
+// Recent activity is the live payments feed: GET /payments -> payment rows
+// decorated with student_name + mode_label (plus paid_amount, payment_date,
+// reference_no, invoice_id).
 //
 // Fields the API does NOT expose on these endpoints are rendered as "—"/0 and
 // never fabricated: the legacy trend buckets (monthly/quarterly/yearly), the
-// university/intake outstanding rollups, the dated due-buckets, and university
-// names/codes (invoices carry ids only, no joined display fields).
+// university/intake outstanding rollups, and the dated due-buckets.
 
 interface FinanceSummary {
   count: number;
@@ -74,6 +75,12 @@ interface InvoiceRow {
   due_date: string | null;
   total_paid: number;
   payment_count: number;
+  // Decorated display fields (joined server-side).
+  student_name: string | null;
+  course_title: string | null;
+  semester_title: string | null;
+  balance: number | null;
+  status_label: string | null;
 }
 
 interface PaymentRow {
@@ -86,6 +93,9 @@ interface PaymentRow {
   reference_no: string | null;
   remark: string | null;
   created_on: string | null;
+  // Decorated display fields (joined server-side).
+  student_name: string | null;
+  mode_label: string | null;
 }
 
 interface ListResponse<T> {
@@ -110,6 +120,10 @@ function inrCompact(n: number): string {
 function inrFull(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return EMPTY;
   return `₹${Math.round(n).toLocaleString("en-IN")}`;
+}
+
+function asText(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
 }
 
 function timeAgo(value: string | null): string {
@@ -245,23 +259,26 @@ function FeeDashboard() {
     },
   ];
 
-  // University Financial Summary: invoices carry ids only (no joined names), so
-  // we list the real invoice rows with their billed/paid/outstanding amounts.
+  // Recent invoices: invoices now carry joined display fields, so we render the
+  // real student name + course alongside the billed/paid/pending amounts. Pending
+  // uses the server-computed `balance`; falls back to billed-paid if absent.
   const invoiceRows = useMemo(
     () =>
       invoices.map((inv) => {
         const billedAmt = inv.payable_amount ?? inv.total_amount ?? 0;
         const paidAmt = inv.total_paid ?? 0;
+        const pendingAmt = inv.balance ?? Math.max(0, billedAmt - paidAmt);
         const pct = billedAmt > 0 ? Math.round((paidAmt / billedAmt) * 100) : 0;
         return {
           id: inv.id,
           code: `INV-${inv.id}`,
-          studentId: inv.student_id != null ? `Student #${inv.student_id}` : EMPTY,
-          billed: inrFull(billedAmt),
+          student: asText(inv.student_name),
+          course: asText(inv.course_title),
+          billed: inrFull(inv.payable_amount),
           collected: inrFull(paidAmt),
-          outstanding: inrFull(Math.max(0, billedAmt - paidAmt)),
+          outstanding: inrFull(pendingAmt),
           pct,
-          status: inv.payment_status ?? EMPTY,
+          status: asText(inv.status_label ?? inv.payment_status),
         };
       }),
     [invoices],
@@ -460,12 +477,12 @@ function FeeDashboard() {
         </div>
       </div>
 
-      {/* Invoice Financial Summary */}
+      {/* Recent Invoices */}
       <div className="rounded-2xl border border-border bg-surface shadow-card">
         <div className="flex items-center justify-between p-6 pb-4">
           <div>
-            <h3 className="text-base font-semibold tracking-tight text-foreground">Invoice Financial Summary</h3>
-            <p className="text-xs text-muted-foreground">Latest invoices with billed, collected and outstanding amounts</p>
+            <h3 className="text-base font-semibold tracking-tight text-foreground">Recent Invoices</h3>
+            <p className="text-xs text-muted-foreground">Latest invoices with student, course and payable / paid / pending amounts</p>
           </div>
           <Link to="/fees/collection" className="text-xs font-semibold text-accent hover:underline">View all</Link>
         </div>
@@ -493,11 +510,12 @@ function FeeDashboard() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-y border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
-                  <th className="px-6 py-2.5 font-semibold">Invoice</th>
+                  <th className="px-6 py-2.5 font-semibold">Student</th>
+                  <th className="px-3 py-2.5 font-semibold">Course</th>
+                  <th className="px-3 py-2.5 font-semibold text-right">Payable</th>
+                  <th className="px-3 py-2.5 font-semibold text-right">Paid</th>
+                  <th className="px-3 py-2.5 font-semibold text-right">Pending</th>
                   <th className="px-3 py-2.5 font-semibold text-right">Status</th>
-                  <th className="px-3 py-2.5 font-semibold text-right">Total Fee</th>
-                  <th className="px-3 py-2.5 font-semibold text-right">Collected</th>
-                  <th className="px-3 py-2.5 font-semibold text-right">Outstanding</th>
                   <th className="px-6 py-2.5 font-semibold text-right">Action</th>
                 </tr>
               </thead>
@@ -510,15 +528,16 @@ function FeeDashboard() {
                           <Building2 className="h-4 w-4" />
                         </div>
                         <div className="min-w-0">
-                          <div className="truncate font-medium text-foreground">{u.code}</div>
-                          <div className="text-[11px] text-muted-foreground">{u.studentId} • {u.pct}% collected</div>
+                          <div className="truncate font-medium text-foreground">{u.student}</div>
+                          <div className="text-[11px] text-muted-foreground">{u.code} • {u.pct}% collected</div>
                         </div>
                       </div>
                     </td>
-                    <td className="px-3 py-3.5 text-right text-foreground capitalize">{u.status}</td>
+                    <td className="px-3 py-3.5 text-foreground">{u.course}</td>
                     <td className="px-3 py-3.5 text-right font-semibold text-foreground">{u.billed}</td>
                     <td className="px-3 py-3.5 text-right text-success font-semibold">{u.collected}</td>
                     <td className="px-3 py-3.5 text-right text-destructive font-semibold">{u.outstanding}</td>
+                    <td className="px-3 py-3.5 text-right text-foreground capitalize">{u.status}</td>
                     <td className="px-6 py-3.5 text-right">
                       <div className="inline-flex items-center gap-1">
                         <Link
@@ -583,8 +602,8 @@ function FeeDashboard() {
             {payments.map((p) => {
               const Icon = CheckCircle2;
               const tone = "bg-success/10 text-success";
-              const method = p.payment_type ? p.payment_type.toUpperCase() : EMPTY;
-              const who = p.user_id != null ? `User #${p.user_id}` : "Payment";
+              const method = asText(p.mode_label ?? p.payment_type);
+              const who = asText(p.student_name);
               const target = p.invoice_id != null ? `Invoice #${p.invoice_id}` : EMPTY;
               return (
                 <li key={p.id} className="relative">
