@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
 import {
@@ -180,6 +180,9 @@ function mapCourseToFee(
   };
 }
 
+// Status vocabulary is a fixed enum on this screen (not sourced from the API).
+const STATUSES: FeeStatus[] = ["Active", "Draft", "Inactive", "Expired"];
+
 const STATUS_STYLES: Record<FeeStatus, string> = {
   Active: "bg-emerald-100 text-emerald-700 ring-emerald-200",
   Draft: "bg-slate-100 text-slate-700 ring-slate-200",
@@ -196,9 +199,6 @@ const TYPE_LABEL: Record<UniversityType, string> = {
   "Type 1": "Type 1 · Student Pays University",
   "Type 2": "Type 2 · Student Pays upCarrera",
 };
-
-// Status vocabulary is a fixed enum on this screen (not sourced from the API).
-const STATUSES: FeeStatus[] = ["Active", "Draft", "Inactive", "Expired"];
 
 const inr = (n: number) => "₹" + n.toLocaleString("en-IN");
 
@@ -258,6 +258,7 @@ function FeeStructuresPage() {
     status: true, created: true, action: true,
   });
   const [viewing, setViewing] = useState<FeeStructure | null>(null);
+  const [editing, setEditing] = useState<FeeStructure | null>(null);
 
   // Each course IS a fee structure; universities are fetched to resolve names.
   const coursesQuery = useQuery({
@@ -280,7 +281,8 @@ function FeeStructuresPage() {
   const isLoading = coursesQuery.isLoading || universitiesQuery.isLoading;
   const isError = coursesQuery.isError;
 
-  const ALL = useMemo<FeeStructure[]>(() => {
+  // Mapped live rows. Local edits (Edit dialog) are layered on top via `ALL`.
+  const mapped = useMemo<FeeStructure[]>(() => {
     const uniById = new Map<string, ApiUniversityRow>(
       (universitiesQuery.data?.items ?? []).map((u) => [String(u.id), u]),
     );
@@ -288,6 +290,11 @@ function FeeStructuresPage() {
       mapCourseToFee(c, uniById.get(String(c.university_id))),
     );
   }, [coursesQuery.data, universitiesQuery.data]);
+
+  const [ALL, setALL] = useState<FeeStructure[]>([]);
+  useEffect(() => {
+    setALL(mapped);
+  }, [mapped]);
 
   // Filter option lists derived from the live rows (the API has no static
   // enums for course group / specialisation / intake).
@@ -346,7 +353,7 @@ function FeeStructuresPage() {
       return 0;
     });
     return rows;
-  }, [ALL, q, uniQ, course, spec, intake, type, status, feeMin, feeMax, sortKey, sortDir]);
+  }, [q, uniQ, course, spec, intake, type, status, feeMin, feeMax, sortKey, sortDir, ALL]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
@@ -481,17 +488,13 @@ function FeeStructuresPage() {
                 <Input placeholder="Max" value={feeMax} onChange={(e) => setFeeMax(e.target.value)} />
               </div>
             </div>
+            <div className="flex items-end">
+              <Button size="sm" variant="outline" onClick={resetFilters}>
+                <RotateCcw /> Reset
+              </Button>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 pt-2 border-t">
-            <Button size="sm" onClick={() => { setPage(1); toast.success("Filters applied"); }}>
-              <Filter /> Apply Filters
-            </Button>
-            <Button size="sm" variant="outline" onClick={resetFilters}>
-              <RotateCcw /> Reset
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => toast.success("View saved")}>
-              <Save /> Save View
-            </Button>
             <div className="ml-auto flex items-center gap-2">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -521,6 +524,7 @@ function FeeStructuresPage() {
           <Table>
             <TableHeader className="sticky top-0 bg-background z-10 shadow-[0_1px_0_0_hsl(var(--border))]">
               <TableRow>
+                <TableHead className="w-16">Sl No</TableHead>
                 {visibleCols.id && <TableHead className="cursor-pointer" onClick={() => toggleSort("id")}>Fee Structure ID</TableHead>}
                 {visibleCols.university && <TableHead className="cursor-pointer" onClick={() => toggleSort("university")}>University</TableHead>}
                 {visibleCols.course && <TableHead className="cursor-pointer" onClick={() => toggleSort("course")}>Course</TableHead>}
@@ -538,14 +542,14 @@ function FeeStructuresPage() {
             <TableBody>
               {isLoading && (
                 <TableRow>
-                  <TableCell colSpan={12} className="text-center text-muted-foreground py-12">
+                  <TableCell colSpan={13} className="text-center text-muted-foreground py-12">
                     Loading…
                   </TableCell>
                 </TableRow>
               )}
               {!isLoading && isError && (
                 <TableRow>
-                  <TableCell colSpan={12} className="text-center py-12">
+                  <TableCell colSpan={13} className="text-center py-12">
                     <span className="inline-flex items-center gap-2 text-rose-600">
                       <AlertTriangle className="h-4 w-4" />
                       Couldn’t load fee structures. Please try again.
@@ -553,8 +557,9 @@ function FeeStructuresPage() {
                   </TableCell>
                 </TableRow>
               )}
-              {!isLoading && !isError && pageRows.map((f) => (
+              {!isLoading && !isError && pageRows.map((f, i) => (
                 <TableRow key={f.id}>
+                  <TableCell className="text-sm tabular-nums text-muted-foreground">{i + 1}</TableCell>
                   {visibleCols.id && <TableCell className="font-medium">{f.id}</TableCell>}
                   {visibleCols.university && (
                     <TableCell>
@@ -591,16 +596,18 @@ function FeeStructuresPage() {
                   {visibleCols.created && <TableCell>{fmtDate(f.createdDate)}</TableCell>}
                   {visibleCols.action && (
                     <TableCell className="text-right">
-                      <Button size="sm" variant="ghost" onClick={() => setViewing(f)}>
-                        <Eye /> View
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button size="sm" variant="ghost" onClick={() => setViewing(f)}>
+                          <Eye /> View
+                        </Button>
+                      </div>
                     </TableCell>
                   )}
                 </TableRow>
               ))}
               {!isLoading && !isError && pageRows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={12} className="text-center text-muted-foreground py-12">
+                  <TableCell colSpan={13} className="text-center text-muted-foreground py-12">
                     No fee structures match your filters.
                   </TableCell>
                 </TableRow>
@@ -634,7 +641,7 @@ function FeeStructuresPage() {
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Fee Structure Details</DialogTitle>
-            <DialogDescription>Read-only view. Edits are managed from the University Profile.</DialogDescription>
+            <DialogDescription>Read-only view of the fee structure.</DialogDescription>
           </DialogHeader>
           {viewing && (
             <div className="space-y-5">
@@ -664,6 +671,83 @@ function FeeStructuresPage() {
                 <Field label="Net Payable Fee" value={inr(viewing.netPayable)} highlight />
                 <Field label="Installment Enabled" value={viewing.installmentEnabled ? "Yes" : "No"} />
                 <Field label="Created Date" value={fmtDate(viewing.createdDate)} />
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Fee Structure</DialogTitle>
+            <DialogDescription>Update the fee structure details below.</DialogDescription>
+          </DialogHeader>
+          {editing && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <Label>University</Label>
+                  <Input value={editing.university} disabled className="mt-1" />
+                </div>
+                <div>
+                  <Label>Fee Structure ID</Label>
+                  <Input value={editing.id} disabled className="mt-1" />
+                </div>
+                <div>
+                  <Label>Course</Label>
+                  <Input value={editing.course} onChange={(e) => setEditing({ ...editing, course: e.target.value })} className="mt-1" />
+                </div>
+                <div>
+                  <Label>Intake</Label>
+                  <Select value={editing.intake} onValueChange={(v) => setEditing({ ...editing, intake: v })}>
+                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {INTAKES.map((i) => <SelectItem key={i} value={i}>{i}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Registration Fee</Label>
+                  <Input type="number" value={editing.registrationFee} onChange={(e) => setEditing({ ...editing, registrationFee: Number(e.target.value) })} className="mt-1" />
+                </div>
+                <div>
+                  <Label>Total Fee</Label>
+                  <Input type="number" value={editing.totalFee} onChange={(e) => setEditing({ ...editing, totalFee: Number(e.target.value) })} className="mt-1" />
+                </div>
+                <div>
+                  <Label>Net Payable</Label>
+                  <Input type="number" value={editing.netPayable} onChange={(e) => setEditing({ ...editing, netPayable: Number(e.target.value) })} className="mt-1" />
+                </div>
+                <div>
+                  <Label>Status</Label>
+                  <Select value={editing.status} onValueChange={(v) => setEditing({ ...editing, status: v as FeeStatus })}>
+                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Installment Enabled</Label>
+                  <Select value={editing.installmentEnabled ? "yes" : "no"} onValueChange={(v) => setEditing({ ...editing, installmentEnabled: v === "yes" })}>
+                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="yes">Yes</SelectItem>
+                      <SelectItem value="no">No</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
+                <Button onClick={() => {
+                  setALL((prev) => prev.map((x) => x.id === editing.id ? editing : x));
+                  setEditing(null);
+                  toast.success("Fee structure updated");
+                }}>
+                  <Save /> Save Changes
+                </Button>
               </div>
             </div>
           )}

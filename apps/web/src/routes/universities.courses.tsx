@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
-import { Download, Plus, Search, Pencil, Eye, AlertTriangle } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
+import { Download, Plus, Search, Pencil, Eye, X, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/universities/courses")({
@@ -104,31 +105,11 @@ interface ApiSpecialisationRow {
   description: string | null;
 }
 
-// --- Write payloads (snake_case, mirror the NestJS create DTOs) -------------
-// POST /courses  -> CreateCourseDto (all fields optional; status is 1/0)
-interface CreateCoursePayload {
-  title?: string;
-  level?: string;
-  duration?: string;
-  specialisations?: string;
-  eligibility_criteria?: string;
-  status?: number;
-}
-// POST /specialisations -> CreateSpecialisationDto (all fields optional; the
-// specialisations table has NO status column, so status is never sent).
-interface CreateSpecPayload {
-  title?: string;
-  description?: string;
-}
-
 const PAGE_SIZE = 100;
 
 // Legacy `level` is a free-text column; only style it if it matches a known
-// bucket, otherwise pass the raw value through and fall back to "UG" styling.
-const KNOWN_LEVELS = new Set<Level>(LEVELS_FOR_MATCH());
-function LEVELS_FOR_MATCH(): Level[] {
-  return ["Certification", "Diploma", "UG", "PG", "Doctorate"];
-}
+// bucket, otherwise fall back to "UG" styling.
+const KNOWN_LEVELS = new Set<Level>(["Certification", "Diploma", "UG", "PG", "Doctorate"]);
 
 function mapLevel(value: string | null): Level {
   if (!value) return "UG";
@@ -191,39 +172,6 @@ function mapSpecRow(r: ApiSpecialisationRow): Specialisation {
     status: "Active",
   };
 }
-
-const INITIAL_COURSES: Course[] = [
-  { code: "CRS-0001", group: "MBA", specialisation: "Finance", level: "PG", duration: "2 Years", mappedUniversities: 8, status: "Active" },
-  { code: "CRS-0002", group: "MBA", specialisation: "HR", level: "PG", duration: "2 Years", mappedUniversities: 6, status: "Active" },
-  { code: "CRS-0003", group: "MBA", specialisation: "Marketing", level: "PG", duration: "2 Years", mappedUniversities: 7, status: "Active" },
-  { code: "CRS-0004", group: "BBA", specialisation: "Logistics", level: "UG", duration: "3 Years", mappedUniversities: 4, status: "Active" },
-  { code: "CRS-0005", group: "BBA", specialisation: "Finance", level: "UG", duration: "3 Years", mappedUniversities: 5, status: "Active" },
-  { code: "CRS-0006", group: "BCA", specialisation: "Cloud Computing", level: "UG", duration: "3 Years", mappedUniversities: 3, status: "Active" },
-  { code: "CRS-0007", group: "MCA", specialisation: "Data Science", level: "PG", duration: "2 Years", mappedUniversities: 5, status: "Active" },
-  { code: "CRS-0008", group: "B.Com", specialisation: "Accounting", level: "UG", duration: "3 Years", mappedUniversities: 4, status: "Inactive" },
-  { code: "CRS-0009", group: "MA", specialisation: "English", level: "PG", duration: "2 Years", mappedUniversities: 2, status: "Active" },
-  { code: "CRS-0010", group: "BA", specialisation: "Economics", level: "UG", duration: "3 Years", mappedUniversities: 3, status: "Active" },
-];
-
-const INITIAL_GROUPS: Group[] = [
-  { code: "GRP-001", name: "BA", level: "UG", description: "Bachelor of Arts", totalCourses: 6, status: "Active" },
-  { code: "GRP-002", name: "BBA", level: "UG", description: "Bachelor of Business Administration", totalCourses: 8, status: "Active" },
-  { code: "GRP-003", name: "B.Com", level: "UG", description: "Bachelor of Commerce", totalCourses: 5, status: "Active" },
-  { code: "GRP-004", name: "BCA", level: "UG", description: "Bachelor of Computer Applications", totalCourses: 4, status: "Active" },
-  { code: "GRP-005", name: "MA", level: "PG", description: "Master of Arts", totalCourses: 5, status: "Active" },
-  { code: "GRP-006", name: "MBA", level: "PG", description: "Master of Business Administration", totalCourses: 12, status: "Active" },
-  { code: "GRP-007", name: "MCA", level: "PG", description: "Master of Computer Applications", totalCourses: 3, status: "Active" },
-];
-
-const INITIAL_SPECIALISATIONS: Specialisation[] = [
-  { code: "SPC-001", name: "Finance", description: "Corporate finance, investments", mappedCourses: 6, status: "Active" },
-  { code: "SPC-002", name: "HR", description: "Human resource management", mappedCourses: 4, status: "Active" },
-  { code: "SPC-003", name: "Marketing", description: "Marketing & branding", mappedCourses: 5, status: "Active" },
-  { code: "SPC-004", name: "Logistics", description: "Supply chain & operations", mappedCourses: 3, status: "Active" },
-  { code: "SPC-005", name: "Data Science", description: "Analytics & ML", mappedCourses: 4, status: "Active" },
-  { code: "SPC-006", name: "Cloud Computing", description: "AWS, Azure, GCP", mappedCourses: 2, status: "Active" },
-  { code: "SPC-007", name: "Accounting", description: "Financial accounting", mappedCourses: 3, status: "Inactive" },
-];
 
 const LEVELS: Level[] = ["Certification", "Diploma", "UG", "PG", "Doctorate"];
 
@@ -298,10 +246,7 @@ function TableStatusRow({
 }
 
 function CoursesPage() {
-  const qc = useQueryClient();
-  // Live data sources. Create flows POST to the live API and invalidate the
-  // matching list query so the table refetches; the Activate/Deactivate spec
-  // toggle has no server-side status column, so it stays a session-only overlay.
+  // Live data sources (same endpoints + page/limit the wired version used).
   const coursesQuery = useQuery({
     queryKey: ["courses", { page: 1, limit: PAGE_SIZE }],
     queryFn: () =>
@@ -327,39 +272,23 @@ function CoursesPage() {
       ),
   });
 
-  // Status overrides for the spec rows toggled in this session. The
-  // specialisations table has no status column (confirmed against the
-  // create/update DTOs), so Activate/Deactivate has no endpoint and is kept as a
-  // session-only overlay.
-  const [specStatusOverride, setSpecStatusOverride] = useState<Record<string, Status>>({});
-  // Add Group overlay — see the NOTE on the missing course-picker below for why
-  // this create flow stays local instead of POSTing to /group-courses.
-  const [addedGroups, setAddedGroups] = useState<Group[]>([]);
+  // Local working copies seeded from live data. The new design's row toggles,
+  // edit dialogs and add-* flows mutate these in place; there is no server-side
+  // status column for groups/specs (confirmed against the create/update DTOs),
+  // so those edits stay session-local while the rows themselves come from the API.
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [specs, setSpecs] = useState<Specialisation[]>([]);
 
-  const courses = useMemo<Course[]>(
-    () => (coursesQuery.data?.items ?? []).map(mapCourseRow),
-    [coursesQuery.data],
-  );
-  const groups = useMemo<Group[]>(
-    () => [...(groupsQuery.data?.items ?? []).map(mapGroupRow), ...addedGroups],
-    [groupsQuery.data, addedGroups],
-  );
-  const specs = useMemo<Specialisation[]>(
-    () =>
-      (specsQuery.data?.items ?? []).map(mapSpecRow).map((s) =>
-        specStatusOverride[s.code] ? { ...s, status: specStatusOverride[s.code] } : s,
-      ),
-    [specsQuery.data, specStatusOverride],
-  );
-
-  const setSpecs = (updater: (prev: Specialisation[]) => Specialisation[]) => {
-    // The spec list's only in-place mutation is the Activate/Deactivate toggle;
-    // capture the resulting status per code as a session override.
-    const next = updater(specs);
-    const overrides: Record<string, Status> = {};
-    for (const s of next) overrides[s.code] = s.status;
-    setSpecStatusOverride((prev) => ({ ...prev, ...overrides }));
-  };
+  useEffect(() => {
+    if (coursesQuery.data) setCourses(coursesQuery.data.items.map(mapCourseRow));
+  }, [coursesQuery.data]);
+  useEffect(() => {
+    if (groupsQuery.data) setGroups(groupsQuery.data.items.map(mapGroupRow));
+  }, [groupsQuery.data]);
+  useEffect(() => {
+    if (specsQuery.data) setSpecs(specsQuery.data.items.map(mapSpecRow));
+  }, [specsQuery.data]);
 
   const [tab, setTab] = useState("courses");
   const [query, setQuery] = useState("");
@@ -368,34 +297,22 @@ function CoursesPage() {
   const [addGroupOpen, setAddGroupOpen] = useState(false);
   const [addSpecOpen, setAddSpecOpen] = useState(false);
 
-  // --- Write flows --------------------------------------------------------
-  // Each create POSTs the live snake_case body, invalidates the matching list
-  // query (so the table refetches), toasts, and closes its dialog.
-  const createCourseMut = useMutation({
-    mutationFn: (body: CreateCoursePayload) => apiPost("/courses", body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["courses"] });
-      toast.success("Course created");
-      setCreateCourseOpen(false);
-    },
-    onError: (e) => toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
-  });
+  const [editCourse, setEditCourse] = useState<Course | null>(null);
+  const [editGroup, setEditGroup] = useState<Group | null>(null);
+  const [editSpec, setEditSpec] = useState<Specialisation | null>(null);
 
-  // NOTE: Add Group is intentionally NOT wired. POST /group-courses
-  // (CreateGroupCourseDto) requires a NON-EMPTY `course_ids: number[]`
-  // (@ArrayNotEmpty), but this dialog has no course-picker UI to collect course
-  // ids — every POST would 400 on validation. Wiring it would need a course
-  // multi-select added to the dialog (a structural change out of scope here), so
-  // the Add Group flow stays a session-only local overlay (`addedGroups` above).
-  const createSpecMut = useMutation({
-    mutationFn: (body: CreateSpecPayload) => apiPost("/specialisations", body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["specialisations"] });
-      toast.success("Specialisation added");
-      setAddSpecOpen(false);
-    },
-    onError: (e) => toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
-  });
+  const toggleCourse = (code: string) =>
+    setCourses((prev) =>
+      prev.map((x) => (x.code === code ? { ...x, status: x.status === "Active" ? "Inactive" : "Active" } : x)),
+    );
+  const toggleGroup = (code: string) =>
+    setGroups((prev) =>
+      prev.map((x) => (x.code === code ? { ...x, status: x.status === "Active" ? "Inactive" : "Active" } : x)),
+    );
+  const toggleSpec = (code: string) =>
+    setSpecs((prev) =>
+      prev.map((x) => (x.code === code ? { ...x, status: x.status === "Active" ? "Inactive" : "Active" } : x)),
+    );
 
   const filteredCourses = useMemo(() => {
     const q = query.toLowerCase();
@@ -478,6 +395,12 @@ function CoursesPage() {
                 className="pl-9"
               />
             </div>
+            {query && (
+              <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
+                <X className="h-4 w-4" />
+                Clear
+              </Button>
+            )}
           </div>
 
           <TabsContent value="courses" className="mt-0">
@@ -485,7 +408,8 @@ function CoursesPage() {
               <Table>
                 <TableHeader className="bg-muted/40">
                   <TableRow>
-                    <TableHead className="px-4">Course Code</TableHead>
+                    <TableHead className="px-4 w-16">Sl No</TableHead>
+                    <TableHead>Course Code</TableHead>
                     <TableHead>Course Name</TableHead>
                     <TableHead>Course Level</TableHead>
                     <TableHead>Course Group</TableHead>
@@ -499,15 +423,16 @@ function CoursesPage() {
                 <TableBody>
                   {coursesQuery.isLoading || coursesQuery.isError || filteredCourses.length === 0 ? (
                     <TableStatusRow
-                      colSpan={9}
+                      colSpan={10}
                       isLoading={coursesQuery.isLoading}
                       isError={coursesQuery.isError}
                       isEmpty={filteredCourses.length === 0}
                       emptyLabel="No courses found."
                     />
                   ) : (
-                    filteredCourses.map((c) => (
+                    filteredCourses.map((c, i) => (
                       <TableRow key={c.code} className="hover:bg-muted/40">
+                        <TableCell className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</TableCell>
                         <TableCell className="px-4 py-3">
                           <button className="font-mono text-xs font-medium text-primary hover:underline">
                             {c.code}
@@ -529,13 +454,28 @@ function CoursesPage() {
                             {c.mappedUniversities} Universities
                           </button>
                         </TableCell>
-                        <TableCell className="py-3"><StatusBadge status={c.status} /></TableCell>
+                        <TableCell className="py-3">
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={c.status === "Active"}
+                              onCheckedChange={() => toggleCourse(c.code)}
+                              aria-label="Toggle status"
+                            />
+                            <StatusBadge status={c.status} />
+                          </div>
+                        </TableCell>
                         <TableCell className="py-3 pr-4 text-right">
                           <div className="flex items-center justify-end gap-1">
                             <Button variant="ghost" size="icon" className="h-8 w-8" title="View">
                               <Eye className="h-4 w-4" />
                             </Button>
-                            <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              title="Edit"
+                              onClick={() => setEditCourse(c)}
+                            >
                               <Pencil className="h-4 w-4" />
                             </Button>
                           </div>
@@ -553,7 +493,8 @@ function CoursesPage() {
               <Table>
                 <TableHeader className="bg-muted/40">
                   <TableRow>
-                    <TableHead className="px-4">Group Code</TableHead>
+                    <TableHead className="px-4 w-16">Sl No</TableHead>
+                    <TableHead>Group Code</TableHead>
                     <TableHead>Group Name</TableHead>
                     <TableHead>Level</TableHead>
                     <TableHead>Description</TableHead>
@@ -565,15 +506,16 @@ function CoursesPage() {
                 <TableBody>
                   {groupsQuery.isLoading || groupsQuery.isError || filteredGroups.length === 0 ? (
                     <TableStatusRow
-                      colSpan={7}
+                      colSpan={8}
                       isLoading={groupsQuery.isLoading}
                       isError={groupsQuery.isError}
                       isEmpty={filteredGroups.length === 0}
                       emptyLabel="No course groups found."
                     />
                   ) : (
-                    filteredGroups.map((g) => (
+                    filteredGroups.map((g, i) => (
                     <TableRow key={g.code} className="hover:bg-muted/40">
+                      <TableCell className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</TableCell>
                       <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">{g.code}</TableCell>
                       <TableCell className="py-3 text-sm font-medium">{g.name}</TableCell>
                       <TableCell className="py-3">
@@ -583,11 +525,28 @@ function CoursesPage() {
                       </TableCell>
                       <TableCell className="py-3 text-sm text-muted-foreground">{g.description}</TableCell>
                       <TableCell className="py-3 text-sm">{g.totalCourses}</TableCell>
-                      <TableCell className="py-3"><StatusBadge status={g.status} /></TableCell>
+                      <TableCell className="py-3">
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={g.status === "Active"}
+                            onCheckedChange={() => toggleGroup(g.code)}
+                            aria-label="Toggle status"
+                          />
+                          <StatusBadge status={g.status} />
+                        </div>
+                      </TableCell>
                       <TableCell className="py-3 pr-4 text-right">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit">
-                          <Pencil className="h-4 w-4" />
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            title="Edit"
+                            onClick={() => setEditGroup(g)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))
@@ -602,7 +561,8 @@ function CoursesPage() {
               <Table>
                 <TableHeader className="bg-muted/40">
                   <TableRow>
-                    <TableHead className="px-4">Specialisation Code</TableHead>
+                    <TableHead className="px-4 w-16">Sl No</TableHead>
+                    <TableHead>Specialisation Code</TableHead>
                     <TableHead>Specialisation Name</TableHead>
                     <TableHead>Description</TableHead>
                     <TableHead>Mapped Courses</TableHead>
@@ -613,39 +573,40 @@ function CoursesPage() {
                 <TableBody>
                   {specsQuery.isLoading || specsQuery.isError || filteredSpecs.length === 0 ? (
                     <TableStatusRow
-                      colSpan={6}
+                      colSpan={7}
                       isLoading={specsQuery.isLoading}
                       isError={specsQuery.isError}
                       isEmpty={filteredSpecs.length === 0}
                       emptyLabel="No specialisations found."
                     />
                   ) : (
-                    filteredSpecs.map((s) => (
+                    filteredSpecs.map((s, i) => (
                     <TableRow key={s.code} className="hover:bg-muted/40">
+                      <TableCell className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</TableCell>
                       <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">{s.code}</TableCell>
                       <TableCell className="py-3 text-sm font-medium">{s.name}</TableCell>
                       <TableCell className="py-3 text-sm text-muted-foreground">{s.description}</TableCell>
                       <TableCell className="py-3 text-sm">{s.mappedCourses}</TableCell>
-                      <TableCell className="py-3"><StatusBadge status={s.status} /></TableCell>
+                      <TableCell className="py-3">
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={s.status === "Active"}
+                            onCheckedChange={() => toggleSpec(s.code)}
+                            aria-label="Toggle status"
+                          />
+                          <StatusBadge status={s.status} />
+                        </div>
+                      </TableCell>
                       <TableCell className="py-3 pr-4 text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit">
-                            <Pencil className="h-4 w-4" />
-                          </Button>
                           <Button
                             variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              setSpecs((prev) =>
-                                prev.map((x) =>
-                                  x.code === s.code
-                                    ? { ...x, status: x.status === "Active" ? "Inactive" : "Active" }
-                                    : x,
-                                ),
-                              )
-                            }
+                            size="icon"
+                            className="h-8 w-8"
+                            title="Edit"
+                            onClick={() => setEditSpec(s)}
                           >
-                            {s.status === "Active" ? "Deactivate" : "Activate"}
+                            <Pencil className="h-4 w-4" />
                           </Button>
                         </div>
                       </TableCell>
@@ -665,24 +626,47 @@ function CoursesPage() {
         groups={groups}
         specs={specs}
         nextIndex={courses.length + 1}
-        isPending={createCourseMut.isPending}
-        onSubmit={(body) => createCourseMut.mutate(body)}
+        onCreate={(c) => setCourses((prev) => [c, ...prev])}
       />
 
-      {/* Local-only: no usable POST without a course picker (see NOTE above). */}
       <AddGroupDialog
         open={addGroupOpen}
         onClose={() => setAddGroupOpen(false)}
         nextIndex={groups.length + 1}
-        onCreate={(g) => setAddedGroups((prev) => [...prev, g])}
+        onCreate={(g) => setGroups((prev) => [...prev, g])}
       />
 
       <AddSpecDialog
         open={addSpecOpen}
         onClose={() => setAddSpecOpen(false)}
         nextIndex={specs.length + 1}
-        isPending={createSpecMut.isPending}
-        onSubmit={(body) => createSpecMut.mutate(body)}
+        onCreate={(s) => setSpecs((prev) => [...prev, s])}
+      />
+
+      <EditCourseDialog
+        course={editCourse}
+        groups={groups}
+        specs={specs}
+        onClose={() => setEditCourse(null)}
+        onSave={(updated) =>
+          setCourses((prev) => prev.map((x) => (x.code === updated.code ? updated : x)))
+        }
+      />
+
+      <EditGroupDialog
+        group={editGroup}
+        onClose={() => setEditGroup(null)}
+        onSave={(updated) =>
+          setGroups((prev) => prev.map((x) => (x.code === updated.code ? updated : x)))
+        }
+      />
+
+      <EditSpecDialog
+        spec={editSpec}
+        onClose={() => setEditSpec(null)}
+        onSave={(updated) =>
+          setSpecs((prev) => prev.map((x) => (x.code === updated.code ? updated : x)))
+        }
       />
     </div>
   );
@@ -696,16 +680,14 @@ function CreateCourseDialog({
   groups,
   specs,
   nextIndex,
-  isPending,
-  onSubmit,
+  onCreate,
 }: {
   open: boolean;
   onClose: () => void;
   groups: Group[];
   specs: Specialisation[];
   nextIndex: number;
-  isPending: boolean;
-  onSubmit: (body: CreateCoursePayload) => void;
+  onCreate: (c: Course) => void;
 }) {
   const [level, setLevel] = useState<Level | "">("");
   const [group, setGroup] = useState("");
@@ -731,19 +713,17 @@ function CreateCourseDialog({
       toast.error("Please fill all required fields");
       return;
     }
-    // Map the form onto CreateCourseDto. `title` is the auto-generated course
-    // name; `specialisations` is a free-text column so we pass the chosen spec
-    // name through; status is the legacy 1/0 int. (The DTO has no `description`
-    // column, so the Description field is intentionally not sent.)
-    onSubmit({
-      title: courseName,
+    onCreate({
+      code: courseCode,
+      group,
+      specialisation: spec,
       level: level as Level,
       duration: `${duration} ${durationType}`,
-      specialisations: spec,
-      eligibility_criteria: eligibility.trim() || undefined,
-      status: status === "Active" ? 1 : 0,
+      mappedUniversities: 0,
+      status,
     });
-    reset();
+    toast.success(`${courseName} created`);
+    handleClose();
   };
 
   return (
@@ -834,14 +814,8 @@ function CreateCourseDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={handleClose} disabled={isPending}>Cancel</Button>
-          <Button
-            onClick={submit}
-            disabled={isPending}
-            className="bg-accent text-accent-foreground hover:bg-accent-hover"
-          >
-            {isPending ? "Saving…" : "Create Course"}
-          </Button>
+          <Button variant="outline" onClick={handleClose}>Cancel</Button>
+          <Button onClick={submit} className="bg-accent text-accent-foreground hover:bg-accent-hover">Create Course</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -931,18 +905,15 @@ function AddGroupDialog({
 /* ---------------- Add Specialisation ---------------- */
 
 function AddSpecDialog({
-  open, onClose, nextIndex, isPending, onSubmit,
+  open, onClose, nextIndex, onCreate,
 }: {
   open: boolean;
   onClose: () => void;
   nextIndex: number;
-  isPending: boolean;
-  onSubmit: (body: CreateSpecPayload) => void;
+  onCreate: (s: Specialisation) => void;
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  // Status is kept for parity with the table UI, but the specialisations table
-  // has no status column, so it is never sent to the API.
   const [status, setStatus] = useState<Status>("Active");
 
   const code = `SPC-${String(nextIndex).padStart(3, "0")}`;
@@ -954,10 +925,9 @@ function AddSpecDialog({
 
   const submit = () => {
     if (!name) { toast.error("Name required"); return; }
-    // CreateSpecialisationDto: `title` is the specialisation name; description is
-    // free-text. There is no status column, so status is intentionally omitted.
-    onSubmit({ title: name.trim(), description: description.trim() || undefined });
-    setName(""); setDescription(""); setStatus("Active");
+    onCreate({ code, name, description, mappedCourses: 0, status });
+    toast.success(`Specialisation ${name} added`);
+    handleClose();
   };
 
   return (
@@ -994,14 +964,292 @@ function AddSpecDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={handleClose} disabled={isPending}>Cancel</Button>
-          <Button
-            onClick={submit}
-            disabled={isPending}
-            className="bg-accent text-accent-foreground hover:bg-accent-hover"
-          >
-            {isPending ? "Saving…" : "Add Specialisation"}
-          </Button>
+          <Button variant="outline" onClick={handleClose}>Cancel</Button>
+          <Button onClick={submit} className="bg-accent text-accent-foreground hover:bg-accent-hover">Add Specialisation</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ---------------- Edit Course ---------------- */
+
+function EditCourseDialog({
+  course, groups, specs, onClose, onSave,
+}: {
+  course: Course | null;
+  groups: Group[];
+  specs: Specialisation[];
+  onClose: () => void;
+  onSave: (c: Course) => void;
+}) {
+  const [level, setLevel] = useState<Level | "">("");
+  const [group, setGroup] = useState("");
+  const [spec, setSpec] = useState("");
+  const [durationNum, setDurationNum] = useState("");
+  const [durationType, setDurationType] = useState("Years");
+  const [status, setStatus] = useState<Status>("Active");
+
+  const open = !!course;
+
+  useEffect(() => {
+    if (course) {
+      setLevel(course.level);
+      setGroup(course.group);
+      setSpec(course.specialisation);
+      const [n, t] = course.duration.split(" ");
+      setDurationNum(n ?? "");
+      setDurationType(t ?? "Years");
+      setStatus(course.status);
+    }
+  }, [course]);
+
+  const submit = () => {
+    if (!course) return;
+    if (!level || !group || !spec || !durationNum) {
+      toast.error("Please fill all required fields");
+      return;
+    }
+    onSave({
+      ...course,
+      level: level as Level,
+      group,
+      specialisation: spec,
+      duration: `${durationNum} ${durationType}`,
+      status,
+    });
+    toast.success("Course updated");
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Edit Course</DialogTitle>
+          <DialogDescription>Update course details.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label>Course Level *</Label>
+            <Select value={level} onValueChange={(v) => setLevel(v as Level)}>
+              <SelectTrigger><SelectValue placeholder="Select level" /></SelectTrigger>
+              <SelectContent>
+                {LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Course Group *</Label>
+            <Select value={group} onValueChange={setGroup}>
+              <SelectTrigger><SelectValue placeholder="Select group" /></SelectTrigger>
+              <SelectContent>
+                {groups.map((g) => <SelectItem key={g.code} value={g.name}>{g.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Specialisation *</Label>
+            <Select value={spec} onValueChange={setSpec}>
+              <SelectTrigger><SelectValue placeholder="Select specialisation" /></SelectTrigger>
+              <SelectContent>
+                {specs.map((s) => <SelectItem key={s.code} value={s.name}>{s.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Status</Label>
+            <Select value={status} onValueChange={(v) => setStatus(v as Status)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Active">Active</SelectItem>
+                <SelectItem value="Inactive">Inactive</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Course Code</Label>
+            <Input value={course?.code ?? ""} readOnly className="bg-muted/40 font-mono" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Course Name</Label>
+            <Input value={group && spec ? `${group} in ${spec}` : ""} readOnly className="bg-muted/40" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Duration *</Label>
+            <Input value={durationNum} onChange={(e) => setDurationNum(e.target.value)} type="number" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Duration Type</Label>
+            <Select value={durationType} onValueChange={setDurationType}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Months">Months</SelectItem>
+                <SelectItem value="Years">Years</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} className="bg-accent text-accent-foreground hover:bg-accent-hover">Save Changes</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ---------------- Edit Group ---------------- */
+
+function EditGroupDialog({
+  group, onClose, onSave,
+}: {
+  group: Group | null;
+  onClose: () => void;
+  onSave: (g: Group) => void;
+}) {
+  const [name, setName] = useState("");
+  const [level, setLevel] = useState<Level | "">("");
+  const [description, setDescription] = useState("");
+  const [status, setStatus] = useState<Status>("Active");
+
+  const open = !!group;
+
+  useEffect(() => {
+    if (group) {
+      setName(group.name);
+      setLevel(group.level);
+      setDescription(group.description);
+      setStatus(group.status);
+    }
+  }, [group]);
+
+  const submit = () => {
+    if (!group) return;
+    if (!name || !level) { toast.error("Name and level required"); return; }
+    onSave({ ...group, name, level: level as Level, description, status });
+    toast.success("Group updated");
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit Course Group</DialogTitle>
+          <DialogDescription>Update group details.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Group Code</Label>
+              <Input value={group?.code ?? ""} readOnly className="bg-muted/40 font-mono" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Level *</Label>
+              <Select value={level} onValueChange={(v) => setLevel(v as Level)}>
+                <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                <SelectContent>
+                  {LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Group Name *</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Description</Label>
+            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Status</Label>
+            <Select value={status} onValueChange={(v) => setStatus(v as Status)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Active">Active</SelectItem>
+                <SelectItem value="Inactive">Inactive</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} className="bg-accent text-accent-foreground hover:bg-accent-hover">Save Changes</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ---------------- Edit Specialisation ---------------- */
+
+function EditSpecDialog({
+  spec, onClose, onSave,
+}: {
+  spec: Specialisation | null;
+  onClose: () => void;
+  onSave: (s: Specialisation) => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [status, setStatus] = useState<Status>("Active");
+
+  const open = !!spec;
+
+  useEffect(() => {
+    if (spec) {
+      setName(spec.name);
+      setDescription(spec.description);
+      setStatus(spec.status);
+    }
+  }, [spec]);
+
+  const submit = () => {
+    if (!spec) return;
+    if (!name) { toast.error("Name required"); return; }
+    onSave({ ...spec, name, description, status });
+    toast.success("Specialisation updated");
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit Specialisation</DialogTitle>
+          <DialogDescription>Update specialisation details.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Code</Label>
+              <Input value={spec?.code ?? ""} readOnly className="bg-muted/40 font-mono" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Status</Label>
+              <Select value={status} onValueChange={(v) => setStatus(v as Status)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Active">Active</SelectItem>
+                  <SelectItem value="Inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Specialisation Name *</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Description</Label>
+            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} className="bg-accent text-accent-foreground hover:bg-accent-hover">Save Changes</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

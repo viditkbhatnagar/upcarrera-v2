@@ -1,13 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import React, { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import {
   Download,
   Plus,
   Search,
   Pencil,
   Eye,
-  Trash2,
+  Loader2,
+  AlertTriangle,
   CalendarRange,
   CalendarCheck2,
   CalendarX2,
@@ -40,7 +42,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from "@/lib/api";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/universities/intakes")({
@@ -63,6 +64,8 @@ type Intake = {
   status: IntakeStatus;
 };
 
+const INTAKE_STATUSES: IntakeStatus[] = ["Open", "Closed", "Inactive"];
+
 /** Raw intake row as returned by GET /api/intakes (snake_case, nullable). */
 type ApiIntake = {
   id: number;
@@ -76,15 +79,13 @@ type ApiIntake = {
   mapped_courses: number;
 };
 
-const INTAKE_STATUSES: IntakeStatus[] = ["Open", "Closed", "Inactive"];
-
 function toIntakeStatus(value: string | null): IntakeStatus {
   return INTAKE_STATUSES.includes(value as IntakeStatus)
     ? (value as IntakeStatus)
     : "Open";
 }
 
-/** Prisma serialises dates as full ISO timestamps; the date inputs need YYYY-MM-DD. */
+/** Prisma serialises dates as full ISO timestamps; the UI expects YYYY-MM-DD. */
 function toDateInput(iso: string | null): string {
   if (!iso) return "";
   return iso.slice(0, 10);
@@ -206,8 +207,7 @@ function KpiCard({
 }
 
 function IntakesPage() {
-  const qc = useQueryClient();
-
+  // Live data: GET /api/intakes returns { items, total, page, limit }.
   const { data, isLoading, isError } = useQuery({
     queryKey: ["intakes"],
     queryFn: () =>
@@ -217,25 +217,21 @@ function IntakesPage() {
       ),
   });
 
-  const intakes = useMemo<Intake[]>(
-    () => (data?.items ?? []).map(mapApiIntake),
-    [data],
-  );
+  // Local overlay lets the existing Create/Edit dialogs reflect their changes
+  // immediately on top of the server-fetched list (the new design's dialogs are
+  // client-side only). Overlays are keyed by intake code.
+  const [overrides, setOverrides] = useState<Record<string, Intake>>({});
+  const [created, setCreated] = useState<Intake[]>([]);
+
+  const intakes = useMemo<Intake[]>(() => {
+    const fetched = (data?.items ?? []).map(mapApiIntake);
+    const merged = [...created, ...fetched].map((i) => overrides[i.code] ?? i);
+    return merged;
+  }, [data, overrides, created]);
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<Intake | null>(null);
-  const [deleting, setDeleting] = useState<Intake | null>(null);
-
-  const deleteMut = useMutation({
-    mutationFn: (id: number) => apiDelete(`/intakes/${id}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["intakes"] });
-      toast.success("Intake deleted");
-      setDeleting(null);
-    },
-    onError: (e) =>
-      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
-  });
+  const [viewIntake, setViewIntake] = useState<Intake | null>(null);
+  const [editIntake, setEditIntake] = useState<Intake | null>(null);
 
   // Filters
   const [query, setQuery] = useState("");
@@ -415,7 +411,8 @@ function IntakesPage() {
           <Table>
             <TableHeader className="bg-muted/40">
               <TableRow>
-                <TableHead className="px-4">Intake Code</TableHead>
+                <TableHead className="px-4 w-16">Sl No</TableHead>
+                <TableHead>Intake Code</TableHead>
                 <TableHead>Intake Name</TableHead>
                 <TableHead>Start Date</TableHead>
                 <TableHead>Closing Date</TableHead>
@@ -428,34 +425,35 @@ function IntakesPage() {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell
-                    colSpan={8}
-                    className="py-10 text-center text-sm text-muted-foreground"
-                  >
-                    Loading intakes…
+                  <TableCell colSpan={9} className="py-12 text-center">
+                    <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading intakes…
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : isError ? (
                 <TableRow>
-                  <TableCell
-                    colSpan={8}
-                    className="py-10 text-center text-sm text-red-500"
-                  >
-                    Failed to load intakes. Please try again.
+                  <TableCell colSpan={9} className="py-12 text-center">
+                    <div className="flex items-center justify-center gap-2 text-sm text-red-500">
+                      <AlertTriangle className="h-4 w-4" />
+                      Failed to load intakes. Please try again.
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : filtered.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={9}
                     className="py-10 text-center text-sm text-muted-foreground"
                   >
                     No intakes found.
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((i) => (
-                  <TableRow key={i.id} className="hover:bg-muted/40">
+                filtered.map((i, idx) => (
+                  <TableRow key={i.code} className="hover:bg-muted/40">
+                    <TableCell className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{idx + 1}</TableCell>
                     <TableCell className="px-4 py-3">
                       <button className="font-mono text-xs font-medium text-primary hover:underline">
                         {i.code}
@@ -481,26 +479,11 @@ function IntakesPage() {
                     </TableCell>
                     <TableCell className="py-3 pr-4 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" title="View">
+                        <Button variant="ghost" size="icon" className="h-8 w-8" title="View" onClick={() => setViewIntake(i)}>
                           <Eye className="h-4 w-4" />
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          title="Edit"
-                          onClick={() => setEditing(i)}
-                        >
+                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit" onClick={() => setEditIntake(i)}>
                           <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive"
-                          title="Delete"
-                          onClick={() => setDeleting(i)}
-                        >
-                          <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
                     </TableCell>
@@ -512,55 +495,38 @@ function IntakesPage() {
         </div>
       </div>
 
-      <CreateIntakeDialog open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateIntakeDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        existingCodes={intakes.map((i) => i.code)}
+        onCreate={(i) => setCreated((prev) => [i, ...prev])}
+      />
 
-      <EditIntakeDialog intake={editing} onClose={() => setEditing(null)} />
+      <ViewIntakeDialog intake={viewIntake} onClose={() => setViewIntake(null)} />
 
-      <Dialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)}>
-        <DialogContent className="sm:max-w-[440px]">
-          <DialogHeader>
-            <DialogTitle>Delete intake</DialogTitle>
-            <DialogDescription>
-              {deleting
-                ? `This will permanently remove ${deleting.name}. This action cannot be undone.`
-                : ""}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setDeleting(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleteMut.isPending}
-              onClick={() => deleting && deleteMut.mutate(deleting.id)}
-            >
-              {deleteMut.isPending ? "Deleting…" : "Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <EditIntakeDialog
+        intake={editIntake}
+        onClose={() => setEditIntake(null)}
+        existingCodes={intakes.map((i) => i.code)}
+        onSave={(updated) =>
+          setOverrides((prev) => ({ ...prev, [updated.code]: updated }))
+        }
+      />
     </div>
   );
 }
 
-type IntakeWriteBody = {
-  name: string;
-  month: string;
-  year: number;
-  start_date: string;
-  closing_date: string;
-  status: string;
-};
-
 function CreateIntakeDialog({
   open,
   onClose,
+  existingCodes,
+  onCreate,
 }: {
   open: boolean;
   onClose: () => void;
+  existingCodes: string[];
+  onCreate: (i: Intake) => void;
 }) {
-  const qc = useQueryClient();
   const [month, setMonth] = useState<string>("July");
   const [year, setYear] = useState<string>(String(new Date().getFullYear() + 1));
   const [startDate, setStartDate] = useState("");
@@ -568,6 +534,7 @@ function CreateIntakeDialog({
 
   const name = `${month} ${year} Intake`;
   const code = `INT-${year}-${MONTH_CODE[month] ?? "XXX"}`;
+  const codeTaken = existingCodes.includes(code);
 
   const reset = () => {
     setMonth("July");
@@ -576,31 +543,30 @@ function CreateIntakeDialog({
     setClosingDate("");
   };
 
-  const createMut = useMutation({
-    mutationFn: (body: IntakeWriteBody) => apiPost("/intakes", body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["intakes"] });
-      toast.success("Intake created");
-      reset();
-      onClose();
-    },
-    onError: (e) =>
-      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
-  });
-
   const handleSubmit = () => {
     if (!startDate || !closingDate) {
       toast.error("Please fill start and closing dates");
       return;
     }
-    createMut.mutate({
+    if (codeTaken) {
+      toast.error(`${code} already exists`);
+      return;
+    }
+    onCreate({
+      id: Date.now(),
+      code,
       name,
       month,
       year: Number(year),
-      start_date: startDate,
-      closing_date: closingDate,
+      startDate,
+      closingDate,
+      mappedUniversities: 0,
+      mappedCourses: 0,
       status: "Open",
     });
+    toast.success(`${name} created`);
+    reset();
+    onClose();
   };
 
   return (
@@ -654,6 +620,9 @@ function CreateIntakeDialog({
           <div className="space-y-2">
             <Label>Intake Code</Label>
             <Input value={code} readOnly className="bg-muted/40 font-mono text-xs" />
+            {codeTaken && (
+              <p className="text-xs text-destructive">This code already exists.</p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -681,11 +650,66 @@ function CreateIntakeDialog({
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={createMut.isPending}
             className="bg-accent text-accent-foreground hover:bg-accent-hover"
           >
-            {createMut.isPending ? "Saving…" : "Create Intake"}
+            Create Intake
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ViewIntakeDialog({ intake, onClose }: { intake: Intake | null; onClose: () => void }) {
+  return (
+    <Dialog open={!!intake} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-[560px]">
+        <DialogHeader>
+          <DialogTitle>Intake Details</DialogTitle>
+          <DialogDescription>Read-only view of the intake.</DialogDescription>
+        </DialogHeader>
+        {intake && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 text-sm">
+            <div>
+              <p className="text-muted-foreground">Intake Code</p>
+              <p className="font-mono text-xs font-medium">{intake.code}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Intake Name</p>
+              <p className="font-medium">{intake.name}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Month</p>
+              <p className="font-medium">{intake.month}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Year</p>
+              <p className="font-medium">{intake.year}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Start Date</p>
+              <p className="font-medium">{formatDate(intake.startDate)}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Closing Date</p>
+              <p className="font-medium">{formatDate(intake.closingDate)}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Mapped Universities</p>
+              <p className="font-medium">{intake.mappedUniversities}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Mapped Courses</p>
+              <p className="font-medium">{intake.mappedCourses}</p>
+            </div>
+            <div className="sm:col-span-2">
+              <p className="text-muted-foreground">Status</p>
+              <StatusBadge status={intake.status} />
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button onClick={onClose}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -695,79 +719,64 @@ function CreateIntakeDialog({
 function EditIntakeDialog({
   intake,
   onClose,
+  existingCodes,
+  onSave,
 }: {
   intake: Intake | null;
   onClose: () => void;
+  existingCodes: string[];
+  onSave: (i: Intake) => void;
 }) {
-  const qc = useQueryClient();
   const [month, setMonth] = useState<string>("July");
   const [year, setYear] = useState<string>(String(new Date().getFullYear()));
   const [startDate, setStartDate] = useState("");
   const [closingDate, setClosingDate] = useState("");
-  const [status, setStatus] = useState<IntakeStatus>("Open");
 
-  // Sync the form whenever a different intake is opened for editing.
-  useEffect(() => {
-    if (!intake) return;
-    setMonth(intake.month || "July");
-    setYear(String(intake.year));
-    setStartDate(intake.startDate);
-    setClosingDate(intake.closingDate);
-    setStatus(intake.status);
+  React.useEffect(() => {
+    if (intake) {
+      setMonth(intake.month);
+      setYear(String(intake.year));
+      setStartDate(intake.startDate);
+      setClosingDate(intake.closingDate);
+    }
   }, [intake]);
+
+  if (!intake) return null;
 
   const name = `${month} ${year} Intake`;
   const code = `INT-${year}-${MONTH_CODE[month] ?? "XXX"}`;
+  const codeTaken = code !== intake.code && existingCodes.includes(code);
 
-  const updateMut = useMutation({
-    mutationFn: (body: IntakeWriteBody) =>
-      apiPatch(`/intakes/${intake?.id}`, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["intakes"] });
-      toast.success("Intake updated");
-      onClose();
-    },
-    onError: (e) =>
-      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
-  });
-
-  const handleSubmit = () => {
+  const handleSave = () => {
     if (!startDate || !closingDate) {
       toast.error("Please fill start and closing dates");
       return;
     }
-    updateMut.mutate({
-      name,
-      month,
-      year: Number(year),
-      start_date: startDate,
-      closing_date: closingDate,
-      status,
-    });
+    if (codeTaken) {
+      toast.error(`${code} already exists`);
+      return;
+    }
+    onSave({ ...intake, code, name, month, year: Number(year), startDate, closingDate });
+    toast.success(`${name} updated`);
+    onClose();
   };
 
   return (
-    <Dialog open={intake !== null} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={!!intake} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle>Edit Intake</DialogTitle>
-          <DialogDescription>
-            Update this admission intake. Name and code are auto-generated.
-          </DialogDescription>
+          <DialogDescription>Update intake details. Name and code are auto-generated.</DialogDescription>
         </DialogHeader>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label>Month</Label>
             <Select value={month} onValueChange={setMonth}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select month" />
-              </SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="Select month" /></SelectTrigger>
               <SelectContent>
                 {MONTHS.map((m) => (
-                  <SelectItem key={m} value={m}>
-                    {m}
-                  </SelectItem>
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -776,14 +785,10 @@ function EditIntakeDialog({
           <div className="space-y-2">
             <Label>Year</Label>
             <Select value={year} onValueChange={setYear}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select year" />
-              </SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="Select year" /></SelectTrigger>
               <SelectContent>
                 {YEARS.map((y) => (
-                  <SelectItem key={y} value={String(y)}>
-                    {y}
-                  </SelectItem>
+                  <SelectItem key={y} value={String(y)}>{y}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -797,56 +802,24 @@ function EditIntakeDialog({
           <div className="space-y-2">
             <Label>Intake Code</Label>
             <Input value={code} readOnly className="bg-muted/40 font-mono text-xs" />
+            {codeTaken && <p className="text-xs text-destructive">This code already exists.</p>}
           </div>
 
           <div className="space-y-2">
             <Label>Start Date</Label>
-            <Input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
+            <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
           </div>
 
           <div className="space-y-2">
             <Label>Admission Closing Date</Label>
-            <Input
-              type="date"
-              value={closingDate}
-              onChange={(e) => setClosingDate(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label>Status</Label>
-            <Select
-              value={status}
-              onValueChange={(v) => setStatus(v as IntakeStatus)}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select status" />
-              </SelectTrigger>
-              <SelectContent>
-                {INTAKE_STATUSES.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Input type="date" value={closingDate} onChange={(e) => setClosingDate(e.target.value)} />
           </div>
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleSubmit}
-            disabled={updateMut.isPending}
-            className="bg-accent text-accent-foreground hover:bg-accent-hover"
-          >
-            {updateMut.isPending ? "Saving…" : "Save Changes"}
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={handleSave} className="bg-accent text-accent-foreground hover:bg-accent-hover">
+            Save Changes
           </Button>
         </DialogFooter>
       </DialogContent>
