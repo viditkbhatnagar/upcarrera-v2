@@ -22,6 +22,7 @@ export type AinvoxErrorCode =
   | 'unauthorized'
   | 'bad_request'
   | 'not_found'
+  | 'insufficient_balance'
   | 'network'
   | 'unknown';
 
@@ -130,6 +131,12 @@ export class AinvoxService {
   private failFor(status: number): never {
     if (status === 401) throw new AinvoxError('unauthorized', 'Invalid Ainvox keys', status);
     if (status === 400) throw new AinvoxError('bad_request', 'Ainvox rejected the request', status);
+    if (status === 402)
+      throw new AinvoxError(
+        'insufficient_balance',
+        'Calling is temporarily unavailable — the Ainvox calling account is out of balance. Please recharge it to place calls.',
+        status,
+      );
     if (status === 404) throw new AinvoxError('not_found', 'Not found', status);
     throw new AinvoxError('unknown', `Ainvox returned status ${status}`, status);
   }
