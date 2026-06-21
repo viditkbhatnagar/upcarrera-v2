@@ -88,7 +88,6 @@ const items: NavItem[] = [
   { to: "/commissions", label: "Commission Management", icon: TrendingUp },
   { to: "/support", label: "Student Support", icon: Headphones, badge: "12" },
   { to: "/calls", label: "Call History", icon: PhoneCall },
-  { to: "/reports", label: "Reports", icon: BarChart3 },
   {
     to: "/counsellors",
     label: "Counsellor Management",
@@ -108,6 +107,7 @@ const items: NavItem[] = [
       { to: "/administration/users", label: "User Management", icon: Users2 },
       { to: "/administration/roles", label: "Role & Permissions", icon: ShieldCheck },
       { to: "/administration/audit-logs", label: "Audit Logs", icon: ScrollText },
+      { to: "/administration/system-settings", label: "Settings", icon: Settings },
     ],
   },
 ];

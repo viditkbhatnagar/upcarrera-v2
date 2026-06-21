@@ -245,18 +245,6 @@ function FeeSummary() {
         </Button>
       </div>
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard label="Students" value={String(filtered.length)} icon={Activity} />
-        <KpiCard label="Total Receivable" value={formatINR(totals.total)} icon={IndianRupee} />
-        <KpiCard label="Collected" value={formatINR(totals.paid)} icon={Wallet} />
-        <KpiCard
-          label="Outstanding"
-          value={totals.hasOut ? formatINR(totals.out) : EMPTY}
-          icon={AlertTriangle}
-        />
-      </div>
-
       {/* Filters */}
       <Card>
         <CardContent className="grid grid-cols-1 gap-3 p-4 md:grid-cols-5">
@@ -292,6 +280,7 @@ function FeeSummary() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-12">Sl No</TableHead>
                 <TableHead>Student ID</TableHead>
                 <TableHead>Student Name</TableHead>
                 <TableHead>University</TableHead>
@@ -299,10 +288,9 @@ function FeeSummary() {
                 <TableHead>Intake</TableHead>
                 <TableHead className="text-right">Total Fee</TableHead>
                 <TableHead className="text-right">Paid</TableHead>
-                <TableHead className="text-right">Outstanding</TableHead>
+                <TableHead className="text-right">Due</TableHead>
                 <TableHead>Next Due</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -334,8 +322,13 @@ function FeeSummary() {
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((r) => (
-                  <TableRow key={r.rowId}>
+                filtered.map((r, i) => (
+                  <TableRow
+                    key={r.rowId}
+                    className="cursor-pointer"
+                    onClick={() => setActiveStudent(r)}
+                  >
+                    <TableCell className="text-xs text-muted-foreground">{i + 1}</TableCell>
                     <TableCell className="font-mono text-xs">{r.id}</TableCell>
                     <TableCell className="font-medium">{r.name}</TableCell>
                     <TableCell className="text-sm">{r.university}</TableCell>
@@ -349,11 +342,6 @@ function FeeSummary() {
                     <TableCell className="text-sm">{r.nextDue}</TableCell>
                     <TableCell>
                       <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[r.status]}`}>{r.status}</span>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button size="sm" variant="outline" onClick={() => setActiveStudent(r)}>
-                        <Eye className="h-3.5 w-3.5" /> View Ledger
-                      </Button>
                     </TableCell>
                   </TableRow>
                 ))

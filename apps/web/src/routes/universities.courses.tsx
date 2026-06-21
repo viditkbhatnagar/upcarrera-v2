@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
-import { Download, Plus, Search, Pencil, Eye, X, AlertTriangle } from "lucide-react";
+import { Download, Plus, Search, Pencil, Eye, X, Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -71,14 +71,20 @@ type Specialisation = {
 };
 
 // --- Live API wiring -------------------------------------------------------
-// Courses tab  -> GET /api/courses          ({ items, total, page, limit })
-// Group tab    -> GET /api/group-courses    ({ items, total, page, limit })
-// Specs tab    -> GET /api/specialisations  ({ items, total, page, limit })
-//
-// The list endpoints return raw snake_case rows. They do NOT join the
-// group/specialisation *names* onto a course, nor a mapped-universities count,
-// so we render what each endpoint gives us and derive sensible fallbacks for
-// the rest (see the mappers below).
+// Replaces the former INITIAL_COURSES / INITIAL_GROUPS / INITIAL_SPECIALISATIONS
+// mock seeds. Each tab fetches its paginated list ({ items, total, page, limit })
+// and maps the raw rows into the exact Course / Group / Specialisation shapes the
+// CRM5 design renders. Fields the API does not carry render as "—" or 0 (never
+// fabricated). The live rows seed the local state arrays (below) so the existing
+// client-side add/edit/toggle UX keeps working unchanged.
+interface Paginated<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+// Raw /courses row (Prisma `course`): see academics.service.ts listCourses.
 interface ApiCourseRow {
   id: number | string;
   title: string | null;
@@ -91,84 +97,73 @@ interface ApiCourseRow {
   status: number | string | null;
 }
 
-interface ApiGroupCourseRow {
+// Raw /group-courses row decorated with its resolved `courses` array.
+interface ApiGroupRow {
   id: number | string;
   group_name: string | null;
   description: string | null;
-  courses?: Array<{ id: number | string; title: string | null }> | null;
+  courses?: unknown[] | null;
 }
 
-interface ApiSpecialisationRow {
+// Raw /specialisations row (Prisma `specialisations`).
+interface ApiSpecRow {
   id: number | string;
-  course_id: number | string | null;
   title: string | null;
   description: string | null;
+  course_id: number | string | null;
 }
 
-const PAGE_SIZE = 100;
+const LEVEL_KEYS: Level[] = ["Certification", "Diploma", "UG", "PG", "Doctorate"];
 
-// Legacy `level` is a free-text column; only style it if it matches a known
-// bucket, otherwise fall back to "UG" styling.
-const KNOWN_LEVELS = new Set<Level>(["Certification", "Diploma", "UG", "PG", "Doctorate"]);
-
-function mapLevel(value: string | null): Level {
-  if (!value) return "UG";
-  const v = String(value).trim();
-  if (KNOWN_LEVELS.has(v as Level)) return v as Level;
-  const upper = v.toUpperCase();
-  if (upper === "UG" || upper === "PG") return upper as Level;
-  return "UG";
+// course.level is a free-text column; coerce to a valid Level so LEVEL_STYLE
+// never resolves to undefined. Unknown / blank values fall back to "Certification".
+function toLevel(value: string | null | undefined): Level {
+  if (!value) return "Certification";
+  const exact = LEVEL_KEYS.find((l) => l.toLowerCase() === String(value).trim().toLowerCase());
+  return exact ?? "Certification";
 }
 
-// Legacy `status` is typically 1 (active) / 0 (inactive); be permissive.
-function mapStatus(value: number | string | null): Status {
-  if (value === null || value === undefined) return "Inactive";
-  const v = String(value).trim().toLowerCase();
-  return v === "1" || v === "active" || v === "true" ? "Active" : "Inactive";
+function toStatus(value: number | string | null | undefined): Status {
+  return String(value) === "1" ? "Active" : "Inactive";
 }
 
-function mapCourseRow(r: ApiCourseRow): Course {
-  const id = r.id;
+function blankToDash(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : "—";
+}
+
+function mapApiCourse(r: ApiCourseRow): Course {
   return {
-    code: r.short_name?.trim() ? String(r.short_name) : `CRS-${String(id).padStart(4, "0")}`,
-    // No group/specialisation join from the list endpoint: use the course title
-    // as the display name and surface its raw specialisations blob where present.
-    group: r.title?.trim() ? String(r.title) : `Course #${id}`,
-    specialisation: r.specialisations?.trim() ? String(r.specialisations) : "—",
-    level: mapLevel(r.level),
-    duration: r.duration?.trim()
-      ? String(r.duration)
-      : r.total_duration?.trim()
-        ? String(r.total_duration)
-        : "—",
-    // Mapped-universities count is not returned by this endpoint.
-    mappedUniversities: r.university_id != null ? 1 : 0,
-    status: mapStatus(r.status),
+    code: `CRS-${String(r.id).padStart(4, "0")}`,
+    group: blankToDash(r.short_name ?? r.title),
+    specialisation: blankToDash(r.specialisations),
+    level: toLevel(r.level),
+    duration: blankToDash(r.duration ?? r.total_duration),
+    // API has no mapped-universities count on the list row → render 0 (never fabricated).
+    mappedUniversities: 0,
+    status: toStatus(r.status),
   };
 }
 
-function mapGroupRow(r: ApiGroupCourseRow): Group {
+function mapApiGroup(r: ApiGroupRow): Group {
   return {
     code: `GRP-${String(r.id).padStart(3, "0")}`,
-    name: r.group_name?.trim() ? String(r.group_name) : `Group #${r.id}`,
-    // group_courses has no level column; default to a neutral bucket.
-    level: "UG",
-    description: r.description?.trim() ? String(r.description) : "—",
+    name: blankToDash(r.group_name),
+    // API row carries no level → default to a valid Level for styling.
+    level: "Certification",
+    description: r.description != null ? String(r.description) : "",
     totalCourses: Array.isArray(r.courses) ? r.courses.length : 0,
-    // group_courses has no status column; treat live rows as Active.
+    // API row carries no status → default to Active (toggle works client-side).
     status: "Active",
   };
 }
 
-function mapSpecRow(r: ApiSpecialisationRow): Specialisation {
+function mapApiSpec(r: ApiSpecRow): Specialisation {
   return {
     code: `SPC-${String(r.id).padStart(3, "0")}`,
-    name: r.title?.trim() ? String(r.title) : `Specialisation #${r.id}`,
-    description: r.description?.trim() ? String(r.description) : "—",
-    // mappedCourses count is not aggregated by this endpoint; a spec row is tied
-    // to a single course_id, so reflect that (1 when present, else 0).
-    mappedCourses: r.course_id != null ? 1 : 0,
-    // specialisations has no status column; treat live rows as Active.
+    name: blankToDash(r.title),
+    description: r.description != null ? String(r.description) : "",
+    // API row carries no mapped-courses count → render 0 (never fabricated).
+    mappedCourses: 0,
     status: "Active",
   };
 }
@@ -197,98 +192,42 @@ function StatusBadge({ status }: { status: Status }) {
   );
 }
 
-// Renders a full-width loading / error / empty state row inside a table body.
-// Returns null when there is data to show so the caller can render its rows.
-function TableStatusRow({
-  colSpan,
-  isLoading,
-  isError,
-  isEmpty,
-  emptyLabel,
-}: {
-  colSpan: number;
-  isLoading: boolean;
-  isError: boolean;
-  isEmpty: boolean;
-  emptyLabel: string;
-}) {
-  if (isLoading) {
-    return (
-      <TableRow>
-        <TableCell colSpan={colSpan} className="py-10 text-center text-sm text-muted-foreground">
-          Loading…
-        </TableCell>
-      </TableRow>
-    );
-  }
-  if (isError) {
-    return (
-      <TableRow>
-        <TableCell colSpan={colSpan} className="py-10 text-center text-sm text-rose-600">
-          <span className="inline-flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4" />
-            Couldn’t load data. Please try again.
-          </span>
-        </TableCell>
-      </TableRow>
-    );
-  }
-  if (isEmpty) {
-    return (
-      <TableRow>
-        <TableCell colSpan={colSpan} className="py-10 text-center text-sm text-muted-foreground">
-          {emptyLabel}
-        </TableCell>
-      </TableRow>
-    );
-  }
-  return null;
-}
-
 function CoursesPage() {
-  // Live data sources (same endpoints + page/limit the wired version used).
+  // Live lists for each tab (paginated; one fetched page seeds the editable
+  // local arrays below). Status filtering / toggling stays client-side.
   const coursesQuery = useQuery({
-    queryKey: ["courses", { page: 1, limit: PAGE_SIZE }],
-    queryFn: () =>
-      apiGet<{ items: ApiCourseRow[]; total: number; page: number; limit: number }>("/courses", {
-        page: 1,
-        limit: PAGE_SIZE,
-      }),
+    queryKey: ["courses", "list"],
+    queryFn: () => apiGet<Paginated<ApiCourseRow>>("/courses", { page: 1, limit: 100 }),
   });
   const groupsQuery = useQuery({
-    queryKey: ["group-courses", { page: 1, limit: PAGE_SIZE }],
-    queryFn: () =>
-      apiGet<{ items: ApiGroupCourseRow[]; total: number; page: number; limit: number }>(
-        "/group-courses",
-        { page: 1, limit: PAGE_SIZE },
-      ),
+    queryKey: ["group-courses", "list"],
+    queryFn: () => apiGet<Paginated<ApiGroupRow>>("/group-courses", { page: 1, limit: 100 }),
   });
   const specsQuery = useQuery({
-    queryKey: ["specialisations", { page: 1, limit: PAGE_SIZE }],
-    queryFn: () =>
-      apiGet<{ items: ApiSpecialisationRow[]; total: number; page: number; limit: number }>(
-        "/specialisations",
-        { page: 1, limit: PAGE_SIZE },
-      ),
+    queryKey: ["specialisations", "list"],
+    queryFn: () => apiGet<Paginated<ApiSpecRow>>("/specialisations", { page: 1, limit: 100 }),
   });
 
-  // Local working copies seeded from live data. The new design's row toggles,
-  // edit dialogs and add-* flows mutate these in place; there is no server-side
-  // status column for groups/specs (confirmed against the create/update DTOs),
-  // so those edits stay session-local while the rows themselves come from the API.
   const [courses, setCourses] = useState<Course[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [specs, setSpecs] = useState<Specialisation[]>([]);
 
+  // Seed the editable local arrays from the live queries. Re-seeds when the
+  // fetched data changes; the existing add/edit/toggle handlers mutate locally.
   useEffect(() => {
-    if (coursesQuery.data) setCourses(coursesQuery.data.items.map(mapCourseRow));
+    if (coursesQuery.data) setCourses((coursesQuery.data.items ?? []).map(mapApiCourse));
   }, [coursesQuery.data]);
   useEffect(() => {
-    if (groupsQuery.data) setGroups(groupsQuery.data.items.map(mapGroupRow));
+    if (groupsQuery.data) setGroups((groupsQuery.data.items ?? []).map(mapApiGroup));
   }, [groupsQuery.data]);
   useEffect(() => {
-    if (specsQuery.data) setSpecs(specsQuery.data.items.map(mapSpecRow));
+    if (specsQuery.data) setSpecs((specsQuery.data.items ?? []).map(mapApiSpec));
   }, [specsQuery.data]);
+
+  const isLoading = coursesQuery.isLoading || groupsQuery.isLoading || specsQuery.isLoading;
+  const isError = coursesQuery.isError || groupsQuery.isError || specsQuery.isError;
+  const loadError =
+    coursesQuery.error ?? groupsQuery.error ?? specsQuery.error ?? null;
 
   const [tab, setTab] = useState("courses");
   const [query, setQuery] = useState("");
@@ -421,14 +360,30 @@ function CoursesPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {coursesQuery.isLoading || coursesQuery.isError || filteredCourses.length === 0 ? (
-                    <TableStatusRow
-                      colSpan={10}
-                      isLoading={coursesQuery.isLoading}
-                      isError={coursesQuery.isError}
-                      isEmpty={filteredCourses.length === 0}
-                      emptyLabel="No courses found."
-                    />
+                  {isLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={10} className="py-10 text-center text-sm text-muted-foreground">
+                        <span className="inline-flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Loading courses…
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ) : isError ? (
+                    <TableRow>
+                      <TableCell colSpan={10} className="py-10 text-center text-sm text-muted-foreground">
+                        <span className="inline-flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-red-500/70" />
+                          {loadError instanceof Error ? loadError.message : "Couldn’t load courses."}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ) : filteredCourses.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={10} className="py-10 text-center text-sm text-muted-foreground">
+                        No courses found.
+                      </TableCell>
+                    </TableRow>
                   ) : (
                     filteredCourses.map((c, i) => (
                       <TableRow key={c.code} className="hover:bg-muted/40">
@@ -504,14 +459,30 @@ function CoursesPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {groupsQuery.isLoading || groupsQuery.isError || filteredGroups.length === 0 ? (
-                    <TableStatusRow
-                      colSpan={8}
-                      isLoading={groupsQuery.isLoading}
-                      isError={groupsQuery.isError}
-                      isEmpty={filteredGroups.length === 0}
-                      emptyLabel="No course groups found."
-                    />
+                  {isLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                        <span className="inline-flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Loading groups…
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ) : isError ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                        <span className="inline-flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-red-500/70" />
+                          {loadError instanceof Error ? loadError.message : "Couldn’t load groups."}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ) : filteredGroups.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                        No groups found.
+                      </TableCell>
+                    </TableRow>
                   ) : (
                     filteredGroups.map((g, i) => (
                     <TableRow key={g.code} className="hover:bg-muted/40">
@@ -549,7 +520,7 @@ function CoursesPage() {
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))
+                    ))
                   )}
                 </TableBody>
               </Table>
@@ -571,14 +542,30 @@ function CoursesPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {specsQuery.isLoading || specsQuery.isError || filteredSpecs.length === 0 ? (
-                    <TableStatusRow
-                      colSpan={7}
-                      isLoading={specsQuery.isLoading}
-                      isError={specsQuery.isError}
-                      isEmpty={filteredSpecs.length === 0}
-                      emptyLabel="No specialisations found."
-                    />
+                  {isLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                        <span className="inline-flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Loading specialisations…
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ) : isError ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                        <span className="inline-flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-red-500/70" />
+                          {loadError instanceof Error ? loadError.message : "Couldn’t load specialisations."}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ) : filteredSpecs.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                        No specialisations found.
+                      </TableCell>
+                    </TableRow>
                   ) : (
                     filteredSpecs.map((s, i) => (
                     <TableRow key={s.code} className="hover:bg-muted/40">
@@ -611,7 +598,7 @@ function CoursesPage() {
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))
+                    ))
                   )}
                 </TableBody>
               </Table>

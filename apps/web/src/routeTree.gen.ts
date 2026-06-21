@@ -47,6 +47,7 @@ import { Route as CounsellorsTargetsRouteImport } from './routes/counsellors.tar
 import { Route as CounsellorsGroupsRouteImport } from './routes/counsellors.groups'
 import { Route as CounsellorsCounsellorsRouteImport } from './routes/counsellors.counsellors'
 import { Route as AdministrationUsersRouteImport } from './routes/administration.users'
+import { Route as AdministrationSystemSettingsRouteImport } from './routes/administration.system-settings'
 import { Route as AdministrationRolesRouteImport } from './routes/administration.roles'
 import { Route as AdministrationAuditLogsRouteImport } from './routes/administration.audit-logs'
 import { Route as StudentsStudentsIndexRouteImport } from './routes/students.students.index'
@@ -252,6 +253,12 @@ const AdministrationUsersRoute = AdministrationUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => AdministrationRoute,
 } as any)
+const AdministrationSystemSettingsRoute =
+  AdministrationSystemSettingsRouteImport.update({
+    id: '/system-settings',
+    path: '/system-settings',
+    getParentRoute: () => AdministrationRoute,
+  } as any)
 const AdministrationRolesRoute = AdministrationRolesRouteImport.update({
   id: '/roles',
   path: '/roles',
@@ -323,6 +330,7 @@ export interface FileRoutesByFullPath {
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/roles': typeof AdministrationRolesRoute
+  '/administration/system-settings': typeof AdministrationSystemSettingsRoute
   '/administration/users': typeof AdministrationUsersRoute
   '/counsellors/counsellors': typeof CounsellorsCounsellorsRoute
   '/counsellors/groups': typeof CounsellorsGroupsRoute
@@ -367,6 +375,7 @@ export interface FileRoutesByTo {
   '/support': typeof SupportRoute
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/roles': typeof AdministrationRolesRoute
+  '/administration/system-settings': typeof AdministrationSystemSettingsRoute
   '/administration/users': typeof AdministrationUsersRoute
   '/counsellors/counsellors': typeof CounsellorsCounsellorsRoute
   '/counsellors/groups': typeof CounsellorsGroupsRoute
@@ -416,6 +425,7 @@ export interface FileRoutesById {
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/roles': typeof AdministrationRolesRoute
+  '/administration/system-settings': typeof AdministrationSystemSettingsRoute
   '/administration/users': typeof AdministrationUsersRoute
   '/counsellors/counsellors': typeof CounsellorsCounsellorsRoute
   '/counsellors/groups': typeof CounsellorsGroupsRoute
@@ -468,6 +478,7 @@ export interface FileRouteTypes {
     | '/universities'
     | '/administration/audit-logs'
     | '/administration/roles'
+    | '/administration/system-settings'
     | '/administration/users'
     | '/counsellors/counsellors'
     | '/counsellors/groups'
@@ -512,6 +523,7 @@ export interface FileRouteTypes {
     | '/support'
     | '/administration/audit-logs'
     | '/administration/roles'
+    | '/administration/system-settings'
     | '/administration/users'
     | '/counsellors/counsellors'
     | '/counsellors/groups'
@@ -560,6 +572,7 @@ export interface FileRouteTypes {
     | '/universities'
     | '/administration/audit-logs'
     | '/administration/roles'
+    | '/administration/system-settings'
     | '/administration/users'
     | '/counsellors/counsellors'
     | '/counsellors/groups'
@@ -879,6 +892,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdministrationUsersRouteImport
       parentRoute: typeof AdministrationRoute
     }
+    '/administration/system-settings': {
+      id: '/administration/system-settings'
+      path: '/system-settings'
+      fullPath: '/administration/system-settings'
+      preLoaderRoute: typeof AdministrationSystemSettingsRouteImport
+      parentRoute: typeof AdministrationRoute
+    }
     '/administration/roles': {
       id: '/administration/roles'
       path: '/roles'
@@ -955,6 +975,7 @@ declare module '@tanstack/react-router' {
 interface AdministrationRouteChildren {
   AdministrationAuditLogsRoute: typeof AdministrationAuditLogsRoute
   AdministrationRolesRoute: typeof AdministrationRolesRoute
+  AdministrationSystemSettingsRoute: typeof AdministrationSystemSettingsRoute
   AdministrationUsersRoute: typeof AdministrationUsersRoute
   AdministrationIndexRoute: typeof AdministrationIndexRoute
 }
@@ -962,6 +983,7 @@ interface AdministrationRouteChildren {
 const AdministrationRouteChildren: AdministrationRouteChildren = {
   AdministrationAuditLogsRoute: AdministrationAuditLogsRoute,
   AdministrationRolesRoute: AdministrationRolesRoute,
+  AdministrationSystemSettingsRoute: AdministrationSystemSettingsRoute,
   AdministrationUsersRoute: AdministrationUsersRoute,
   AdministrationIndexRoute: AdministrationIndexRoute,
 }
