@@ -11,7 +11,7 @@ import {
   CalendarRange,
   ArrowUpDown,
   Calendar as CalendarIcon,
-  Loader2,
+  RefreshCcw,
   AlertTriangle,
 } from "lucide-react";
 
@@ -28,30 +28,38 @@ export const Route = createFileRoute("/enrollment/intake-wise")({
 const UNIVERSITIES = ["All Universities", "Symbiosis International", "Manipal University", "Amity University", "Christ University", "Lovely Professional University", "Chandigarh University", "SRM Institute", "VIT University"];
 const COURSES = ["All Courses", "MBA", "B.Tech CSE", "BBA", "BCA", "M.Sc Data Science", "B.Com"];
 
-// ---- Live API wiring (GET /api/students) ----
-// The OLD CRM "intake_wise" report renders ONE row per intake (session). We
-// reproduce it client-side: fetch the decorated students list, group rows by
-// their joined `session_title`, and count each group by `admission_status_label`
-// across the six admission statuses, plus a per-intake total. Each decorated row
-// is a `students` row joined server-side with display fields (name, course_title,
-// session_title, …) and a human admission_status_label.
-const ADMISSION_STATUS_ORDER = [
-  "Pending",
-  "In Progress",
-  "Enrolled",
-  "Passed Out",
-  "Dropout",
-  "Cancelled",
-] as const;
-type AdmissionStatus = (typeof ADMISSION_STATUS_ORDER)[number];
+type Status = "Open" | "Closing Soon" | "Closed" | "Completed";
 
-// Intakes with no session_title are bucketed under this label (old CRM parity).
-const NO_INTAKE = "No Intake";
+type Row = {
+  name: string;
+  session: string;
+  startDate: string;
+  approved: number;
+  enrolled: number;
+  pending: number;
+  status: Status;
+};
+
+type SortKey = keyof Pick<Row, "approved" | "enrolled" | "pending">;
+
+// --- Live API wiring (GET /api/students) ----------------------------------
+// There is no dedicated intake endpoint, so we fetch the full students list
+// (page 1, limit 1000) and group it client-side by `session_title` — the intake
+// each student belongs to. Every list item is decorated server-side with its
+// joined `session_title` plus a human `admission_status_label`
+// (Pending / In Progress / Enrolled / Passed Out / Dropout / Cancelled) and an
+// `enrollment_date`. Per intake we roll up: total students (approved),
+// Enrolled count, and pending-enrollment count (Pending + In Progress), and we
+// derive a lifecycle status from whether the intake still has pending work.
+const EMPTY = "—";
 
 interface ApiStudentRow {
   id: number | string;
+  session_id: number | string | null;
   session_title: string | null;
   admission_status_label: string | null;
+  enrollment_date: string | null;
+  created_at: string | null;
 }
 
 interface StudentsListResponse {
@@ -61,50 +69,59 @@ interface StudentsListResponse {
   limit: number;
 }
 
-// One table row = one intake, with a count per admission status + grand total.
-type Row = {
-  name: string;
-  counts: Record<AdmissionStatus, number>;
-  total: number;
-};
-
-// Coerce the joined human label to a known admission status; unmapped/blank
-// labels fall back to "Pending" (mirrors the students list screen).
-function toAdmissionStatus(label: string | null | undefined): AdmissionStatus {
-  const match = ADMISSION_STATUS_ORDER.find((s) => s === label);
-  return match ?? "Pending";
+function formatStartDate(value: string | null): string {
+  if (!value) return EMPTY;
+  return value.slice(0, 10);
 }
 
-function zeroCounts(): Record<AdmissionStatus, number> {
-  return {
-    Pending: 0,
-    "In Progress": 0,
-    Enrolled: 0,
-    "Passed Out": 0,
-    Dropout: 0,
-    Cancelled: 0,
-  };
-}
-
-// Group decorated students rows by session_title into per-intake count rows.
+// Group the decorated students by intake (session_title) into the exact Row
+// shape the table already renders. Status is derived from the live counts:
+// an intake still taking enrollments (pending > 0) is "Open"; otherwise it has
+// been worked through and reads "Completed".
 function groupByIntake(items: ApiStudentRow[]): Row[] {
-  const byIntake = new Map<string, Row>();
+  const groups = new Map<
+    string,
+    { approved: number; enrolled: number; pending: number; earliest: string | null }
+  >();
+
   for (const item of items) {
-    const title = item.session_title?.trim();
-    const name = title && title !== "" ? title : NO_INTAKE;
-    let row = byIntake.get(name);
-    if (!row) {
-      row = { name, counts: zeroCounts(), total: 0 };
-      byIntake.set(name, row);
+    const key =
+      item.session_title != null && String(item.session_title).trim() !== ""
+        ? String(item.session_title)
+        : EMPTY;
+    const group =
+      groups.get(key) ?? { approved: 0, enrolled: 0, pending: 0, earliest: null };
+
+    group.approved += 1;
+    const label = item.admission_status_label ?? "";
+    if (label === "Enrolled") group.enrolled += 1;
+    if (label === "Pending" || label === "In Progress") group.pending += 1;
+
+    const date = item.enrollment_date ?? item.created_at;
+    if (date && (group.earliest == null || date < group.earliest)) {
+      group.earliest = date;
     }
-    const status = toAdmissionStatus(item.admission_status_label);
-    row.counts[status] += 1;
-    row.total += 1;
+
+    groups.set(key, group);
   }
-  return [...byIntake.values()];
+
+  return [...groups.entries()].map(([name, g]) => ({
+    name,
+    session: name,
+    startDate: formatStartDate(g.earliest),
+    approved: g.approved,
+    enrolled: g.enrolled,
+    pending: g.pending,
+    status: g.pending > 0 ? "Open" : "Completed",
+  }));
 }
 
-type SortKey = AdmissionStatus | "total";
+const statusStyle: Record<Status, string> = {
+  Open: "bg-success/10 text-success",
+  "Closing Soon": "bg-warning/10 text-warning",
+  Closed: "bg-destructive/10 text-destructive",
+  Completed: "bg-accent/10 text-accent",
+};
 
 function IntakeWiseEnrollment() {
   const [university, setUniversity] = useState(UNIVERSITIES[0]);
@@ -112,42 +129,39 @@ function IntakeWiseEnrollment() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("total");
+  const [sortKey, setSortKey] = useState<SortKey>("approved");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  // Live students list (decorated with joined names). We pull a large page and
-  // group/aggregate client-side into per-intake rows, matching the old CRM.
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["students", "intake-wise", { page: 1, limit: 1000 }],
+  // Live intake roll-up: one page of up to 1000 students, grouped by intake.
+  const { data, isLoading, isError, error, isFetching } = useQuery({
+    queryKey: ["enrollment", "intake-wise", { page: 1, limit: 1000 }],
     queryFn: () =>
       apiGet<StudentsListResponse>("/students", { page: 1, limit: 1000 }),
   });
 
-  const rows = useMemo<Row[]>(
-    () => groupByIntake(data?.items ?? []),
-    [data],
-  );
+  const rows = useMemo(() => groupByIntake(data?.items ?? []), [data]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    let r = rows.filter((x) => !q || x.name.toLowerCase().includes(q));
-    r = [...r].sort((a, b) => {
-      const av = sortKey === "total" ? a.total : a.counts[sortKey];
-      const bv = sortKey === "total" ? b.total : b.counts[sortKey];
-      return sortDir === "desc" ? bv - av : av - bv;
-    });
+    let r = rows.filter(x =>
+      !q || x.name.toLowerCase().includes(q) || x.session.toLowerCase().includes(q),
+    );
+    r = [...r].sort((a, b) => (sortDir === "desc" ? b[sortKey] - a[sortKey] : a[sortKey] - b[sortKey]));
     return r;
   }, [rows, search, sortKey, sortDir]);
 
-  const totals = useMemo(() => {
-    const counts = zeroCounts();
-    let total = 0;
-    for (const r of filtered) {
-      for (const s of ADMISSION_STATUS_ORDER) counts[s] += r.counts[s];
-      total += r.total;
-    }
-    return { counts, total };
-  }, [filtered]);
+  const totals = useMemo(
+    () =>
+      filtered.reduce(
+        (acc, r) => ({
+          approved: acc.approved + r.approved,
+          enrolled: acc.enrolled + r.enrolled,
+          pending: acc.pending + r.pending,
+        }),
+        { approved: 0, enrolled: 0, pending: 0 },
+      ),
+    [filtered],
+  );
 
   const reset = () => {
     setUniversity(UNIVERSITIES[0]);
@@ -158,15 +172,15 @@ function IntakeWiseEnrollment() {
   };
 
   const toggleSort = (k: SortKey) => {
-    if (k === sortKey) setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    if (k === sortKey) setSortDir(d => (d === "desc" ? "asc" : "desc"));
     else {
       setSortKey(k);
       setSortDir("desc");
     }
   };
 
-  const TH = ({ k, label }: { k: SortKey; label: string }) => (
-    <th className="px-3 py-2.5 font-semibold text-right">
+  const TH = ({ k, label, align = "right" }: { k: SortKey; label: string; align?: "left" | "right" }) => (
+    <th className={`px-3 py-2.5 font-semibold ${align === "right" ? "text-right" : "text-left"}`}>
       <button
         onClick={() => toggleSort(k)}
         className={`inline-flex items-center gap-1 hover:text-foreground ${sortKey === k ? "text-foreground" : ""}`}
@@ -263,6 +277,9 @@ function IntakeWiseEnrollment() {
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
           <div className="text-xs text-muted-foreground">
             Showing <span className="font-semibold text-foreground">{filtered.length}</span> of {rows.length} intakes
+            {isFetching && !isLoading && (
+              <RefreshCcw className="ml-2 inline h-3 w-3 animate-spin text-muted-foreground/60 align-text-bottom" />
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button onClick={reset} className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted">
@@ -283,39 +300,45 @@ function IntakeWiseEnrollment() {
               <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                 <th className="px-6 py-2.5 font-semibold w-16">Sl No</th>
                 <th className="px-6 py-2.5 font-semibold">Intake Name</th>
-                <TH k="Pending" label="Pending" />
-                <TH k="In Progress" label="In Progress" />
-                <TH k="Enrolled" label="Enrolled" />
-                <TH k="Passed Out" label="Passed Out" />
-                <TH k="Dropout" label="Dropout" />
-                <TH k="Cancelled" label="Cancelled" />
-                <TH k="total" label="Total" />
+                <TH k="approved" label="Approved Applications" />
+                <TH k="enrolled" label="Enrolled Students" />
+                <TH k="pending" label="Pending Enrollment" />
+                <th className="px-6 py-2.5 font-semibold text-center">Status</th>
                 <th className="px-6 py-2.5 font-semibold text-right">Action</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={10} className="px-6 py-12 text-center">
-                    <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Loading intakes…
+                  <td colSpan={7} className="px-6 py-16">
+                    <div className="flex flex-col items-center justify-center gap-2 text-center">
+                      <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
+                      <div className="text-sm font-semibold text-foreground">Loading intakes…</div>
                     </div>
                   </td>
                 </tr>
               ) : isError ? (
                 <tr>
-                  <td colSpan={10} className="px-6 py-12 text-center">
-                    <div className="flex flex-col items-center gap-2 text-sm text-destructive">
-                      <AlertTriangle className="h-5 w-5" />
-                      Failed to load intake enrollment. Please try again.
+                  <td colSpan={7} className="px-6 py-16">
+                    <div className="flex flex-col items-center justify-center gap-2 text-center">
+                      <AlertTriangle className="h-10 w-10 text-destructive/60" />
+                      <div className="text-sm font-semibold text-foreground">Couldn’t load intakes</div>
+                      <div className="text-xs text-muted-foreground">
+                        {error instanceof Error ? error.message : "Please try again."}
+                      </div>
                     </div>
                   </td>
                 </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-6 py-10 text-center text-sm text-muted-foreground">
-                    No intakes match your filters.
+                  <td colSpan={7} className="px-6 py-16">
+                    <div className="flex flex-col items-center justify-center gap-2 text-center">
+                      <CalendarRange className="h-10 w-10 text-muted-foreground/50" />
+                      <div className="text-sm font-semibold text-foreground">No intakes found</div>
+                      <div className="text-xs text-muted-foreground">
+                        Try adjusting your filters or clearing them.
+                      </div>
+                    </div>
                   </td>
                 </tr>
               ) : (
@@ -329,18 +352,24 @@ function IntakeWiseEnrollment() {
                       </div>
                       <div className="min-w-0">
                         <div className="truncate font-medium text-foreground">{r.name}</div>
+                        <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                          Starts {r.startDate}
+                        </div>
                       </div>
                     </div>
                   </td>
-                  <td className="px-3 py-3.5 text-right tabular-nums text-muted-foreground">{r.counts["Pending"]}</td>
-                  <td className="px-3 py-3.5 text-right tabular-nums text-muted-foreground">{r.counts["In Progress"]}</td>
+                  <td className="px-3 py-3.5 text-right tabular-nums font-semibold text-foreground">{r.approved}</td>
                   <td className="px-3 py-3.5 text-right">
-                    <span className="inline-flex items-center rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-success">{r.counts["Enrolled"]}</span>
+                    <span className="inline-flex items-center rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-success">{r.enrolled}</span>
                   </td>
-                  <td className="px-3 py-3.5 text-right tabular-nums text-muted-foreground">{r.counts["Passed Out"]}</td>
-                  <td className="px-3 py-3.5 text-right tabular-nums text-muted-foreground">{r.counts["Dropout"]}</td>
-                  <td className="px-3 py-3.5 text-right tabular-nums text-muted-foreground">{r.counts["Cancelled"]}</td>
-                  <td className="px-3 py-3.5 text-right tabular-nums font-semibold text-foreground">{r.total}</td>
+                  <td className="px-3 py-3.5 text-right">
+                    <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-primary">{r.pending}</span>
+                  </td>
+                  <td className="px-6 py-3.5 text-center">
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${statusStyle[r.status]}`}>
+                      {r.status}
+                    </span>
+                  </td>
                   <td className="px-6 py-3.5 text-right">
                     <button className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted">
                       <Eye className="h-3.5 w-3.5" /> View Details
@@ -354,13 +383,10 @@ function IntakeWiseEnrollment() {
               <tr className="border-t-2 border-border bg-muted/30 text-sm font-semibold text-foreground">
                 <td className="px-6 py-3" />
                 <td className="px-6 py-3">Totals</td>
-                <td className="px-3 py-3 text-right tabular-nums">{totals.counts["Pending"]}</td>
-                <td className="px-3 py-3 text-right tabular-nums">{totals.counts["In Progress"]}</td>
-                <td className="px-3 py-3 text-right tabular-nums text-success">{totals.counts["Enrolled"]}</td>
-                <td className="px-3 py-3 text-right tabular-nums">{totals.counts["Passed Out"]}</td>
-                <td className="px-3 py-3 text-right tabular-nums">{totals.counts["Dropout"]}</td>
-                <td className="px-3 py-3 text-right tabular-nums">{totals.counts["Cancelled"]}</td>
-                <td className="px-3 py-3 text-right tabular-nums">{totals.total}</td>
+                <td className="px-3 py-3 text-right tabular-nums">{totals.approved}</td>
+                <td className="px-3 py-3 text-right tabular-nums text-success">{totals.enrolled}</td>
+                <td className="px-3 py-3 text-right tabular-nums text-primary">{totals.pending}</td>
+                <td className="px-6 py-3" />
                 <td className="px-6 py-3" />
               </tr>
             </tfoot>

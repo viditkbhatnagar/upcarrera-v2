@@ -18,81 +18,97 @@ import {
   FileText,
   GraduationCap,
   Wallet,
+  Eye,
+  Award,
   ShieldCheck,
-  RefreshCcw,
-  Inbox,
+  Trophy,
+  Loader2,
 } from "lucide-react";
+import {
+  LineChart,
+  Line,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Skeleton } from "@/components/ui/skeleton";
+import {
+  STATUS_DOT,
+  STATUS_STYLES,
+  type Counsellor,
+} from "@/lib/counsellors-data";
 
-export const Route = createFileRoute("/counsellors/team-profile/$teamId")({
-  head: ({ params }) => ({
-    meta: [{ title: `${params.teamId} — Team Profile` }],
-  }),
-  component: TeamProfilePage,
-});
+type TeamStatus = "Active" | "Inactive";
 
-/* ------------------------------------------------------------------ *
- * API shape — GET /api/sales-teams/:id (apiGet unwraps the envelope).
- *
- * The endpoint keys on the numeric `sales_team` PK (ParseIntPipe) and returns
- * the raw row with `members` already parsed by the API into an array of member
- * user-ids. The legacy `sales_team` table is intentionally thin: it has NO
- * group, NO monthly-target column, NO per-member name/designation/target join,
- * and `leader` is a bare user-id string (no name join). So the header + team
- * info + member count come straight from this response, while sections that the
- * schema can't source (member detail rows, performance figures, applications,
- * students, activity, charts) fall back to graceful empty states rather than
- * fabricating data.
- *
- * The route param is the real team id, so we resolve the numeric portion to the
- * PK the API expects (mirrors students.students.$id.tsx).
- * ------------------------------------------------------------------ */
+interface TeamRecord {
+  id: string;
+  name: string;
+  shortName: string;
+  leader: string;
+  group: string;
+  status: TeamStatus;
+  createdDate: string;
+  members: Counsellor[];
+  memberCount: number;
+}
+
+// --- Live API wiring (GET /sales-teams/:id) ------------------------------
+// The profile is opened from /counsellors/teams with a `TM-####` route param
+// whose trailing digits are the real sales_team.id. We fetch the raw
+// sales_team row (SalesService.findOneTeam, members already parsed) and map it
+// into the TeamRecord shape the design renders. The source schema only carries
+// id/name/leader/status/created_at and a JSON `members` array of user IDs — it
+// has NO enriched member objects, group, target, applications, students or
+// activity history. Those sections therefore render honestly empty (member
+// count comes from members.length; leader/group fall back to "—") rather than
+// fabricating data.
 interface ApiTeam {
-  id: number;
+  id: number | string;
   name: string | null;
   leader: string | null;
   members: unknown[] | null;
   university_id: string | null;
   course_id: string | null;
-  status: number | null;
+  status: number | string | null;
   created_at: string | null;
-  updated_at: string | null;
 }
 
-type TeamStatus = "Active" | "Inactive";
-
-/* ---------------- formatting helpers ---------------- */
-
-const EMPTY = "—";
-
-function dash(value: string | null | undefined): string {
-  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
+// sales_team.status is an Int? code; non-zero / truthy => Active (legacy parity).
+function mapTeamStatus(status: number | string | null): TeamStatus {
+  const code = typeof status === "string" ? Number(status) : status;
+  return code && code !== 0 ? "Active" : "Inactive";
 }
 
-function formatDate(value: string | null | undefined): string {
-  if (!value) return EMPTY;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+// Extract the numeric sales_team id from the `TM-####` route param.
+function parseTeamId(teamId: string): number | null {
+  const digits = teamId.replace(/[^0-9]/g, "");
+  if (!digits) return null;
+  const n = Number(digits);
+  return Number.isNaN(n) ? null : n;
 }
 
-// sales_team.status (Int code) -> UI status label. Legacy convention: 1 = Active.
-function toTeamStatus(status: number | null | undefined): TeamStatus {
-  return status === 1 ? "Active" : "Inactive";
-}
-
-function memberCount(members: unknown[] | null | undefined): number {
-  return Array.isArray(members) ? members.length : 0;
-}
-
-// The route param is the real team id; resolve the numeric portion for the PK.
-function numericIdFromParam(param: string): number | null {
-  const digits = param.match(/\d+/g);
-  if (!digits || digits.length === 0) return null;
-  const n = Number(digits[digits.length - 1]);
-  return Number.isInteger(n) && n > 0 ? n : null;
+// Map a raw sales_team row into the TeamRecord shape the existing JSX renders.
+function mapApiTeam(t: ApiTeam, routeId: string): TeamRecord {
+  const memberCount = Array.isArray(t.members) ? t.members.length : 0;
+  return {
+    id: routeId.toUpperCase(),
+    name: t.name?.trim() || `Team #${t.id}`,
+    shortName: t.name?.trim() || `#${t.id}`,
+    leader: t.leader?.trim() || "—",
+    group: "—",
+    status: mapTeamStatus(t.status),
+    createdDate: t.created_at ?? "",
+    // The endpoint returns member IDs only, not enriched counsellor objects.
+    // We keep an empty members list (count is preserved via memberCount) so the
+    // design's member/target/performance tables show honest empty states.
+    members: [],
+    memberCount,
+  };
 }
 
 const TEAM_STATUS_STYLES: Record<TeamStatus, string> = {
@@ -104,64 +120,190 @@ const TEAM_STATUS_DOT: Record<TeamStatus, string> = {
   Inactive: "bg-rose-500",
 };
 
+export const Route = createFileRoute("/counsellors/team-profile/$teamId")({
+  head: ({ params }) => ({
+    meta: [{ title: `${params.teamId} — Team Profile` }],
+  }),
+  notFoundComponent: () => (
+    <div className="rounded-2xl border border-border bg-surface p-10 text-center">
+      <h2 className="text-lg font-semibold text-foreground">Team not found</h2>
+      <Link
+        to="/counsellors/teams"
+        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" /> Back to Teams
+      </Link>
+    </div>
+  ),
+  errorComponent: ({ error, reset }) => (
+    <div className="rounded-2xl border border-border bg-surface p-10 text-center">
+      <h2 className="text-lg font-semibold text-foreground">Something went wrong</h2>
+      <p className="mt-1 text-sm text-muted-foreground">{(error as Error).message}</p>
+      <button
+        onClick={reset}
+        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
+      >
+        Retry
+      </button>
+    </div>
+  ),
+  component: TeamProfilePage,
+});
+
+/* ---------------- Derived data ---------------- */
+
+// Everything below is derived strictly from the team's real members. The
+// GET /sales-teams/:id endpoint returns member IDs only (not enriched
+// counsellor rows) and has no application / student / activity history, so the
+// member-backed aggregates resolve to 0 and the unbacked collections stay
+// empty — the design then shows honest empty states instead of fabricated rows.
+type ApplicationRow = {
+  id: string;
+  studentName: string;
+  counsellor: string;
+  university: string;
+  course: string;
+  intake: string;
+  status: string;
+  feeStatus: string;
+  enrollment: string;
+};
+type StudentRow = {
+  id: string;
+  name: string;
+  counsellor: string;
+  university: string;
+  course: string;
+  intake: string;
+  enrollment: string;
+};
+type TimelineRow = {
+  icon: typeof Users;
+  title: string;
+  date: string;
+  desc: string;
+  tone: string;
+};
+type TrendRow = { month: string; admissions: number; revenue: number };
+type ComparisonRow = { name: string; target: number; achieved: number };
+
+function buildTeamData(team: TeamRecord) {
+  const totalTarget = team.members.reduce((sum, m) => sum + m.activeTarget, 0);
+  const totalAchieved = team.members.reduce((sum, m) => sum + m.achieved, 0);
+  const totalApplications = 0;
+  const enrollmentsPending = 0;
+  const enrollmentsCompleted = totalAchieved;
+  const pendingRegFee = 0;
+  const conversionRate = totalApplications
+    ? Math.round((totalAchieved / totalApplications) * 100)
+    : 0;
+  const totalRevenue = 0;
+
+  const trend: TrendRow[] = [];
+
+  // Counsellor comparison (empty until members are enriched server-side).
+  const comparison: ComparisonRow[] = team.members.map((m) => ({
+    name: m.name.split(" ")[0],
+    target: m.activeTarget,
+    achieved: m.achieved,
+  }));
+
+  const sortedPerf = [...team.members].sort((a, b) => b.achieved - a.achieved);
+  const topPerformers = sortedPerf.slice(0, 3);
+  const lowPerformers = sortedPerf.slice(-3).reverse();
+
+  const applications: ApplicationRow[] = [];
+  const students: StudentRow[] = [];
+  const timeline: TimelineRow[] = [];
+
+  return {
+    totalTarget,
+    totalAchieved,
+    totalApplications,
+    enrollmentsPending,
+    enrollmentsCompleted,
+    pendingRegFee,
+    conversionRate,
+    totalRevenue,
+    trend,
+    comparison,
+    topPerformers,
+    lowPerformers,
+    applications,
+    students,
+    timeline,
+  };
+}
+
 /* ---------------- Page ---------------- */
 
 function TeamProfilePage() {
-  const { teamId: rawParam } = Route.useParams();
-  const numericId = numericIdFromParam(rawParam);
+  const { teamId } = Route.useParams();
+  const numericId = parseTeamId(teamId);
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
-    queryKey: ["sales-team-detail", numericId],
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ["sales-teams", "detail", numericId],
     queryFn: () => apiGet<ApiTeam>(`/sales-teams/${numericId}`),
-    enabled: numericId != null,
+    enabled: numericId !== null,
   });
+
+  // Loading: show the design's spinner inside the page chrome.
+  if (numericId !== null && isLoading) {
+    return (
+      <div className="rounded-2xl border border-border bg-surface p-16 text-center shadow-card">
+        <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
+        <p className="mt-3 text-sm text-muted-foreground">Loading team profile…</p>
+      </div>
+    );
+  }
+
+  // Not found (bad id / 404) — reuse the design's empty card + back link.
+  if (numericId === null || (isError && error instanceof ApiError && error.status === 404)) {
+    return (
+      <div className="rounded-2xl border border-border bg-surface p-10 text-center">
+        <h2 className="text-lg font-semibold text-foreground">Team not found</h2>
+        <Link
+          to="/counsellors/teams"
+          className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to Teams
+        </Link>
+      </div>
+    );
+  }
+
+  // Other errors — design's error card with a retry.
+  if (isError || !data) {
+    return (
+      <div className="rounded-2xl border border-border bg-surface p-10 text-center">
+        <h2 className="text-lg font-semibold text-foreground">Something went wrong</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {error instanceof Error ? error.message : "Unable to load this team."}
+        </p>
+        <button
+          onClick={() => refetch()}
+          className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  const team = mapApiTeam(data, teamId);
+  const d = buildTeamData(team);
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div>
         <Link
           to="/counsellors/teams"
           className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground transition hover:text-foreground"
         >
           <ArrowLeft className="h-3.5 w-3.5" /> Back to Teams
         </Link>
-        {!isLoading && !isError && data && (
-          <button
-            onClick={() => refetch()}
-            disabled={isFetching}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted disabled:opacity-50"
-          >
-            <RefreshCcw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
-            Refresh
-          </button>
-        )}
       </div>
 
-      {numericId == null ? (
-        <NotFoundState param={rawParam} />
-      ) : isLoading ? (
-        <LoadingState />
-      ) : isError ? (
-        <ErrorState error={error} onRetry={() => refetch()} />
-      ) : !data ? (
-        <NotFoundState param={rawParam} />
-      ) : (
-        <TeamProfileContent team={data} />
-      )}
-    </div>
-  );
-}
-
-function TeamProfileContent({ team }: { team: ApiTeam }) {
-  const status = toTeamStatus(team.status);
-  const teamName = dash(team.name);
-  const teamCode = `TM-${team.id}`;
-  const leader = dash(team.leader);
-  const totalCounsellors = memberCount(team.members);
-  const createdDate = formatDate(team.created_at);
-
-  return (
-    <>
       {/* Header */}
       <div className="rounded-2xl border border-border bg-surface p-5 shadow-card sm:p-6">
         <div className="flex flex-wrap items-start gap-5">
@@ -171,29 +313,34 @@ function TeamProfileContent({ team }: { team: ApiTeam }) {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
-                {teamName}
+                {team.name}
               </h1>
               <span
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset",
-                  TEAM_STATUS_STYLES[status],
+                  TEAM_STATUS_STYLES[team.status],
                 )}
               >
-                <span className={cn("h-1.5 w-1.5 rounded-full", TEAM_STATUS_DOT[status])} />
-                {status}
+                <span className={cn("h-1.5 w-1.5 rounded-full", TEAM_STATUS_DOT[team.status])} />
+                {team.status}
               </span>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span className="font-mono font-semibold text-primary">{teamCode}</span>
+              <span className="font-mono font-semibold text-primary">{team.id}</span>
               <span className="inline-flex items-center gap-1">
-                <CalendarDays className="h-3.5 w-3.5" /> Created {createdDate}
+                <CalendarDays className="h-3.5 w-3.5" /> Created{" "}
+                {new Date(team.createdDate).toLocaleDateString("en-IN", {
+                  day: "2-digit",
+                  month: "short",
+                  year: "numeric",
+                })}
               </span>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <HeaderStat icon={UserCheck} label="Team Leader" value={leader} />
-              <HeaderStat icon={Building2} label="Parent Group" value={EMPTY} />
-              <HeaderStat icon={Users} label="Total Counsellors" value={String(totalCounsellors)} />
-              <HeaderStat icon={Target} label="Monthly Target" value={EMPTY} />
+              <HeaderStat icon={UserCheck} label="Team Leader" value={team.leader} />
+              <HeaderStat icon={Building2} label="Parent Group" value={team.group} />
+              <HeaderStat icon={Users} label="Total Counsellors" value={String(team.memberCount)} />
+              <HeaderStat icon={Target} label="Monthly Target" value={String(d.totalTarget)} />
             </div>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -224,47 +371,46 @@ function TeamProfileContent({ team }: { team: ApiTeam }) {
         {/* OVERVIEW */}
         <TabsContent value="overview" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <KpiTile icon={Users} label="Total Counsellors" value={totalCounsellors} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={FileText} label="Total Applications" value={EMPTY} accent="bg-indigo-500/10 text-indigo-600" />
-            <KpiTile icon={GraduationCap} label="Enrollments Pending" value={EMPTY} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={TrendingUp} label="Conversion Rate" value={EMPTY} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={Users} label="Total Counsellors" value={team.memberCount} accent="bg-primary/10 text-primary" />
+            <KpiTile icon={FileText} label="Total Applications" value={d.totalApplications} accent="bg-indigo-500/10 text-indigo-600" />
+            <KpiTile icon={GraduationCap} label="Enrollments Pending" value={d.enrollmentsPending} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={TrendingUp} label="Conversion Rate" value={`${d.conversionRate}%`} accent="bg-emerald-500/10 text-emerald-600" />
           </div>
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SectionCard title="Team Information" icon={ShieldCheck}>
-              <InfoRow label="Team Name" value={teamName} />
-              <InfoRow label="Team Code" value={teamCode} mono />
-              <InfoRow label="Team Leader" value={leader} />
-              <InfoRow label="Parent Group" value={EMPTY} />
+              <InfoRow label="Team Name" value={team.name} />
+              <InfoRow label="Team Code" value={team.id} mono />
+              <InfoRow label="Team Leader" value={team.leader} />
+              <InfoRow label="Parent Group" value={team.group} />
               <InfoRow
-                label="University ID"
-                value={team.university_id != null && String(team.university_id).trim() !== "" ? `#${team.university_id}` : EMPTY}
+                label="Created Date"
+                value={new Date(team.createdDate).toLocaleDateString("en-IN", {
+                  day: "2-digit",
+                  month: "short",
+                  year: "numeric",
+                })}
               />
-              <InfoRow
-                label="Course ID"
-                value={team.course_id != null && String(team.course_id).trim() !== "" ? `#${team.course_id}` : EMPTY}
-              />
-              <InfoRow label="Created Date" value={createdDate} />
               <InfoRow
                 label="Status"
                 value={
                   <span
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                      TEAM_STATUS_STYLES[status],
+                      TEAM_STATUS_STYLES[team.status],
                     )}
                   >
-                    <span className={cn("h-1.5 w-1.5 rounded-full", TEAM_STATUS_DOT[status])} />
-                    {status}
+                    <span className={cn("h-1.5 w-1.5 rounded-full", TEAM_STATUS_DOT[team.status])} />
+                    {team.status}
                   </span>
                 }
               />
             </SectionCard>
             <SectionCard title="Performance Snapshot" icon={TrendingUp}>
-              <InfoRow label="Monthly Target" value={EMPTY} />
-              <InfoRow label="Admissions Achieved" value={EMPTY} />
-              <InfoRow label="Pending Reg. Fee" value={EMPTY} />
-              <InfoRow label="Enrollments Completed" value={EMPTY} />
-              <InfoRow label="Revenue" value={EMPTY} />
+              <InfoRow label="Monthly Target" value={d.totalTarget} />
+              <InfoRow label="Admissions Achieved" value={d.totalAchieved} />
+              <InfoRow label="Pending Reg. Fee" value={d.pendingRegFee} />
+              <InfoRow label="Enrollments Completed" value={d.enrollmentsCompleted} />
+              <InfoRow label="Revenue" value={`₹${(d.totalRevenue / 100000).toFixed(1)}L`} />
             </SectionCard>
           </div>
         </TabsContent>
@@ -273,186 +419,336 @@ function TeamProfileContent({ team }: { team: ApiTeam }) {
         <TabsContent value="members">
           <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
             <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
-              {totalCounsellors} {totalCounsellors === 1 ? "counsellor" : "counsellors"}
+              {team.memberCount} counsellors
             </div>
-            {totalCounsellors === 0 ? (
-              <EmptyBlock
-                icon={Users}
-                title="No members assigned"
-                description="This team has no counsellors assigned yet."
-              />
-            ) : (
-              <EmptyBlock
-                icon={Users}
-                title="Member details unavailable"
-                description={`This team has ${totalCounsellors} ${
-                  totalCounsellors === 1 ? "member" : "members"
-                }, but per-counsellor details (name, designation, target) are not exposed by this endpoint yet.`}
-              />
-            )}
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1100px] border-collapse text-sm">
+                <thead className="bg-muted/60">
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-2.5 font-semibold">Emp ID</th>
+                    <th className="px-4 py-2.5 font-semibold">Counsellor</th>
+                    <th className="px-4 py-2.5 font-semibold">Designation</th>
+                    <th className="px-4 py-2.5 font-semibold">Group</th>
+                    <th className="px-4 py-2.5 font-semibold">Manager</th>
+                    <th className="px-4 py-2.5 font-semibold">Target</th>
+                    <th className="px-4 py-2.5 font-semibold">Achieved</th>
+                    <th className="px-4 py-2.5 font-semibold">Status</th>
+                    <th className="px-4 py-2.5 text-right font-semibold">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {team.members.length === 0 && (
+                    <tr>
+                      <td colSpan={9} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                        {team.memberCount > 0
+                          ? "Member details are not available for this team yet."
+                          : "No counsellors assigned to this team."}
+                      </td>
+                    </tr>
+                  )}
+                  {team.members.map((c) => (
+                    <tr key={c.empId} className="border-b border-border last:border-0 hover:bg-muted/40">
+                      <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">{c.empId}</td>
+                      <td className="px-4 py-3">
+                        <div className="text-sm font-semibold text-foreground">{c.name}</div>
+                        <div className="text-xs text-muted-foreground">{c.email}</div>
+                      </td>
+                      <td className="px-4 py-3 text-foreground">{c.designation}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{c.group}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{c.manager}</td>
+                      <td className="px-4 py-3 font-semibold text-foreground">{c.activeTarget}</td>
+                      <td className="px-4 py-3 font-semibold text-foreground">{c.achieved}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset",
+                            STATUS_STYLES[c.status],
+                          )}
+                        >
+                          <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[c.status])} />
+                          {c.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <Link
+                          to="/counsellors/profile/$empId"
+                          params={{ empId: c.empId }}
+                          title="View Profile"
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </TabsContent>
 
         {/* PERFORMANCE */}
         <TabsContent value="performance" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-            <KpiTile icon={FileText} label="Applications Created" value={EMPTY} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={Wallet} label="Pending Registration Fee" value={EMPTY} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={GraduationCap} label="Enrollments Completed" value={EMPTY} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={FileText} label="Applications Created" value={d.totalApplications} accent="bg-primary/10 text-primary" />
+            <KpiTile icon={Wallet} label="Pending Registration Fee" value={d.pendingRegFee} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={GraduationCap} label="Enrollments Completed" value={d.enrollmentsCompleted} accent="bg-emerald-500/10 text-emerald-600" />
           </div>
-          <EmptyBlock
-            icon={TrendingUp}
-            title="No performance data"
-            description="Admissions, revenue trends, and counsellor comparison are not exposed by this endpoint yet."
-          />
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <SectionCard title="Monthly Admissions Trend" icon={TrendingUp}>
+              <div className="h-64 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={d.trend}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                    <XAxis dataKey="month" fontSize={11} stroke="hsl(var(--muted-foreground))" />
+                    <YAxis fontSize={11} stroke="hsl(var(--muted-foreground))" />
+                    <Tooltip contentStyle={{ background: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
+                    <Bar dataKey="admissions" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </SectionCard>
+            <SectionCard title="Monthly Revenue Trend (₹L)" icon={Wallet}>
+              <div className="h-64 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={d.trend}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                    <XAxis dataKey="month" fontSize={11} stroke="hsl(var(--muted-foreground))" />
+                    <YAxis fontSize={11} stroke="hsl(var(--muted-foreground))" />
+                    <Tooltip contentStyle={{ background: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
+                    <Line type="monotone" dataKey="revenue" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </SectionCard>
+          </div>
+
+          <SectionCard title="Counsellor Comparison" icon={Users}>
+            <div className="h-72 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={d.comparison}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                  <XAxis dataKey="name" fontSize={11} stroke="hsl(var(--muted-foreground))" />
+                  <YAxis fontSize={11} stroke="hsl(var(--muted-foreground))" />
+                  <Tooltip contentStyle={{ background: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
+                  <Bar dataKey="target" fill="hsl(var(--muted-foreground))" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="achieved" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </SectionCard>
+
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <SectionCard title="Top Performers" icon={Trophy}>
+              <PerformerList items={d.topPerformers} tone="emerald" />
+            </SectionCard>
+            <SectionCard title="Lowest Performers" icon={AlertTriangle}>
+              <PerformerList items={d.lowPerformers} tone="rose" />
+            </SectionCard>
+          </div>
         </TabsContent>
 
         {/* TARGETS */}
         <TabsContent value="targets" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            <KpiTile icon={Target} label="Total Target" value={EMPTY} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={CheckCircle2} label="Achieved" value={EMPTY} accent="bg-emerald-500/10 text-emerald-600" />
-            <KpiTile icon={AlertTriangle} label="Pending" value={EMPTY} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={Target} label="Achievement %" value={EMPTY} accent="bg-indigo-500/10 text-indigo-600" />
+            <KpiTile icon={Target} label="Total Target" value={d.totalTarget} accent="bg-primary/10 text-primary" />
+            <KpiTile icon={CheckCircle2} label="Achieved" value={d.totalAchieved} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={AlertTriangle} label="Pending" value={Math.max(0, d.totalTarget - d.totalAchieved)} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={Award} label="Achievement %" value={`${d.totalTarget ? Math.round((d.totalAchieved / d.totalTarget) * 100) : 0}%`} accent="bg-indigo-500/10 text-indigo-600" />
           </div>
           <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
             <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">Per-counsellor targets</div>
-            <EmptyBlock
-              icon={Target}
-              title="No target data"
-              description="Per-counsellor targets are not exposed by this endpoint yet."
-            />
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[700px] border-collapse text-sm">
+                <thead className="bg-muted/60">
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-2.5 font-semibold">Counsellor</th>
+                    <th className="px-4 py-2.5 font-semibold">Target</th>
+                    <th className="px-4 py-2.5 font-semibold">Achieved</th>
+                    <th className="px-4 py-2.5 font-semibold">Achievement %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {team.members.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                        Per-counsellor targets are not available for this team yet.
+                      </td>
+                    </tr>
+                  )}
+                  {team.members.map((m) => {
+                    const pct = m.activeTarget ? Math.round((m.achieved / m.activeTarget) * 100) : 0;
+                    return (
+                      <tr key={m.empId} className="border-b border-border last:border-0 hover:bg-muted/40">
+                        <td className="px-4 py-3 text-foreground">{m.name}</td>
+                        <td className="px-4 py-3 font-semibold text-foreground">{m.activeTarget}</td>
+                        <td className="px-4 py-3 font-semibold text-foreground">{m.achieved}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
+                              <div
+                                className={cn(
+                                  "h-full rounded-full",
+                                  pct >= 100 ? "bg-emerald-500" : pct >= 75 ? "bg-sky-500" : pct >= 50 ? "bg-amber-500" : "bg-rose-500",
+                                )}
+                                style={{ width: `${Math.min(100, pct)}%` }}
+                              />
+                            </div>
+                            <span className="text-xs font-semibold text-foreground">{pct}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </TabsContent>
 
         {/* APPLICATIONS */}
         <TabsContent value="applications">
           <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
-            <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">0 applications</div>
-            <EmptyBlock
-              icon={FileText}
-              title="No applications"
-              description="Team applications are not exposed by this endpoint yet."
-            />
+            <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
+              {d.applications.length} applications
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1200px] border-collapse text-sm">
+                <thead className="bg-muted/60">
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-2.5 font-semibold">Application ID</th>
+                    <th className="px-4 py-2.5 font-semibold">Student</th>
+                    <th className="px-4 py-2.5 font-semibold">Counsellor</th>
+                    <th className="px-4 py-2.5 font-semibold">University</th>
+                    <th className="px-4 py-2.5 font-semibold">Course</th>
+                    <th className="px-4 py-2.5 font-semibold">Intake</th>
+                    <th className="px-4 py-2.5 font-semibold">App Status</th>
+                    <th className="px-4 py-2.5 font-semibold">Reg. Fee</th>
+                    <th className="px-4 py-2.5 font-semibold">Enrollment</th>
+                    <th className="px-4 py-2.5 text-right font-semibold">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.applications.length === 0 && (
+                    <tr>
+                      <td colSpan={10} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                        No applications available for this team yet.
+                      </td>
+                    </tr>
+                  )}
+                  {d.applications.map((a) => (
+                    <tr key={a.id} className="border-b border-border last:border-0 hover:bg-muted/40">
+                      <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">{a.id}</td>
+                      <td className="px-4 py-3 text-foreground">{a.studentName}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{a.counsellor}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{a.university}</td>
+                      <td className="px-4 py-3 text-foreground">{a.course}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{a.intake}</td>
+                      <td className="px-4 py-3">
+                        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset", appStatusStyle(a.status))}>
+                          {a.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset", feeStatusStyle(a.feeStatus))}>
+                          {a.feeStatus}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset", enrollmentStyle(a.enrollment))}>
+                          {a.enrollment}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button title="View Application" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground">
+                          <Eye className="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </TabsContent>
 
         {/* STUDENTS */}
         <TabsContent value="students">
           <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
-            <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">0 students</div>
-            <EmptyBlock
-              icon={GraduationCap}
-              title="No students"
-              description="Team students are not exposed by this endpoint yet."
-            />
+            <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
+              {d.students.length} students
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1000px] border-collapse text-sm">
+                <thead className="bg-muted/60">
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-2.5 font-semibold">Student ID</th>
+                    <th className="px-4 py-2.5 font-semibold">Name</th>
+                    <th className="px-4 py-2.5 font-semibold">Counsellor</th>
+                    <th className="px-4 py-2.5 font-semibold">University</th>
+                    <th className="px-4 py-2.5 font-semibold">Course</th>
+                    <th className="px-4 py-2.5 font-semibold">Intake</th>
+                    <th className="px-4 py-2.5 font-semibold">Enrollment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.students.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                        No students available for this team yet.
+                      </td>
+                    </tr>
+                  )}
+                  {d.students.map((s) => (
+                    <tr key={s.id} className="border-b border-border last:border-0 hover:bg-muted/40">
+                      <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">{s.id}</td>
+                      <td className="px-4 py-3 text-foreground">{s.name}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{s.counsellor}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{s.university}</td>
+                      <td className="px-4 py-3 text-foreground">{s.course}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{s.intake}</td>
+                      <td className="px-4 py-3">
+                        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset", enrollmentStyle(s.enrollment))}>
+                          {s.enrollment}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </TabsContent>
 
         {/* ACTIVITY */}
         <TabsContent value="activity">
           <SectionCard title="Activity Timeline" icon={Activity}>
-            <EmptyBlock
-              icon={Activity}
-              title="No timeline activity"
-              description="Team activity events are not exposed by this endpoint yet."
-            />
+            {d.timeline.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border bg-background px-4 py-10 text-center text-sm text-muted-foreground">
+                No activity history available for this team yet.
+              </div>
+            )}
+            <ol className="relative space-y-5 border-l-2 border-border pl-6">
+              {d.timeline.map((t, i) => (
+                <li key={i} className="relative">
+                  <span className={cn("absolute -left-[33px] grid h-7 w-7 place-items-center rounded-full ring-4 ring-surface", t.tone)}>
+                    <t.icon className="h-3.5 w-3.5" />
+                  </span>
+                  <div className="rounded-xl border border-border bg-background px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm font-semibold text-foreground">{t.title}</div>
+                      <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                        <CalendarDays className="h-3 w-3" /> {t.date}
+                      </div>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">{t.desc}</div>
+                  </div>
+                </li>
+              ))}
+            </ol>
           </SectionCard>
         </TabsContent>
       </Tabs>
-    </>
-  );
-}
-
-/* ---------------- state views ---------------- */
-
-function LoadingState() {
-  return (
-    <div className="space-y-6">
-      <div className="rounded-2xl border border-border bg-surface p-5 shadow-card sm:p-6">
-        <div className="flex flex-wrap items-start gap-5">
-          <Skeleton className="h-20 w-20 rounded-2xl" />
-          <div className="min-w-0 flex-1 space-y-3">
-            <Skeleton className="h-7 w-56" />
-            <Skeleton className="h-4 w-64" />
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {[0, 1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-14 w-full rounded-lg" />
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} className="h-24 w-full rounded-xl" />
-        ))}
-      </div>
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        {[0, 1].map((i) => (
-          <div key={i} className="rounded-2xl border border-border bg-surface p-5 shadow-card">
-            <Skeleton className="mb-4 h-5 w-40" />
-            <div className="space-y-3">
-              {[0, 1, 2, 3].map((j) => (
-                <Skeleton key={j} className="h-4 w-full" />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  const notFound = error instanceof ApiError && error.status === 404;
-  const message =
-    error instanceof Error ? error.message : "Something went wrong while loading this team.";
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-10 text-center shadow-card">
-      <AlertTriangle className="mx-auto h-10 w-10 text-rose-500/60" />
-      <h2 className="mt-3 text-lg font-semibold text-foreground">
-        {notFound ? "Team not found" : "Couldn’t load team"}
-      </h2>
-      <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">{message}</p>
-      <div className="mt-4 flex items-center justify-center gap-2">
-        {!notFound && (
-          <button
-            onClick={onRetry}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
-          >
-            <RefreshCcw className="h-3.5 w-3.5" />
-            Retry
-          </button>
-        )}
-        <Link
-          to="/counsellors/teams"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Back to Teams
-        </Link>
-      </div>
-    </div>
-  );
-}
-
-function NotFoundState({ param }: { param: string }) {
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-10 text-center shadow-card">
-      <Inbox className="mx-auto h-10 w-10 text-muted-foreground/50" />
-      <h2 className="mt-3 text-lg font-semibold text-foreground">Team not found</h2>
-      <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-        No numeric team id could be resolved from{" "}
-        <span className="font-mono text-foreground">{param}</span>.
-      </p>
-      <Link
-        to="/counsellors/teams"
-        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover"
-      >
-        <ArrowLeft className="h-3.5 w-3.5" />
-        Back to Teams
-      </Link>
     </div>
   );
 }
@@ -503,22 +799,64 @@ function KpiTile({ icon: Icon, label, value, accent }: { icon: typeof Users; lab
   );
 }
 
-function EmptyBlock({
-  icon: Icon,
-  title,
-  description,
-}: {
-  icon: typeof Users;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-        <Icon className="h-6 w-6" />
+function PerformerList({ items, tone }: { items: Counsellor[]; tone: "emerald" | "rose" }) {
+  if (items.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-border bg-background px-3 py-6 text-center text-xs text-muted-foreground">
+        No performance data available yet.
       </div>
-      <div className="text-sm font-semibold text-foreground">{title}</div>
-      <p className="max-w-sm text-xs text-muted-foreground">{description}</p>
-    </div>
+    );
+  }
+  return (
+    <ul className="space-y-2">
+      {items.map((m) => {
+        const pct = m.activeTarget ? Math.round((m.achieved / m.activeTarget) * 100) : 0;
+        return (
+          <li key={m.empId} className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-foreground">{m.name}</div>
+              <div className="text-[11px] text-muted-foreground">{m.empId} · {m.designation}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">{m.achieved}/{m.activeTarget}</span>
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
+                  tone === "emerald"
+                    ? "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20"
+                    : "bg-rose-500/10 text-rose-700 ring-rose-500/20",
+                )}
+              >
+                {pct}%
+              </span>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
+}
+
+function appStatusStyle(s: string) {
+  switch (s) {
+    case "Confirmed": return "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20";
+    case "Offer Issued": return "bg-sky-500/10 text-sky-700 ring-sky-500/20";
+    case "Under Review": return "bg-amber-500/10 text-amber-700 ring-amber-500/20";
+    case "Rejected": return "bg-rose-500/10 text-rose-700 ring-rose-500/20";
+    default: return "bg-muted text-foreground ring-border";
+  }
+}
+function feeStatusStyle(s: string) {
+  switch (s) {
+    case "Paid": return "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20";
+    case "Partial": return "bg-amber-500/10 text-amber-700 ring-amber-500/20";
+    default: return "bg-rose-500/10 text-rose-700 ring-rose-500/20";
+  }
+}
+function enrollmentStyle(s: string) {
+  switch (s) {
+    case "Enrolled": return "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20";
+    case "Pending": return "bg-amber-500/10 text-amber-700 ring-amber-500/20";
+    default: return "bg-rose-500/10 text-rose-700 ring-rose-500/20";
+  }
 }
