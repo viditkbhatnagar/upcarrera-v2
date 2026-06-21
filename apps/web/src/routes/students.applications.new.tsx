@@ -1,8 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPatch, ApiError } from "@/lib/api";
-import { toast } from "sonner";
 import {
   ArrowLeft,
   ArrowRight,
@@ -75,11 +74,8 @@ interface FormState {
   address: string;
   // course
   university: string;
-  universityId: string;
   course: string;
-  courseId: string;
   specialization: string;
-  specialisationId: string;
   intake: string;
   leadSource: string;
   referredBy: string;
@@ -100,26 +96,6 @@ interface FormState {
   agreeTerms: boolean;
 }
 
-/* Option rows from GET /universities and GET /courses. Both endpoints return the
-   shared { items, total, page, limit } envelope; we only need id + label here. */
-interface UniversityOption {
-  id: number | string;
-  title: string | null;
-}
-interface CourseOption {
-  id: number | string;
-  title: string | null;
-  short_name: string | null;
-  university_id: number | string | null;
-  specialisations: string | null;
-}
-type Paginated<T> = { items: T[]; total: number; page: number; limit: number };
-
-// Existing list query the /students/applications table reads — invalidated after
-// the chained writes so the table refreshes once we navigate back.
-const APPLICATIONS_LIST_KEY = ["applications"] as const;
-const OPTIONS_PAGE_LIMIT = 200;
-
 const STEPS: { id: StepId; label: string; icon: typeof UserIcon }[] = [
   { id: "basic", label: "Basic Information", icon: UserIcon },
   { id: "course", label: "Course Selection", icon: BookOpen },
@@ -129,15 +105,14 @@ const STEPS: { id: StepId; label: string; icon: typeof UserIcon }[] = [
   { id: "review", label: "Review & Submit", icon: FileCheck2 },
 ];
 
-const UNIVERSITIES = [
-  "Amity University Online",
-  "Manipal University Online",
-  "NMIMS Global",
-  "Symbiosis Centre for Distance Learning",
-  "Chandigarh University Online",
-  "Jain University Online",
-];
-const COURSES = ["MBA", "BBA", "MCA", "BCA", "M.Com", "B.Com", "MA", "BA"];
+/* Catalog rows from the academic API; `title` is the form value, `id` resolved at submit. */
+interface CatalogRow {
+  id: number;
+  title: string;
+}
+interface CatalogResponse {
+  items: { id: number; title: string | null }[];
+}
 const SPECIALIZATIONS = [
   "Marketing",
   "Finance",
@@ -199,11 +174,8 @@ const INITIAL_FORM: FormState = {
   pincode: "",
   address: "",
   university: "",
-  universityId: "",
   course: "",
-  courseId: "",
   specialization: "",
-  specialisationId: "",
   intake: "",
   leadSource: "",
   referredBy: "",
@@ -230,82 +202,51 @@ function NewApplicationPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [submitted, setSubmitted] = useState<{ id: string } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const photoRef = useRef<HTMLInputElement>(null);
-  const qc = useQueryClient();
-
-  // Dropdown option lists — sourced from the live API instead of hardcoded arrays.
-  // Both endpoints return the shared { items, total, page, limit } envelope.
-  const universitiesQuery = useQuery({
-    queryKey: ["applications-new", "universities"],
-    queryFn: () =>
-      apiGet<Paginated<UniversityOption>>("/universities", { page: 1, limit: OPTIONS_PAGE_LIMIT }),
-    staleTime: 5 * 60 * 1000,
-  });
-  const coursesQuery = useQuery({
-    queryKey: ["applications-new", "courses"],
-    queryFn: () =>
-      apiGet<Paginated<CourseOption>>("/courses", { page: 1, limit: OPTIONS_PAGE_LIMIT }),
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const universityOptions = universitiesQuery.data?.items ?? [];
-  const courseOptions = useMemo(() => {
-    const all = coursesQuery.data?.items ?? [];
-    // Scope the course list to the selected university when courses carry one.
-    if (!form.universityId) return all;
-    return all.filter(
-      (c) =>
-        c.university_id == null || String(c.university_id) === form.universityId,
-    );
-  }, [coursesQuery.data, form.universityId]);
-
-  // Specialisations are stored as a free-text / delimited column on the selected
-  // course; split it into options, falling back to the hardcoded list otherwise.
-  const specialisationOptions = useMemo<string[]>(() => {
-    const selected = (coursesQuery.data?.items ?? []).find(
-      (c) => String(c.id) === form.courseId,
-    );
-    const raw = selected?.specialisations;
-    if (!raw || !raw.trim()) return SPECIALIZATIONS;
-    const parts = raw
-      .split(/[,;|]/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    return parts.length ? parts : SPECIALIZATIONS;
-  }, [coursesQuery.data, form.courseId]);
-
-  // POST /applications — only the bio/contact fields the create endpoint accepts.
-  // The course/academic and qualifications steps are then chained onto the new
-  // application id via their PATCH endpoints (see submit()).
-  const createApplication = useMutation({
-    mutationFn: (payload: Record<string, unknown>) =>
-      apiPost<{ application_id: number; custom_application_id: string | null }>(
-        "/applications",
-        payload,
-      ),
-  });
-
-  // PATCH /applications/:id/academic — university/course/specialisation/source.
-  const academicMutation = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: Record<string, unknown> }) =>
-      apiPatch(`/applications/${id}/academic`, body),
-  });
-
-  // PATCH /applications/:id/qualifications — bulk-update the seeded qualification
-  // rows. Each row is matched server-side by its `qualification` label.
-  const qualificationsMutation = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: Record<string, unknown> }) =>
-      apiPatch(`/applications/${id}/qualifications`, body),
-  });
-
-  const isSubmitting =
-    createApplication.isPending ||
-    academicMutation.isPending ||
-    qualificationsMutation.isPending;
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
+
+  // Live university catalog. The dropdown keeps using `title` as its value (the
+  // mock did the same); the id is resolved from this list at submit time.
+  const universitiesQuery = useQuery({
+    queryKey: ["catalog", "universities"],
+    queryFn: () => apiGet<CatalogResponse>("/universities", { limit: 200 }),
+  });
+  const universityRows = useMemo<CatalogRow[]>(
+    () =>
+      (universitiesQuery.data?.items ?? [])
+        .filter((u) => u.title)
+        .map((u) => ({ id: u.id, title: u.title as string })),
+    [universitiesQuery.data],
+  );
+  const UNIVERSITIES = useMemo(() => universityRows.map((u) => u.title), [universityRows]);
+
+  // Live course catalog, scoped to the selected university (resolved id). When no
+  // university is chosen yet the query is disabled and the list stays empty.
+  const selectedUniversityId = useMemo(
+    () => universityRows.find((u) => u.title === form.university)?.id,
+    [universityRows, form.university],
+  );
+  const coursesQuery = useQuery({
+    queryKey: ["catalog", "courses", selectedUniversityId ?? null],
+    queryFn: () =>
+      apiGet<CatalogResponse>("/courses", {
+        limit: 200,
+        university_id: selectedUniversityId,
+      }),
+    enabled: selectedUniversityId != null,
+  });
+  const courseRows = useMemo<CatalogRow[]>(
+    () =>
+      (coursesQuery.data?.items ?? [])
+        .filter((c) => c.title)
+        .map((c) => ({ id: c.id, title: c.title as string })),
+    [coursesQuery.data],
+  );
+  const COURSES = useMemo(() => courseRows.map((c) => c.title), [courseRows]);
 
   // Auto-save every 60s
   useEffect(() => {
@@ -421,82 +362,60 @@ function NewApplicationPage() {
 
   const submit = async () => {
     if (!validateStep(5)) return;
+    if (submitting) return;
     setSubmitError(null);
-
-    // 1) Create the application from the bio/contact fields. Empty values are
-    //    dropped so the API's NOT-NULL defaults / optional handling apply.
-    const payload: Record<string, unknown> = {};
-    if (form.fullName.trim()) payload.name = form.fullName.trim();
-    if (form.email.trim()) payload.email = form.email.trim();
-    if (form.mobile.trim()) payload.phone = form.mobile.trim();
-    if (form.dob) payload.dob = form.dob;
-    if (form.gender) payload.gender = form.gender;
-    if (form.whatsapp.trim()) payload.whatsapp_no = form.whatsapp.trim();
-    if (form.altNumber.trim()) payload.second_phone = form.altNumber.trim();
-    if (form.state.trim()) payload.state = form.state.trim();
-    if (form.city.trim()) payload.district = form.city.trim();
-    if (form.address.trim()) payload.address = form.address.trim();
-
+    setSubmitting(true);
     try {
-      const created = await createApplication.mutateAsync(payload);
+      // 1) Create the application (bio/contact step). Seeds default qualification rows.
+      const created = await apiPost<{
+        application_id: number;
+        custom_application_id?: string | null;
+      }>("/applications", {
+        name: form.fullName || undefined,
+        email: form.email || undefined,
+        phone: form.mobile || undefined,
+        second_phone: form.altNumber || undefined,
+        whatsapp_no: form.whatsapp || undefined,
+        dob: form.dob || undefined,
+        gender: form.gender || undefined,
+        state: form.state || undefined,
+        district: form.city || undefined,
+        address: form.address || undefined,
+      });
       const appId = created.application_id;
 
-      // 2) PATCH /academic — only the ids/source the academic DTO accepts. Sent
-      //    only when we have at least one resolvable id; intake has no id mapping
-      //    so it is intentionally omitted (see report note).
-      const academicBody: Record<string, unknown> = {};
-      if (form.universityId) academicBody.university_id = Number(form.universityId);
-      if (form.courseId) academicBody.course_id = Number(form.courseId);
-      if (form.specialisationId) academicBody.specialisation_id = Number(form.specialisationId);
-      if (form.leadSource) academicBody.source = form.leadSource;
-      if (Object.keys(academicBody).length > 0) {
-        try {
-          await academicMutation.mutateAsync({ id: appId, body: academicBody });
-        } catch (err) {
-          // Non-fatal: the application exists; surface a toast but continue.
-          toast.error(
-            err instanceof ApiError ? err.message : "Could not save course selection.",
-          );
-        }
-      }
+      // 2) Academic/admission step — university + course (resolved ids) + source.
+      const courseId = courseRows.find((c) => c.title === form.course)?.id;
+      await apiPatch(`/applications/${appId}/academic`, {
+        university_id: selectedUniversityId,
+        course_id: courseId,
+        source: form.leadSource || undefined,
+      });
 
-      // 3) PATCH /qualifications — map each qualification row onto the bulk-update
-      //    DTO. Server matches by the `qualification` label; percentage is numeric.
-      const qualRows = form.qualifications
+      // 3) Qualifications — matched server-side by the `qualification` label.
+      const qualificationRows = form.qualifications
         .filter((q) => q.name.trim())
         .map((q) => {
-          const pct = Number(String(q.score).replace(/[^0-9.]/g, ""));
-          const row: Record<string, unknown> = { qualification: q.name.trim() };
-          if (q.board.trim()) row.board = q.board.trim();
-          if (Number.isFinite(pct) && q.score.trim()) row.percentage = pct;
-          return row;
+          const pct = parseInt(q.score, 10);
+          return {
+            qualification: q.name,
+            board: q.board || undefined,
+            ...(Number.isNaN(pct) ? {} : { percentage: pct }),
+          };
         });
-      if (qualRows.length > 0) {
-        try {
-          await qualificationsMutation.mutateAsync({
-            id: appId,
-            body: { qualifications: qualRows },
-          });
-        } catch (err) {
-          toast.error(
-            err instanceof ApiError ? err.message : "Could not save academic qualifications.",
-          );
-        }
+      if (qualificationRows.length > 0) {
+        await apiPatch(`/applications/${appId}/qualifications`, {
+          qualifications: qualificationRows,
+        });
       }
 
-      // 4) Refresh the applications table and surface success.
-      qc.invalidateQueries({ queryKey: APPLICATIONS_LIST_KEY });
-      const id =
-        created.custom_application_id && String(created.custom_application_id).trim() !== ""
-          ? String(created.custom_application_id)
-          : `APP-${appId}`;
-      toast.success("Application submitted successfully");
-      setSubmitted({ id });
+      setSubmitted({ id: created.custom_application_id || String(appId) });
     } catch (err) {
-      const message =
-        err instanceof ApiError ? err.message : "Failed to submit application. Please try again.";
-      setSubmitError(message);
-      toast.error(message);
+      setSubmitError(
+        err instanceof ApiError ? err.message : "Failed to submit application. Please try again.",
+      );
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -590,14 +509,21 @@ function NewApplicationPage() {
           </button>
           <button
             onClick={() => (stepIdx === STEPS.length - 1 ? submit() : next())}
-            disabled={isSubmitting}
+            disabled={submitting}
             className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-accent-foreground shadow-card transition hover:bg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <Send className="h-4 w-4" />
-            {isSubmitting ? "Submitting…" : "Submit Application"}
+            {submitting ? "Submitting…" : "Submit Application"}
           </button>
         </div>
       </div>
+
+      {submitError && (
+        <div className="flex items-center gap-2 rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
+          <AlertCircle className="h-4 w-4" />
+          {submitError}
+        </div>
+      )}
 
       {/* Stepper */}
       <div className="rounded-2xl border border-border bg-surface p-5 shadow-card">
@@ -683,10 +609,11 @@ function NewApplicationPage() {
             form={form}
             set={set}
             errors={errors}
-            universityOptions={universityOptions}
-            courseOptions={courseOptions}
-            specialisationOptions={specialisationOptions}
-            optionsLoading={universitiesQuery.isLoading || coursesQuery.isLoading}
+            UNIVERSITIES={UNIVERSITIES}
+            COURSES={COURSES}
+            universitiesLoading={universitiesQuery.isLoading}
+            universitiesError={universitiesQuery.isError}
+            coursesLoading={coursesQuery.isLoading}
           />
         )}
         {stepIdx === 2 && (
@@ -702,13 +629,6 @@ function NewApplicationPage() {
         {stepIdx === 3 && <StepEmployment form={form} set={set} errors={errors} />}
         {stepIdx === 4 && <StepDocuments form={form} uploadDoc={uploadDoc} removeDoc={removeDoc} />}
         {stepIdx === 5 && <StepReview form={form} errors={errors} set={set} goTo={setStepIdx} />}
-
-        {submitError && (
-          <div className="mx-6 mb-2 flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            <span>{submitError}</span>
-          </div>
-        )}
 
         {/* Footer Nav */}
         <div className="flex items-center justify-between border-t border-border px-6 py-4">
@@ -734,11 +654,11 @@ function NewApplicationPage() {
           ) : (
             <button
               onClick={submit}
-              disabled={isSubmitting}
+              disabled={submitting}
               className="inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed"
             >
               <Send className="h-4 w-4" />
-              {isSubmitting ? "Submitting…" : "Submit Application"}
+              {submitting ? "Submitting…" : "Submit Application"}
             </button>
           )}
         </div>
@@ -999,68 +919,56 @@ function StepCourse({
   form,
   set,
   errors,
-  universityOptions,
-  courseOptions,
-  specialisationOptions,
-  optionsLoading,
+  UNIVERSITIES,
+  COURSES,
+  universitiesLoading,
+  universitiesError,
+  coursesLoading,
 }: {
   form: FormState;
   set: <K extends keyof FormState>(k: K, v: FormState[K]) => void;
   errors: Record<string, string>;
-  universityOptions: UniversityOption[];
-  courseOptions: CourseOption[];
-  specialisationOptions: string[];
-  optionsLoading: boolean;
+  UNIVERSITIES: string[];
+  COURSES: string[];
+  universitiesLoading: boolean;
+  universitiesError: boolean;
+  coursesLoading: boolean;
 }) {
-  // Selecting a university sets both the label (for review/success display) and
-  // the id (for PATCH /academic), and clears the dependent course/specialisation.
-  const onUniversityChange = (id: string) => {
-    const opt = universityOptions.find((u) => String(u.id) === id);
-    set("universityId", id);
-    set("university", opt?.title?.trim() ? opt.title : "");
-    set("courseId", "");
-    set("course", "");
-    set("specialisationId", "");
-    set("specialization", "");
-  };
-  const onCourseChange = (id: string) => {
-    const opt = courseOptions.find((c) => String(c.id) === id);
-    set("courseId", id);
-    set("course", opt?.title?.trim() ? opt.title : opt?.short_name?.trim() ? opt.short_name : "");
-    set("specialisationId", "");
-    set("specialization", "");
-  };
   return (
     <>
       <Section title="Admission Information" description="Select university, course and intake.">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           <Field label="University" required error={errors.university}>
-            <SelectInput
-              value={form.universityId}
-              onChange={(e) => onUniversityChange(e.target.value)}
-              disabled={optionsLoading}
-            >
+            <SelectInput value={form.university} onChange={(e) => set("university", e.target.value)}>
               <option value="">
-                {optionsLoading ? "Loading universities…" : "Search & select university"}
+                {universitiesLoading
+                  ? "Loading universities…"
+                  : universitiesError
+                    ? "Failed to load universities"
+                    : UNIVERSITIES.length === 0
+                      ? "No universities available"
+                      : "Search & select university"}
               </option>
-              {universityOptions.map((u) => (
-                <option key={String(u.id)} value={String(u.id)}>
-                  {u.title?.trim() ? u.title : `University #${u.id}`}
-                </option>
+              {UNIVERSITIES.map((u) => (
+                <option key={u}>{u}</option>
               ))}
             </SelectInput>
           </Field>
           <Field label="Course" required error={errors.course}>
             <SelectInput
-              value={form.courseId}
-              onChange={(e) => onCourseChange(e.target.value)}
-              disabled={!form.universityId || optionsLoading}
+              value={form.course}
+              onChange={(e) => set("course", e.target.value)}
+              disabled={!form.university}
             >
-              <option value="">Select course</option>
-              {courseOptions.map((c) => (
-                <option key={String(c.id)} value={String(c.id)}>
-                  {c.title?.trim() ? c.title : c.short_name?.trim() ? c.short_name : `Course #${c.id}`}
-                </option>
+              <option value="">
+                {coursesLoading
+                  ? "Loading courses…"
+                  : form.university && COURSES.length === 0
+                    ? "No courses available"
+                    : "Select course"}
+              </option>
+              {COURSES.map((c) => (
+                <option key={c}>{c}</option>
               ))}
             </SelectInput>
           </Field>
@@ -1068,10 +976,10 @@ function StepCourse({
             <SelectInput
               value={form.specialization}
               onChange={(e) => set("specialization", e.target.value)}
-              disabled={!form.courseId}
+              disabled={!form.course}
             >
               <option value="">Select specialization</option>
-              {specialisationOptions.map((s) => (
+              {SPECIALIZATIONS.map((s) => (
                 <option key={s}>{s}</option>
               ))}
             </SelectInput>
@@ -1080,7 +988,7 @@ function StepCourse({
             <SelectInput
               value={form.intake}
               onChange={(e) => set("intake", e.target.value)}
-              disabled={!form.courseId}
+              disabled={!form.course}
             >
               <option value="">Select intake</option>
               {INTAKES.map((i) => (

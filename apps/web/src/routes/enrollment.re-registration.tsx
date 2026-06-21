@@ -75,10 +75,9 @@ interface ReRegRow {
   phone: string;
   university: string;
   course: string;
-  intake: string;
+  current: string;
   next: string;
   status: ProgressionStatus;
-  admissionStatusLabel: string;
   fee: FeeStatus;
   feeAmount: number;
   feePaid: number;
@@ -87,107 +86,15 @@ interface ReRegRow {
   history: ProgressionEvent[];
 }
 
-// --- Live API wiring (GET /api/students) ----------------------------------
-// The re-registration cohort is the set of students who have completed their
-// current programme — i.e. admission_status_label === "Passed Out" — and are the
-// real candidates to re-register. We fetch the decorated students list and keep
-// only those rows. Each row carries its joined display fields (name, university_
-// title, course_title, session_title -> Intake) plus the human admission_status_
-// label, which we render directly. Fields the API genuinely does not provide
-// (next term, re-registration fee, due date) stay as honest "—" / 0 placeholders.
-interface ApiStudentRow {
-  id: number | string;
-  student_id: number | string | null;
-  enrollment_id: string | null;
-  enrollment_date: string | null;
-  created_at: string | null;
-  admission_status_label: string | null;
-  // Decorated display fields (joined server-side).
-  name: string | null;
-  email: string | null;
-  phone: string | null;
-  consultant_name: string | null;
-  course_title: string | null;
-  university_title: string | null;
-  session_title: string | null;
-}
-
-interface StudentsListResponse {
-  items: ApiStudentRow[];
-  total: number;
-  page: number;
-  limit: number;
-}
-
-const EMPTY = "—";
-
-function asText(value: string | null | undefined): string {
-  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
-}
-
-function formatDate(value: string | null): string {
-  if (!value) return EMPTY;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-// Map a real, decorated `students` row onto the screen's existing ReRegRow.
-// Student ID display matches the old CRM: "UPC00" + students.id (the row id).
-// Intake comes from the joined session_title; Status from admission_status_label.
-// Fields the API does not expose (next term, re-registration fee, due date) fall
-// back to honest placeholders — "—" / 0 — never fabricated.
-function mapApiRow(r: ApiStudentRow): ReRegRow {
-  const displayId = `UPC00${r.id}`;
-  const enrolled = formatDate(r.enrollment_date ?? r.created_at);
-  const label = asText(r.admission_status_label);
-
-  return {
-    id: displayId,
-    name: asText(r.name),
-    email: asText(r.email),
-    phone: r.phone != null ? String(r.phone) : EMPTY,
-    university: asText(r.university_title),
-    course: asText(r.course_title),
-    // Real joined intake/session for this student.
-    intake: asText(r.session_title),
-    // No "next term" concept in the API.
-    next: EMPTY,
-    // Real admission lifecycle status drives the badge style; keep the raw label
-    // for display so the exact API value shows verbatim.
-    status: toProgressionStatus(label),
-    admissionStatusLabel: label,
-    // No re-registration fee tracking in the API.
-    fee: "Pending",
-    feeAmount: 0,
-    feePaid: 0,
-    dueDate: EMPTY,
-    coordinator: asText(r.consultant_name),
-    // The only real timeline event the API supports is the enrolment date.
-    history:
-      enrolled !== EMPTY
-        ? [
-            {
-              date: enrolled,
-              title: "Enrolled",
-              description: "Initial enrolment recorded.",
-              by: "System",
-            },
-          ]
-        : [],
-  };
-}
-
-// The badge palette is keyed by ProgressionStatus; the real admission status
-// label maps onto a neutral progression bucket purely for styling. The actual
-// label text (e.g. "Passed Out") is what we render in the cell.
-function toProgressionStatus(_label: string): ProgressionStatus {
-  return "Not Due";
-}
+const STATUSES: ProgressionStatus[] = [
+  "Not Due",
+  "Due Soon",
+  "Progression Pending",
+  "Fee Pending",
+  "Submitted to University",
+  "Confirmed",
+  "On Hold",
+];
 
 const STATUS_STYLES: Record<ProgressionStatus, string> = {
   "Not Due": "bg-slate-100 text-slate-700 ring-slate-200",
@@ -220,6 +127,99 @@ const SEMESTERS = [
 
 const inr = (n: number) => "₹" + n.toLocaleString("en-IN");
 
+// --- Live API wiring (GET /students filtered to "Passed Out") --------------
+// Re-registration works the list of students who have finished their current
+// programme cycle (admission_status = 3 -> "Passed Out") and are candidates for
+// progression to the next session. Each list item is the raw `students` row the
+// API decorates with joined display fields: name/email/phone (users),
+// consultant_name (users), course_title + university_title (course -> university),
+// session_title (sessions) and a human admission_status_label. We map those real
+// values into the ReRegRow shape the design renders. Progression status, fee
+// breakdown, due dates and timeline have no source in this endpoint, so they are
+// surfaced honestly as "—" / zeroes rather than fabricated.
+const PASSED_OUT_CODE = 3;
+const PASSED_OUT_LABEL = "Passed Out";
+
+interface ApiStudentRow {
+  id: number | string;
+  student_id: number | string | null;
+  enrollment_id: string | null;
+  admission_status: number | string | null;
+  admission_status_label: string | null;
+  enrollment_date: string | null;
+  created_at: string | null;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  consultant_name: string | null;
+  course_title: string | null;
+  university_title: string | null;
+  session_title: string | null;
+}
+
+interface StudentsListResponse {
+  items: ApiStudentRow[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+const DASH = "—";
+
+function asText(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : DASH;
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return DASH;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// Map a decorated /students row (already "Passed Out") into the ReRegRow shape.
+// Real joined values fill the columns the API can supply; progression-specific
+// fields the endpoint does not carry resolve to honest placeholders.
+function mapApiRow(r: ApiStudentRow): ReRegRow {
+  const displayId =
+    r.enrollment_id != null && String(r.enrollment_id).trim() !== ""
+      ? String(r.enrollment_id)
+      : `STU-${r.student_id ?? r.id}`;
+  const enrolled = formatDate(r.enrollment_date ?? r.created_at);
+  return {
+    id: displayId,
+    name: asText(r.name),
+    email: asText(r.email),
+    phone: r.phone != null && String(r.phone).trim() !== "" ? String(r.phone) : DASH,
+    university: asText(r.university_title),
+    course: asText(r.course_title),
+    current: asText(r.session_title),
+    next: DASH,
+    status: "Progression Pending",
+    fee: "Pending",
+    feeAmount: 0,
+    feePaid: 0,
+    dueDate: DASH,
+    coordinator: asText(r.consultant_name),
+    history: [
+      {
+        date: enrolled,
+        title: "Enrolled",
+        description: `Enrolment recorded${
+          r.session_title ? ` for ${r.session_title}` : ""
+        }.`,
+        by: "System",
+      },
+      {
+        date: DASH,
+        title: "Passed Out",
+        description: "Programme cycle completed. Eligible for re-registration.",
+        by: "University",
+      },
+    ],
+  };
+}
+
 function ReRegistrationPage() {
   const [query, setQuery] = useState("");
   const [university, setUniversity] = useState("all");
@@ -228,29 +228,34 @@ function ReRegistrationPage() {
   const [status, setStatus] = useState<string>("all");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<ReRegRow | null>(null);
-  const [rows, setRows] = useState<ReRegRow[]>([]);
 
-  // Live students list (GET /api/students). The re-registration cohort is the
-  // "Passed Out" students, so we fetch a wide page and filter to that label.
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["re-registration", "students", { page: 1, limit: 1000 }],
+  // Live "Passed Out" students = the re-registration candidate pool. Server-side
+  // filter via admission_status code 3; we keep a client-side guard on the label
+  // so only genuinely passed-out rows ever render.
+  const { data, isLoading, isError, error, isFetching } = useQuery({
+    queryKey: ["students", "re-registration", { page: 1, limit: 1000 }],
     queryFn: () =>
-      apiGet<StudentsListResponse>("/students", { page: 1, limit: 1000 }),
+      apiGet<StudentsListResponse>("/students", {
+        page: 1,
+        limit: 1000,
+        admission_status: PASSED_OUT_CODE,
+      }),
   });
 
-  // Seed local rows from the fetched set, keeping only the re-registration
-  // candidates (admission_status_label === "Passed Out"). Local edits (Mark
-  // Confirmed) stay client-side; a fresh fetch re-seeds them. An empty result is
-  // a valid empty state — we do not fabricate rows.
+  const apiRows = useMemo<ReRegRow[]>(
+    () =>
+      (data?.items ?? [])
+        .filter((r) => (r.admission_status_label ?? "") === PASSED_OUT_LABEL)
+        .map(mapApiRow),
+    [data],
+  );
+
+  // Local working copy so the design's "Mark Confirmed" interaction still mutates
+  // a row's status/timeline; reseeds whenever fresh API data arrives.
+  const [rows, setRows] = useState<ReRegRow[]>([]);
   useEffect(() => {
-    if (data?.items) {
-      setRows(
-        data.items
-          .filter((r) => r.admission_status_label === "Passed Out")
-          .map(mapApiRow),
-      );
-    }
-  }, [data]);
+    setRows(apiRows);
+  }, [apiRows]);
 
   const filtered = useMemo(() => {
     return rows.filter((r) => {
@@ -265,32 +270,18 @@ function ReRegistrationPage() {
       }
       if (university !== "all" && r.university !== university) return false;
       if (course !== "all" && r.course !== course) return false;
-      if (semester !== "all" && r.intake !== semester) return false;
-      if (status !== "all" && r.admissionStatusLabel !== status) return false;
+      if (semester !== "all" && r.current !== semester) return false;
+      if (status !== "all" && r.status !== status) return false;
       return true;
     });
   }, [rows, query, university, course, semester, status]);
 
-  // Status filter options come from the real admission status labels present in
-  // the loaded cohort (rather than the legacy progression buckets), so the filter
-  // matches what the Status column actually renders.
-  const statusOptions = useMemo(() => {
-    return Array.from(
-      new Set(rows.map((r) => r.admissionStatusLabel).filter((l) => l !== EMPTY)),
-    ).sort();
-  }, [rows]);
-
   const counts = useMemo(() => {
     const total = rows.length;
     const pending = rows.filter(
-      (r) =>
-        r.status === "Progression Pending" ||
-        r.status === "Due Soon" ||
-        r.status === "Fee Pending",
+      (r) => r.status === "Progression Pending" || r.status === "Due Soon" || r.status === "Fee Pending",
     ).length;
-    const applied = rows.filter(
-      (r) => r.status === "Submitted to University",
-    ).length;
+    const applied = rows.filter((r) => r.status === "Submitted to University").length;
     const reReg = rows.filter((r) => r.status === "Confirmed").length;
     return { total, pending, applied, reReg };
   }, [rows]);
@@ -316,7 +307,7 @@ function ReRegistrationPage() {
                     year: "numeric",
                   }),
                   title: "Re-registration Confirmed",
-                  description: "Re-registration marked confirmed.",
+                  description: `${r.next} progression marked confirmed.`,
                   by: "You",
                 },
               ],
@@ -440,10 +431,10 @@ function ReRegistrationPage() {
               </SelectContent>
             </Select>
             <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="Progression Status" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Statuses</SelectItem>
-                {statusOptions.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                {STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -465,98 +456,107 @@ function ReRegistrationPage() {
                   <th className="px-4 py-3 text-left font-medium">Student Name</th>
                   <th className="px-4 py-3 text-left font-medium">University</th>
                   <th className="px-4 py-3 text-left font-medium">Course</th>
-                  <th className="px-4 py-3 text-left font-medium">Intake</th>
+                  <th className="px-4 py-3 text-left font-medium">Current</th>
                   <th className="px-4 py-3 text-left font-medium">Next</th>
-                  <th className="px-4 py-3 text-left font-medium">Status</th>
+                  <th className="px-4 py-3 text-left font-medium">Progression</th>
                   <th className="px-4 py-3 text-left font-medium">Fee</th>
                   <th className="px-4 py-3 text-left font-medium">Due Date</th>
                   <th className="px-4 py-3 text-right font-medium">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {isLoading ? (
-                  <tr>
-                    <td colSpan={11} className="px-4 py-10 text-center">
-                      <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Loading students…
-                      </div>
-                    </td>
-                  </tr>
-                ) : isError ? (
-                  <tr>
-                    <td colSpan={11} className="px-4 py-10 text-center">
-                      <div className="flex flex-col items-center gap-2 text-sm text-red-500">
-                        <AlertTriangle className="h-5 w-5" />
-                        {error instanceof Error
-                          ? error.message
-                          : "Failed to load students. Please try again."}
-                      </div>
-                    </td>
-                  </tr>
-                ) : filtered.length === 0 ? (
+                {isLoading && (
                   <tr>
                     <td colSpan={11} className="px-4 py-10 text-center text-muted-foreground">
-                      No students match the current filters.
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading re-registration candidates…
+                      </span>
                     </td>
                   </tr>
-                ) : (
-                  filtered.map((r, i) => (
-                    <tr key={r.id} className="transition-colors hover:bg-muted/30">
-                      <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{r.id}</td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{r.name}</div>
-                        <div className="text-xs text-muted-foreground">{r.email}</div>
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">{r.university}</td>
-                      <td className="px-4 py-3">{r.course}</td>
-                      <td className="px-4 py-3">{r.intake}</td>
-                      <td className="px-4 py-3 font-medium">{r.next}</td>
-                      <td className="px-4 py-3">
-                        <span className={cn(
-                          "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
-                          STATUS_STYLES[r.status],
-                        )}>
-                          {r.admissionStatusLabel}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={cn(
-                          "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
-                          FEE_STYLES[r.fee],
-                        )}>
-                          {r.fee}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">{r.dueDate}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button variant="ghost" size="sm" onClick={() => openHistory(r)}>
-                            <Eye className="h-4 w-4" />
-                            View Progression
-                          </Button>
-                          {r.status !== "Confirmed" && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-emerald-700 hover:text-emerald-800"
-                              onClick={() => markConfirmed(r)}
-                            >
-                              <CheckCheck className="h-4 w-4" />
-                              Mark Confirmed
-                            </Button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))
                 )}
+                {!isLoading && isError && (
+                  <tr>
+                    <td colSpan={11} className="px-4 py-10 text-center text-rose-600">
+                      <span className="inline-flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4" />
+                        {error instanceof Error
+                          ? error.message
+                          : "Couldn’t load re-registration candidates."}
+                      </span>
+                    </td>
+                  </tr>
+                )}
+                {!isLoading && !isError && filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={11} className="px-4 py-10 text-center text-muted-foreground">
+                      {rows.length === 0
+                        ? "No students are currently passed out / due for re-registration."
+                        : "No students match the current filters."}
+                    </td>
+                  </tr>
+                )}
+                {!isLoading && !isError && filtered.map((r, i) => (
+                  <tr key={r.id} className="transition-colors hover:bg-muted/30">
+                    <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{r.id}</td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{r.name}</div>
+                      <div className="text-xs text-muted-foreground">{r.email}</div>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{r.university}</td>
+                    <td className="px-4 py-3">{r.course}</td>
+                    <td className="px-4 py-3">{r.current}</td>
+                    <td className="px-4 py-3 font-medium">{r.next}</td>
+                    <td className="px-4 py-3">
+                      <span className={cn(
+                        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
+                        STATUS_STYLES[r.status],
+                      )}>
+                        {r.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={cn(
+                        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
+                        FEE_STYLES[r.fee],
+                      )}>
+                        {r.fee}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{r.dueDate}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => openHistory(r)}>
+                          <Eye className="h-4 w-4" />
+                          View Progression
+                        </Button>
+                        {r.status !== "Confirmed" && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-emerald-700 hover:text-emerald-800"
+                            onClick={() => markConfirmed(r)}
+                          >
+                            <CheckCheck className="h-4 w-4" />
+                            Mark Confirmed
+                          </Button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
           <div className="flex items-center justify-between border-t px-4 py-3 text-xs text-muted-foreground">
             <span>{filtered.length} of {rows.length} students</span>
+            {isFetching && !isLoading && (
+              <span className="inline-flex items-center gap-1.5">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Refreshing…
+              </span>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -587,14 +587,14 @@ function ReRegistrationPage() {
                     "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1",
                     STATUS_STYLES[active.status],
                   )}>
-                    {active.admissionStatusLabel}
+                    {active.status}
                   </span>
                 </div>
                 <Separator className="my-3" />
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <Info icon={Building2} label="University" value={active.university} />
                   <Info icon={BookOpen} label="Course" value={active.course} />
-                  <Info icon={GraduationCap} label="Intake" value={active.intake} />
+                  <Info icon={GraduationCap} label="Current" value={active.current} />
                   <Info icon={GraduationCap} label="Next" value={active.next} />
                   <Info icon={CalendarDays} label="Due Date" value={active.dueDate} />
                   <Info
@@ -613,32 +613,26 @@ function ReRegistrationPage() {
               <div className="mt-6">
                 <div className="mb-3 text-sm font-semibold">Timeline</div>
                 <ScrollArea className="max-h-[50vh] pr-3">
-                  {active.history.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      No progression events recorded.
-                    </p>
-                  ) : (
-                    <ol className="relative space-y-5 border-l border-border pl-5">
-                      {active.history
-                        .slice()
-                        .reverse()
-                        .map((e, i) => (
-                          <li key={i} className="relative">
-                            <span className="absolute -left-[26px] top-1 flex h-3 w-3 items-center justify-center rounded-full bg-primary ring-4 ring-background" />
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-sm font-medium">{e.title}</div>
-                              <div className="text-xs text-muted-foreground">{e.date}</div>
-                            </div>
-                            <p className="mt-0.5 text-sm text-muted-foreground">{e.description}</p>
-                            {e.by && (
-                              <Badge variant="secondary" className="mt-1 text-[10px]">
-                                by {e.by}
-                              </Badge>
-                            )}
-                          </li>
-                        ))}
-                    </ol>
-                  )}
+                  <ol className="relative space-y-5 border-l border-border pl-5">
+                    {active.history
+                      .slice()
+                      .reverse()
+                      .map((e, i) => (
+                        <li key={i} className="relative">
+                          <span className="absolute -left-[26px] top-1 flex h-3 w-3 items-center justify-center rounded-full bg-primary ring-4 ring-background" />
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm font-medium">{e.title}</div>
+                            <div className="text-xs text-muted-foreground">{e.date}</div>
+                          </div>
+                          <p className="mt-0.5 text-sm text-muted-foreground">{e.description}</p>
+                          {e.by && (
+                            <Badge variant="secondary" className="mt-1 text-[10px]">
+                              by {e.by}
+                            </Badge>
+                          )}
+                        </li>
+                      ))}
+                  </ol>
                 </ScrollArea>
               </div>
 

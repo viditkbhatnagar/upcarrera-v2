@@ -8,6 +8,7 @@ import {
   Search,
   Filter,
   RefreshCcw,
+  Bookmark,
   Eye,
   Pencil,
   Phone,
@@ -23,6 +24,7 @@ import {
   Hash,
   Camera,
   Upload,
+  Loader2,
   AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -61,85 +63,68 @@ export const Route = createFileRoute("/counsellors/counsellors")({
 
 type StatusFilter = CounsellorStatus | "All";
 
-// --- Live API wiring (GET /api/consultants) ------------------------------
-// A consultant is a `users` row with role_id = 6, returned by the API after
-// stripSecrets. We map those real columns into the screen's existing
-// Counsellor row shape. Columns the legacy users table has no field for
-// (team / team leader / group / manager / active target) fall back to "—" / 0
-// rather than inventing data. Employee ID = users.code, else the numeric id.
+/* ---------------- API → Counsellor mapping ---------------- */
+
+const EMPTY = "—";
+
+/** A consultant is a `users` row (role_id = 6). Only the fields the screen
+ *  reads are typed here; the rest of the row is ignored. */
 interface ApiConsultant {
-  id: number | string;
-  code?: number | string | null;
+  id: number;
   name?: string | null;
   email?: string | null;
   phone?: string | null;
-  status?: number | string | null;
+  code?: number | null;
   region?: string | null;
-  doj?: string | null;
-  dob?: string | null;
   gender?: string | null;
-  created_at?: string | null;
+  dob?: string | null;
+  doj?: string | null;
+  highest_qualification?: string | null;
+  status?: number | null;
 }
 
-interface ConsultantsListResponse {
+interface ConsultantsResponse {
   items: ApiConsultant[];
   total: number;
   page: number;
   limit: number;
 }
 
-// The legacy users.status is an Int (default 1). 1 = Active, 2 = On Leave,
-// everything else (0 / null) = Inactive — keeping the three UI states intact.
-const STATUS_TO_CODE: Record<CounsellorStatus, number> = {
-  Active: 1,
-  "On Leave": 2,
-  Inactive: 0,
-};
-
-function toCounsellorStatus(status: number | string | null | undefined): CounsellorStatus {
-  const n = status == null ? null : Number(status);
-  if (n === 1) return "Active";
-  if (n === 2) return "On Leave";
-  return "Inactive";
-}
-
-const EMPTY = "—";
-
-function asText(value: string | number | null | undefined): string {
+function asText(value: string | null | undefined): string {
   return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
 }
 
-function toDateInput(value: string | null | undefined): string {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD for the date-range filter
+/** Legacy users.status is an Int (1 = active). There is no on-leave source. */
+function mapStatus(status: number | null | undefined): CounsellorStatus {
+  return status === 1 ? "Active" : "Inactive";
 }
 
-// Map one API consultant onto the screen's existing Counsellor row shape.
-// Fields without a users-table source use graceful fallbacks (never faked).
-function mapToRow(c: ApiConsultant): Counsellor {
-  // Employee ID = the user's unique system id. (The `code` column is NOT a
-  // per-user identifier — it carries the same value across users, e.g. 91.)
-  // The row links to /counsellors/profile/$empId, so empId must be the real id
-  // for the profile page to look it up.
-  const empId = String(c.id);
+/** YYYY-MM-DD slice of an ISO date (the mock used a bare date string). */
+function asDate(value: string | null | undefined): string {
+  return value ? String(value).slice(0, 10) : "";
+}
+
+function mapApiConsultant(c: ApiConsultant): Counsellor {
+  const gender =
+    c.gender === "Female" || c.gender === "Other" ? c.gender : "Male";
   return {
-    empId,
-    name: asText(c.name) === EMPTY ? "" : String(c.name),
-    email: asText(c.email) === EMPTY ? "" : String(c.email),
+    empId: c.code != null ? `UC-${c.code}` : `UC-${c.id}`,
+    name: c.name && c.name.trim() !== "" ? c.name : EMPTY,
+    email: asText(c.email),
     phone: asText(c.phone),
-    team: EMPTY,
+    // No team/leader/group/manager source on the users row → surface as "—".
+    team: asText(c.region),
     teamLeader: EMPTY,
-    group: asText(c.region), // region is the closest grouping the users table carries
+    group: asText(c.region),
     manager: EMPTY,
+    // No target/achieved source in the schema.
     activeTarget: 0,
     achieved: 0,
-    status: toCounsellorStatus(c.status),
-    joiningDate: toDateInput(c.doj ?? c.created_at),
-    designation: EMPTY,
-    gender: (c.gender as Counsellor["gender"]) ?? "Other",
-    dob: toDateInput(c.dob),
+    status: mapStatus(c.status),
+    joiningDate: asDate(c.doj),
+    designation: asText(c.highest_qualification),
+    gender,
+    dob: asDate(c.dob),
   };
 }
 
@@ -157,35 +142,25 @@ function CounsellorsPage() {
   const [openAdd, setOpenAdd] = useState(false);
   const PAGE_SIZE = 10;
 
-  // Live consultants list. status runs server-side (users.status Int); the
-  // search box also goes to the server (name/phone/email). The remaining UI
-  // filters (empId / team / group / TL / manager / date range) refine the
-  // fetched page client-side over the real mapped values.
-  const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: ["consultants", "list", { page, limit: PAGE_SIZE, statusFilter, search }],
+  // Live consultants (users where role_id = 6). The list endpoint paginates
+  // server-side, so we pull a large page in one shot and let the existing
+  // text/id/team/group/status/date filters + paging refine client-side over the
+  // real decorated values — identical to how the mock array was consumed.
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["consultants", "list"],
     queryFn: () =>
-      apiGet<ConsultantsListResponse>("/consultants", {
-        page,
-        limit: PAGE_SIZE,
-        search: search.trim() || undefined,
-        status: statusFilter === "All" ? undefined : STATUS_TO_CODE[statusFilter],
-      }),
+      apiGet<ConsultantsResponse>("/consultants", { limit: 1000 }),
   });
 
-  // Global KPI counts: the paged list can't see all consultants, so fetch the
-  // full consultant set once and count by status over that complete set.
-  const { data: consultantsAll } = useQuery({
-    queryKey: ["consultants", "all"],
-    queryFn: () => apiGet<ConsultantsListResponse>("/consultants", { limit: 2000 }),
-    staleTime: 60 * 1000,
-  });
+  const allCounsellors = useMemo<Counsellor[]>(
+    () => (data?.items ?? []).map(mapApiConsultant),
+    [data],
+  );
 
-  const apiTotal = data?.total ?? 0;
-  const allRows = useMemo(() => (data?.items ?? []).map(mapToRow), [data]);
-
-  // Client-side refinement of the current page over the real mapped values.
   const filtered = useMemo(() => {
-    return allRows.filter((c) => {
+    return allCounsellors.filter((c) => {
+      if (statusFilter !== "All" && c.status !== statusFilter) return false;
+      if (search && !c.name.toLowerCase().includes(search.toLowerCase())) return false;
       if (empId && !c.empId.toLowerCase().includes(empId.toLowerCase())) return false;
       if (team !== "All" && c.team !== team) return false;
       if (group !== "All" && c.group !== group) return false;
@@ -195,26 +170,23 @@ function CounsellorsPage() {
       if (to && c.joiningDate > to) return false;
       return true;
     });
-  }, [allRows, empId, team, group, tl, mgr, from, to]);
+  }, [allCounsellors, statusFilter, search, empId, team, group, tl, mgr, from, to]);
 
-  const totalPages = Math.max(1, Math.ceil(apiTotal / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  // The server already paginated; show the refined rows for the current page.
-  const pageRows = filtered;
+  const pageRows = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
-  // Total card uses the API total. Active / Inactive are GLOBAL — counted over
-  // the full consultant set, not just the current page. status===1 -> Active,
-  // everything else -> Inactive. The users table has no On-Leave field, so that
-  // card resolves to 0 rather than being fabricated.
   const counts = useMemo(() => {
     let active = 0,
-      inactive = 0;
-    for (const c of consultantsAll?.items ?? []) {
-      if (Number(c.status) === 1) active++;
-      else inactive++;
-    }
-    return { active, inactive, leave: 0 };
-  }, [consultantsAll]);
+      inactive = 0,
+      leave = 0;
+    allCounsellors.forEach((c) => {
+      if (c.status === "Active") active++;
+      else if (c.status === "Inactive") inactive++;
+      else leave++;
+    });
+    return { active, inactive, leave };
+  }, [allCounsellors]);
 
   const resetFilters = () => {
     setStatusFilter("All");
@@ -264,8 +236,7 @@ function CounsellorsPage() {
         <KpiCard
           icon={Users}
           label="Total Counsellors"
-          value={apiTotal}
-          loading={isLoading}
+          value={allCounsellors.length}
           active={statusFilter === "All"}
           onClick={() => {
             setStatusFilter("All");
@@ -277,7 +248,6 @@ function CounsellorsPage() {
           icon={UserCheck}
           label="Active Counsellors"
           value={counts.active}
-          loading={isLoading}
           active={statusFilter === "Active"}
           onClick={() => {
             setStatusFilter(statusFilter === "Active" ? "All" : "Active");
@@ -290,7 +260,6 @@ function CounsellorsPage() {
           icon={UserX}
           label="Inactive Counsellors"
           value={counts.inactive}
-          loading={isLoading}
           active={statusFilter === "Inactive"}
           onClick={() => {
             setStatusFilter(statusFilter === "Inactive" ? "All" : "Inactive");
@@ -303,7 +272,6 @@ function CounsellorsPage() {
           icon={UserMinus}
           label="On Leave"
           value={counts.leave}
-          loading={isLoading}
           active={statusFilter === "On Leave"}
           onClick={() => {
             setStatusFilter(statusFilter === "On Leave" ? "All" : "On Leave");
@@ -321,15 +289,7 @@ function CounsellorsPage() {
           Filters
         </div>
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-          <FilterInput
-            icon={Search}
-            placeholder="Search counsellor"
-            value={search}
-            onChange={(v) => {
-              setSearch(v);
-              setPage(1);
-            }}
-          />
+          <FilterInput icon={Search} placeholder="Search counsellor" value={search} onChange={setSearch} />
           <FilterInput icon={Hash} placeholder="Employee ID" value={empId} onChange={setEmpId} />
           <FilterSelect value={team} onChange={setTeam} options={["All", ...TEAMS]} placeholder="Team" />
           <FilterSelect value={group} onChange={setGroup} options={["All", ...GROUPS]} placeholder="Group" />
@@ -337,10 +297,7 @@ function CounsellorsPage() {
           <FilterSelect value={mgr} onChange={setMgr} options={["All", ...MANAGERS]} placeholder="Manager" />
           <FilterSelect
             value={statusFilter}
-            onChange={(v) => {
-              setStatusFilter(v as StatusFilter);
-              setPage(1);
-            }}
+            onChange={(v) => setStatusFilter(v as StatusFilter)}
             options={["All", "Active", "Inactive", "On Leave"]}
             placeholder="Status"
           />
@@ -382,22 +339,14 @@ function CounsellorsPage() {
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="text-sm font-semibold text-foreground">
-            {isLoading ? "Loading…" : `${apiTotal.toLocaleString()} counsellors`}
+            {filtered.length.toLocaleString()} counsellors
             {statusFilter !== "All" && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                 {statusFilter}
-                <button
-                  onClick={() => {
-                    setStatusFilter("All");
-                    setPage(1);
-                  }}
-                >
+                <button onClick={() => setStatusFilter("All")}>
                   <X className="h-3 w-3" />
                 </button>
               </span>
-            )}
-            {isFetching && !isLoading && (
-              <RefreshCcw className="ml-2 inline h-3.5 w-3.5 animate-spin text-muted-foreground/60 align-text-bottom" />
             )}
           </div>
           <div className="text-xs text-muted-foreground">
@@ -408,15 +357,18 @@ function CounsellorsPage() {
         <div className="overflow-x-auto scrollbar-thin">
           {isLoading ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
+              <Loader2 className="h-10 w-10 animate-spin text-muted-foreground/50" />
               <div className="text-sm font-semibold text-foreground">Loading counsellors…</div>
+              <div className="text-xs text-muted-foreground">
+                Fetching the latest records.
+              </div>
             </div>
           ) : isError ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <AlertTriangle className="h-10 w-10 text-red-500/60" />
+              <AlertTriangle className="h-10 w-10 text-rose-500/60" />
               <div className="text-sm font-semibold text-foreground">Couldn’t load counsellors</div>
               <div className="text-xs text-muted-foreground">
-                {error instanceof Error ? error.message : "Please try again."}
+                Something went wrong. Please try again.
               </div>
             </div>
           ) : pageRows.length === 0 ? (
@@ -446,7 +398,9 @@ function CounsellorsPage() {
               </thead>
               <tbody>
                 {pageRows.map((c, i) => {
-                  const pct = Math.min(100, Math.round((c.achieved / c.activeTarget) * 100));
+                  const pct = c.activeTarget > 0
+                    ? Math.min(100, Math.round((c.achieved / c.activeTarget) * 100))
+                    : 0;
                   return (
                     <tr
                       key={c.empId}
@@ -532,13 +486,13 @@ function CounsellorsPage() {
           <div>
             Showing{" "}
             <span className="font-semibold text-foreground">
-              {apiTotal === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}
+              {(currentPage - 1) * PAGE_SIZE + 1}
             </span>{" "}
             –{" "}
             <span className="font-semibold text-foreground">
-              {Math.min(currentPage * PAGE_SIZE, apiTotal)}
+              {Math.min(currentPage * PAGE_SIZE, filtered.length)}
             </span>{" "}
-            of <span className="font-semibold text-foreground">{apiTotal}</span>
+            of <span className="font-semibold text-foreground">{filtered.length}</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -573,7 +527,6 @@ function KpiCard({
   icon: Icon,
   label,
   value,
-  loading,
   active,
   onClick,
   accent,
@@ -582,7 +535,6 @@ function KpiCard({
   icon: typeof Users;
   label: string;
   value: number;
-  loading?: boolean;
   active?: boolean;
   onClick?: () => void;
   accent?: string;
@@ -610,13 +562,9 @@ function KpiCard({
       <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         {label}
       </div>
-      {loading ? (
-        <div className="h-7 w-12 animate-pulse rounded bg-muted" />
-      ) : (
-        <div className="text-2xl font-bold tracking-tight text-foreground">
-          {value.toLocaleString()}
-        </div>
-      )}
+      <div className="text-2xl font-bold tracking-tight text-foreground">
+        {value.toLocaleString()}
+      </div>
     </button>
   );
 }

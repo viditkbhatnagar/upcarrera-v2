@@ -19,7 +19,6 @@ import {
   Trophy,
   GraduationCap,
   RefreshCcw,
-  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -39,54 +38,76 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+/* ----------------- API response shapes & mappers ----------------- */
 
-export const Route = createFileRoute("/counsellors/targets")({
-  head: () => ({ meta: [{ title: "Targets — upCarrera" }] }),
-  component: TargetsPage,
-});
-
-// --- Live API wiring (GET /api/consultant-targets) -----------------------
-// Each item is a raw `consultant_target` row spread by the API, decorated with
-// the joined `consultant_name` plus the computed `achieved` count and a
-// `performance` string (e.g. "57%"). Target columns: type (1 = points-based,
-// 2 = admission-count), value (the goal), from_date / to_date (the window).
-// The API has no Revenue type and no per-row status column, so those UI facets
-// are derived gracefully below (see mapTarget). The response carries
-// { items, total, page, limit } — `total` drives the "Total Targets" card; the
-// Active/Inactive cards are derived by counting the fetched page.
-interface ApiTargetRow {
-  consultant_target_id: number;
-  type: number | null;
-  value: number | null;
-  from_date: string | null;
-  to_date: string | null;
-  consultant_id: number | null;
-  consultant_name: string | null;
-  achieved: number | null;
-  performance: string | null;
+// GET /consultants → { items: users[] , total, page, limit }
+interface ConsultantApiRow {
+  id: number;
+  name: string | null;
+  region: string | null;
 }
-
-interface TargetsListResponse {
-  items: ApiTargetRow[];
+interface ConsultantsResponse {
+  items: ConsultantApiRow[];
   total: number;
   page: number;
   limit: number;
 }
 
-// API target.type -> the screen's TargetType. The legacy API only models two
-// kinds (1 = points, 2 = admission-count); there is no Revenue target server
-// side, so it never appears from live data. Unknown/null falls back to Point.
-const API_TYPE_TO_TYPE: Record<number, TargetType> = {
-  1: "Point Target",
-  2: "Admission Target",
+// GET /consultant-targets → { items: target[], total, page, limit }
+// type: 1 = points-based, 2 = admission-count. value = target value.
+// achieved + performance ("NN%") are computed server-side.
+interface TargetApiRow {
+  consultant_target_id: number;
+  type: number | null;
+  from_date: string | null;
+  to_date: string | null;
+  value: number | null;
+  consultant_id: number | null;
+  consultant_name: string | null;
+  achieved: number;
+  performance: string;
+}
+interface TargetsResponse {
+  items: TargetApiRow[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+// Same shape the JSX consumes from the old mock counsellor list.
+interface CounsellorLite {
+  empId: string;
+  name: string;
+  team: string;
+  manager: string;
+}
+
+const FETCH_LIMIT = 1000;
+
+const mapConsultant = (c: ConsultantApiRow): CounsellorLite => ({
+  empId: String(c.id),
+  name: c.name ?? "—",
+  team: (c.region ?? "").trim() || "—",
+  manager: "—",
+});
+
+// API type code → the design's TargetType label. type 1 → points, 2 → admissions.
+const mapTargetType = (type: number | null): TargetType =>
+  type === 1 ? "Point Target" : "Admission Target";
+
+// Derive the target month (YYYY-MM) the JSX renders from the legacy date window.
+const mapTargetMonth = (target: TargetApiRow): string => {
+  const src = target.from_date ?? target.to_date;
+  if (!src) return "—";
+  const d = new Date(src);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 };
 
-// Screen TargetType -> API `type` query param (only the two server-supported
-// kinds are sent; "Revenue Target" / "All" send nothing → unfiltered).
-const TYPE_TO_API_TYPE: Partial<Record<TargetType, number>> = {
-  "Point Target": 1,
-  "Admission Target": 2,
-};
+export const Route = createFileRoute("/counsellors/targets")({
+  head: () => ({ meta: [{ title: "Targets — upCarrera" }] }),
+  component: TargetsPage,
+});
 
 type TargetStatus = "Active" | "Inactive";
 type TargetType = "Admission Target" | "Revenue Target" | "Point Target";
@@ -135,90 +156,29 @@ const STATUS_DOT: Record<TargetStatus, string> = {
 const MONTHS = ["2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03"];
 const TYPES: TargetType[] = ["Admission Target", "Revenue Target", "Point Target"];
 
-// Derive a YYYY-MM key from an ISO date string; "" when unparseable/missing.
-function monthKey(value: string | null): string {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
-// Window-based status derivation (no status column on consultant_target):
-// Active while to_date is today/future or open-ended, otherwise Inactive. Shared
-// so both the row mapper and the GLOBAL KPI counts use identical status logic.
-function deriveStatus(toDate: string | null): TargetStatus {
-  if (!toDate) return "Active";
-  const end = new Date(toDate);
-  if (Number.isNaN(end.getTime())) return "Active";
-  end.setHours(23, 59, 59, 999);
-  return end.getTime() >= Date.now() ? "Active" : "Inactive";
-}
-
-// Map a live API target row to the screen's existing TargetRow shape. Faithful
-// mapping with graceful fallbacks for facets the API doesn't expose:
-//  - type: API 1/2 → Point/Admission; unknown → Point Target (no Revenue server side)
-//  - month: derived from from_date (target window start), else to_date
-//  - status: derived from the window via deriveStatus (no per-row status column)
-//  - counsellorEmpId: the API exposes consultant_id, not an emp code → "—"
-function mapTarget(r: ApiTargetRow): TargetRow {
-  const type =
-    r.type != null && API_TYPE_TO_TYPE[r.type] ? API_TYPE_TO_TYPE[r.type] : "Point Target";
-  const month = monthKey(r.from_date) || monthKey(r.to_date);
-  const value = r.value ?? 0;
-  const achieved = r.achieved ?? 0;
-
-  const status = deriveStatus(r.to_date);
-
-  return {
-    id: `TG-${r.consultant_target_id}`,
-    month,
-    type,
-    counsellorEmpId: r.consultant_id != null ? String(r.consultant_id) : "—",
-    counsellorName:
-      r.consultant_name && r.consultant_name.trim() !== ""
-        ? r.consultant_name
-        : "—",
-    value,
-    achieved,
-    status,
-  };
-}
+// Map one API target row into the exact TargetRow shape the JSX renders.
+const mapTarget = (t: TargetApiRow): TargetRow => ({
+  id: `TG-${String(t.consultant_target_id).padStart(4, "0")}`,
+  month: mapTargetMonth(t),
+  type: mapTargetType(t.type),
+  counsellorEmpId: t.consultant_id != null ? String(t.consultant_id) : "—",
+  counsellorName: t.consultant_name ?? "—",
+  value: t.value ?? 0,
+  achieved: t.achieved ?? 0,
+  // A target is "Active" while its window has not closed; else "Inactive".
+  status:
+    t.to_date && !Number.isNaN(new Date(t.to_date).getTime())
+      ? new Date(t.to_date).getTime() >= Date.now()
+        ? "Active"
+        : "Inactive"
+      : "Active",
+});
 
 const formatMonth = (m: string) => {
-  if (!m) return "—";
   const [y, mo] = m.split("-");
   const d = new Date(Number(y), Number(mo) - 1, 1);
-  if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
 };
-
-// Live counsellor roster (GET /consultants) — drives the counsellor filter, the
-// Assign-Target picker, and the no-target gap. Keyed by consultant id (String)
-// so it matches each target row's counsellorEmpId (= String(consultant_id)).
-interface RosterConsultantApi {
-  id: number | string;
-  name: string | null;
-}
-interface RosterConsultant {
-  id: string;
-  name: string;
-}
-function useConsultantRoster(): RosterConsultant[] {
-  const { data } = useQuery({
-    queryKey: ["consultants", "roster"],
-    queryFn: () =>
-      apiGet<{ items: RosterConsultantApi[] }>("/consultants", { limit: 2000 }),
-    staleTime: 5 * 60 * 1000,
-  });
-  return useMemo(
-    () =>
-      (data?.items ?? []).map((c) => ({
-        id: String(c.id),
-        name: c.name && c.name.trim() !== "" ? c.name : `#${c.id}`,
-      })),
-    [data],
-  );
-}
 
 type StatusFilter = TargetStatus | "All" | "NoTargets";
 
@@ -232,67 +192,42 @@ function TargetsPage() {
   const [openAssign, setOpenAssign] = useState(false);
   const PAGE_SIZE = 10;
 
-  // Server understands page/limit, free-text `search` (counsellor name/phone/
-  // email) and `type` (only Point=1 / Admission=2). The remaining facets
-  // (status, month, counsellor, Revenue type) refine the fetched page below.
-  const serverType =
-    typeFilter !== "All" ? TYPE_TO_API_TYPE[typeFilter] : undefined;
-
-  const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: [
-      "consultant-targets",
-      "list",
-      { page, limit: PAGE_SIZE, search, serverType },
-    ],
+  const consultantsQuery = useQuery({
+    queryKey: ["consultants", "targets-page"],
     queryFn: () =>
-      apiGet<TargetsListResponse>("/consultant-targets", {
-        page,
-        limit: PAGE_SIZE,
-        search: search.trim() || undefined,
-        type: serverType,
-      }),
+      apiGet<ConsultantsResponse>("/consultants", { limit: FETCH_LIMIT }),
+  });
+  const targetsQuery = useQuery({
+    queryKey: ["consultant-targets", "targets-page"],
+    queryFn: () =>
+      apiGet<TargetsResponse>("/consultant-targets", { limit: FETCH_LIMIT }),
   });
 
-  // Global KPI counts: the paged list can't see all targets, so fetch the full
-  // set once and count Active/Inactive over it using the SAME window-based
-  // status logic (deriveStatus) the rows use. Total Targets keeps the API total.
-  const { data: targetsAll } = useQuery({
-    queryKey: ["consultant-targets", "all"],
-    queryFn: () =>
-      apiGet<TargetsListResponse>("/consultant-targets", { limit: 2000 }),
-    staleTime: 60 * 1000,
-  });
+  const isLoading = consultantsQuery.isLoading || targetsQuery.isLoading;
+  const isError = consultantsQuery.isError || targetsQuery.isError;
 
-  const apiTotal = data?.total ?? 0;
-  const pageItems = useMemo(
-    () => (data?.items ?? []).map(mapTarget),
-    [data],
+  // Same variable names + shapes the JSX below consumes — only the source changed.
+  const ALL_COUNSELLORS = useMemo<CounsellorLite[]>(
+    () => (consultantsQuery.data?.items ?? []).map(mapConsultant),
+    [consultantsQuery.data],
+  );
+  const ALL_TARGETS = useMemo<TargetRow[]>(
+    () => (targetsQuery.data?.items ?? []).map(mapTarget),
+    [targetsQuery.data],
   );
 
-  // Live counsellor roster (id + name) for the filter, no-target gap and picker.
-  const roster = useConsultantRoster();
-
-  // Counsellors with NO target at all — the live roster minus every consultant
-  // id seen across the full target set. Keyed by consultant id so it matches the
-  // live targets (the API exposes consultant_id, not team/manager).
   const noTargetCounsellors = useMemo(() => {
-    const withTargets = new Set(
-      (targetsAll?.items ?? [])
-        .map((t) => (t.consultant_id != null ? String(t.consultant_id) : null))
-        .filter((x): x is string => x != null),
-    );
-    return roster.filter((c) => !withTargets.has(c.id));
-  }, [targetsAll, roster]);
+    const withT = new Set(ALL_TARGETS.map((t) => t.counsellorEmpId));
+    return ALL_COUNSELLORS.filter((c) => !withT.has(c.empId));
+  }, [ALL_TARGETS, ALL_COUNSELLORS]);
 
-  // Client-side refinement of the fetched page over the mapped real values.
   const filtered = useMemo(() => {
     if (statusFilter === "NoTargets") return [];
-    return pageItems.filter((t) => {
+    return ALL_TARGETS.filter((t) => {
       if (statusFilter !== "All" && t.status !== statusFilter) return false;
       if (typeFilter !== "All" && t.type !== typeFilter) return false;
       if (monthFilter !== "All" && t.month !== monthFilter) return false;
-      if (counsellorFilter !== "All" && t.counsellorEmpId !== counsellorFilter)
-        return false;
+      if (counsellorFilter !== "All" && t.counsellorEmpId !== counsellorFilter) return false;
       if (search) {
         const s = search.toLowerCase();
         if (
@@ -304,30 +239,25 @@ function TargetsPage() {
       }
       return true;
     });
-  }, [pageItems, statusFilter, typeFilter, monthFilter, counsellorFilter, search]);
+  }, [statusFilter, typeFilter, monthFilter, counsellorFilter, search, ALL_TARGETS]);
 
-  // Server already paginated; show the refined fetched page as-is.
-  const totalPages = Math.max(1, Math.ceil(apiTotal / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const pageRows = filtered;
+  const pageRows = filtered.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
+  );
 
-  // Total Targets is the live server total. Active/Inactive are GLOBAL — counted
-  // over the full target set (not just the current page) using the same
-  // window-based status derivation as the rows; No-Targets is the roster gap.
   const totals = useMemo(() => {
-    let active = 0;
-    let inactive = 0;
-    for (const r of targetsAll?.items ?? []) {
-      if (deriveStatus(r.to_date) === "Active") active++;
-      else inactive++;
-    }
+    const active = ALL_TARGETS.filter((t) => t.status === "Active").length;
+    const inactive = ALL_TARGETS.filter((t) => t.status === "Inactive").length;
     return {
-      total: apiTotal,
+      total: ALL_TARGETS.length,
       active,
       inactive,
       noTargets: noTargetCounsellors.length,
     };
-  }, [targetsAll, apiTotal, noTargetCounsellors.length]);
+  }, [noTargetCounsellors.length, ALL_TARGETS]);
 
   const resetFilters = () => {
     setStatusFilter("All");
@@ -337,6 +267,45 @@ function TargetsPage() {
     setCounsellorFilter("All");
     setPage(1);
   };
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-border bg-surface py-16 text-center shadow-card">
+          <TargetIcon className="h-10 w-10 animate-pulse text-muted-foreground/50" />
+          <div className="text-sm font-semibold text-foreground">
+            Loading targets…
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-surface py-16 text-center shadow-card">
+          <XCircle className="h-10 w-10 text-rose-500/70" />
+          <div className="text-sm font-semibold text-foreground">
+            Couldn't load targets
+          </div>
+          <div className="text-xs text-muted-foreground">
+            Something went wrong while fetching the data.
+          </div>
+          <button
+            onClick={() => {
+              consultantsQuery.refetch();
+              targetsQuery.refetch();
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted"
+          >
+            <RefreshCcw className="h-3.5 w-3.5" />
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -436,8 +405,8 @@ function TargetsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="All">All Counsellors</SelectItem>
-              {roster.map((c) => (
-                <SelectItem key={c.id} value={c.id}>
+              {ALL_COUNSELLORS.map((c) => (
+                <SelectItem key={c.empId} value={c.empId}>
                   {c.name}
                 </SelectItem>
               ))}
@@ -526,18 +495,18 @@ function TargetsPage() {
               <tbody>
                 {noTargetCounsellors.map((c, i) => (
                   <tr
-                    key={c.id}
+                    key={c.empId}
                     className="border-b border-border last:border-0 hover:bg-muted/40"
                   >
                     <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
                     <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">
-                      {c.id}
+                      {c.empId}
                     </td>
                     <td className="px-4 py-3 text-sm font-medium text-foreground">
                       {c.name}
                     </td>
-                    <td className="px-4 py-3 text-sm text-foreground">—</td>
-                    <td className="px-4 py-3 text-sm text-foreground">—</td>
+                    <td className="px-4 py-3 text-sm text-foreground">{c.team}</td>
+                    <td className="px-4 py-3 text-sm text-foreground">{c.manager}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end">
                         <button
@@ -559,7 +528,7 @@ function TargetsPage() {
         <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <div className="text-sm font-semibold text-foreground">
-              {isLoading ? "Loading…" : `${apiTotal.toLocaleString()} targets`}
+              {filtered.length.toLocaleString()} targets
               {statusFilter !== "All" && (
                 <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                   {statusFilter}
@@ -568,9 +537,6 @@ function TargetsPage() {
                   </button>
                 </span>
               )}
-              {isFetching && !isLoading && (
-                <RefreshCcw className="ml-2 inline h-3.5 w-3.5 animate-spin text-muted-foreground/60 align-text-bottom" />
-              )}
             </div>
             <div className="text-xs text-muted-foreground">
               Sorted by <span className="font-medium text-foreground">Target Month</span>
@@ -578,20 +544,7 @@ function TargetsPage() {
           </div>
 
           <div className="overflow-x-auto scrollbar-thin">
-            {isLoading ? (
-              <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-                <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
-                <div className="text-sm font-semibold text-foreground">Loading targets…</div>
-              </div>
-            ) : isError ? (
-              <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-                <AlertTriangle className="h-10 w-10 text-red-500/60" />
-                <div className="text-sm font-semibold text-foreground">Couldn’t load targets</div>
-                <div className="text-xs text-muted-foreground">
-                  {error instanceof Error ? error.message : "Please try again."}
-                </div>
-              </div>
-            ) : pageRows.length === 0 ? (
+            {pageRows.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
                 <TargetIcon className="h-10 w-10 text-muted-foreground/50" />
                 <div className="text-sm font-semibold text-foreground">No targets found</div>
@@ -617,10 +570,10 @@ function TargetsPage() {
                   {pageRows.map((t, i) => {
                     const meta = TYPE_META[t.type];
                     const Icon = meta.icon;
-                    const pct =
-                      t.value > 0
-                        ? Math.min(100, Math.round((t.achieved / t.value) * 100))
-                        : 0;
+                    const pct = Math.min(
+                      100,
+                      Math.round((t.achieved / t.value) * 100),
+                    );
                     const barTone =
                       pct >= 80
                         ? "bg-emerald-500"
@@ -722,13 +675,13 @@ function TargetsPage() {
             <div>
               Showing{" "}
               <span className="font-semibold text-foreground">
-                {apiTotal === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}
+                {(currentPage - 1) * PAGE_SIZE + 1}
               </span>{" "}
               –{" "}
               <span className="font-semibold text-foreground">
-                {Math.min(currentPage * PAGE_SIZE, apiTotal)}
+                {Math.min(currentPage * PAGE_SIZE, filtered.length)}
               </span>{" "}
-              of <span className="font-semibold text-foreground">{apiTotal}</span>
+              of <span className="font-semibold text-foreground">{filtered.length}</span>
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -827,9 +780,18 @@ function AssignTargetDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const [type, setType] = useState<TargetType>("Admission Target");
-  const roster = useConsultantRoster();
   const now = new Date();
   const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+
+  const consultantsQuery = useQuery({
+    queryKey: ["consultants", "targets-page"],
+    queryFn: () =>
+      apiGet<ConsultantsResponse>("/consultants", { limit: FETCH_LIMIT }),
+  });
+  const ALL_COUNSELLORS = useMemo<CounsellorLite[]>(
+    () => (consultantsQuery.data?.items ?? []).map(mapConsultant),
+    [consultantsQuery.data],
+  );
 
   const placeholder =
     type === "Revenue Target"
@@ -859,9 +821,9 @@ function AssignTargetDialog({
                   <SelectValue placeholder="Pick counsellor" />
                 </SelectTrigger>
                 <SelectContent className="max-h-72">
-                  {roster.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name} · {c.id}
+                  {ALL_COUNSELLORS.map((c) => (
+                    <SelectItem key={c.empId} value={c.empId}>
+                      {c.name} · {c.empId}
                     </SelectItem>
                   ))}
                 </SelectContent>
