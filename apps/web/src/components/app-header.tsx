@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { getUser } from "@/lib/session";
 import { logout } from "@/lib/auth";
+import { useAvatarUrl } from "@/hooks/use-avatar-url";
 
 interface AppHeaderProps {
   collapsed: boolean;
@@ -28,6 +29,7 @@ export function AppHeader({ collapsed, onToggle, onMobileMenu }: AppHeaderProps)
   const navigate = useNavigate();
   const user = getUser();
   const displayName = user?.name ?? user?.username ?? "Account";
+  const avatarUrl = useAvatarUrl(user?.profile_picture);
 
   const handleLogout = () => {
     logout();
@@ -88,9 +90,17 @@ export function AppHeader({ collapsed, onToggle, onMobileMenu }: AppHeaderProps)
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button className="flex items-center gap-3 rounded-xl border border-transparent px-1.5 py-1 transition hover:bg-muted hover:border-border">
-              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-sm font-semibold">
-                {initials(user?.name ?? null, user?.username ?? null)}
-              </div>
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt={displayName}
+                  className="h-9 w-9 shrink-0 rounded-full object-cover"
+                />
+              ) : (
+                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-sm font-semibold">
+                  {initials(user?.name ?? null, user?.username ?? null)}
+                </div>
+              )}
               <div className="hidden md:block text-left leading-tight">
                 <div className="text-sm font-semibold text-foreground">{displayName}</div>
                 <div className="text-[11px] text-muted-foreground">

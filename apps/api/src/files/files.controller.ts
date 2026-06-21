@@ -40,6 +40,17 @@ export class FilesController {
     return this.files.upload(file);
   }
 
+  /** Set the current user's profile photo (uploads + persists users.profile_picture). */
+  @Post('avatar')
+  @ResponseMessage('Profile photo updated')
+  @UseInterceptors(FileInterceptor('file'))
+  setAvatar(
+    @UploadedFile() file: UploadedFileType,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.files.setAvatar(userId, file);
+  }
+
   @Post('student-document')
   @ResponseMessage('Document uploaded successfully!')
   @UseInterceptors(FileInterceptor('file'))

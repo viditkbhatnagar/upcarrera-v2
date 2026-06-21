@@ -87,3 +87,52 @@ export const apiPatch = <T = unknown>(path: string, body?: unknown) =>
 export const apiPut = <T = unknown>(path: string, body?: unknown) =>
   request<T>(path, { method: "PUT", body });
 export const apiDelete = <T = unknown>(path: string) => request<T>(path, { method: "DELETE" });
+
+/**
+ * Multipart upload (FormData). Sends the Bearer token but lets the browser set
+ * the multipart Content-Type/boundary. Unwraps the same {status,message,data}
+ * envelope as request().
+ */
+export async function apiUpload<T = unknown>(path: string, formData: FormData): Promise<T> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(buildUrl(path), { method: "POST", headers, body: formData });
+  if (res.status === 401) {
+    clearSession();
+    if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+      window.location.assign("/login");
+    }
+    throw new ApiError("Your session has expired. Please log in again.", 401);
+  }
+  let payload: Envelope<T> | null = null;
+  try {
+    payload = (await res.json()) as Envelope<T>;
+  } catch {
+    payload = null;
+  }
+  if (!res.ok || !payload || payload.status === false) {
+    throw new ApiError(payload?.message ?? `Upload failed (${res.status})`, res.status);
+  }
+  return payload.data;
+}
+
+/**
+ * Fetch an auth-gated binary (e.g. GET /files/serve) with the Bearer token and
+ * return an object URL usable as an <img> src. The caller owns the URL and
+ * should URL.revokeObjectURL() it when no longer needed.
+ */
+export async function apiFileBlobUrl(
+  path: string,
+  query?: RequestOptions["query"],
+): Promise<string> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(buildUrl(path, query), { headers });
+  if (!res.ok) throw new ApiError(`Failed to load file (${res.status})`, res.status);
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
