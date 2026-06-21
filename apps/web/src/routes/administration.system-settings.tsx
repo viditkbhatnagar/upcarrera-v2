@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet, apiPatch, ApiError } from "@/lib/api";
-import { getUser, type SessionUser } from "@/lib/session";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiPatch, apiUpload, ApiError } from "@/lib/api";
+import { getUser, setSession, getToken, type SessionUser } from "@/lib/session";
+import { useAvatarUrl } from "@/hooks/use-avatar-url";
 import { toast } from "sonner";
 import {
   Camera,
@@ -41,9 +42,9 @@ export const Route = createFileRoute("/administration/system-settings")({
 /* ----------------------------------------------------------------------------
  * Settings — two tabs only: Profile + Security.
  *
- * Profile  : editable avatar (client-side preview only — there is no endpoint
- *            that persists users.profile_picture, so we never fake a save) and
- *            a READ-ONLY "Personal Information" card hydrated from GET /auth/me
+ * Profile  : editable avatar (uploads to POST /files/avatar, persists
+ *            users.profile_picture, and syncs the cached session user) and a
+ *            READ-ONLY "Personal Information" card hydrated from GET /auth/me
  *            (falls back to the cached session user for any missing field).
  * Security : a single "Change Password" form -> PATCH /users/:id/password
  *            ({ password }). New === Confirm and min length validated client-side.
@@ -208,10 +209,12 @@ function ProfileTab(props: ProfileTabProps) {
     dateOfJoining,
   } = props;
 
-  // Client-side photo preview. There is no endpoint that persists
-  // users.profile_picture, so the picked image is previewed only — never saved.
+  const queryClient = useQueryClient();
+
+  // Local preview of the just-picked file (shown instantly while/after upload).
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   // Revoke the object URL when it changes / on unmount to avoid leaks.
   useEffect(() => {
@@ -220,22 +223,59 @@ function ProfileTab(props: ProfileTabProps) {
     };
   }, [previewUrl]);
 
+  // Saved avatar (auth-gated) — used when there is no fresh local preview.
+  const savedAvatarUrl = useAvatarUrl(profilePicture);
+
   const handlePickPhoto = () => fileInputRef.current?.click();
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) {
       toast.error("Please choose an image file.");
       return;
     }
+    // Show the picked image immediately as a local preview.
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(URL.createObjectURL(file));
     // Reset so picking the same file again still fires onChange.
     e.target.value = "";
+
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const result = await apiUpload<{ profile_picture: string }>(
+        "/files/avatar",
+        fd,
+      );
+      toast.success("Profile photo updated");
+      // Persist into the cached session so the whole app sees the new photo.
+      const token = getToken();
+      const cached = getUser();
+      if (token && cached) {
+        setSession(token, {
+          ...cached,
+          profile_picture: result.profile_picture,
+        });
+      }
+      // Re-read GET /auth/me so this page reflects the saved value.
+      await queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Couldn't update photo",
+      );
+      // Drop the optimistic preview so we fall back to the saved/initials avatar.
+      setPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    } finally {
+      setUploading(false);
+    }
   };
 
-  const avatarSrc = previewUrl ?? profilePicture ?? undefined;
+  const avatarSrc = previewUrl ?? savedAvatarUrl ?? undefined;
 
   if (error) {
     return <ErrorState error={error} onRetry={onRetry} />;
@@ -275,10 +315,15 @@ function ProfileTab(props: ProfileTabProps) {
             <button
               type="button"
               onClick={handlePickPhoto}
+              disabled={uploading}
               aria-label="Change photo"
-              className="absolute -bottom-1 -right-1 inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-surface text-foreground shadow-card transition hover:bg-muted"
+              className="absolute -bottom-1 -right-1 inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-surface text-foreground shadow-card transition hover:bg-muted disabled:opacity-60"
             >
-              <Camera className="h-4 w-4" />
+              {uploading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Camera className="h-4 w-4" />
+              )}
             </button>
           </div>
 
@@ -300,15 +345,23 @@ function ProfileTab(props: ProfileTabProps) {
             type="button"
             variant="outline"
             onClick={handlePickPhoto}
+            disabled={uploading}
             className="w-full"
           >
-            <Camera className="mr-2 h-4 w-4" />
-            Change photo
+            {uploading ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Uploading…
+              </>
+            ) : (
+              <>
+                <Camera className="mr-2 h-4 w-4" />
+                Change photo
+              </>
+            )}
           </Button>
           <p className="text-center text-xs text-muted-foreground">
-            {previewUrl
-              ? "Preview only — photo upload coming soon."
-              : "Photo upload coming soon."}
+            JPG or PNG, up to 5MB
           </p>
         </CardContent>
       </Card>

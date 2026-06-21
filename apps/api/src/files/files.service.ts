@@ -14,6 +14,8 @@ import { contentTypeFor } from './content-type';
 /** Subdir under uploads/ for ad-hoc uploads, student docs and candidate docs. */
 const GENERIC_SUBDIR = 'files';
 const STUDENT_DOCS_SUBDIR = 'student_documents';
+const AVATAR_SUBDIR = 'avatars';
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 /** Mirrors the legacy 'canditates/documents' upload path (App/Upload_document). */
 const CANDIDATE_DOCS_SUBDIR = 'candidate_documents';
 
@@ -51,6 +53,35 @@ export class FilesService {
       original_name: file.originalname,
       size: file.size,
     };
+  }
+
+  /**
+   * Store an uploaded image AND set it as the current user's avatar
+   * (users.profile_picture = the relative storage key). The key is later served
+   * via GET /files/serve?item=base64(key). Images only, <= 5MB.
+   */
+  async setAvatar(userId: number, file?: UploadedFileType) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('No image uploaded');
+    }
+    if (!file.mimetype?.startsWith('image/')) {
+      throw new BadRequestException('Profile photo must be an image');
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      throw new BadRequestException('Profile photo must be 5MB or smaller');
+    }
+
+    const path = await this.storage.save(
+      file.buffer,
+      AVATAR_SUBDIR,
+      file.originalname,
+    );
+    await this.prisma.users.update({
+      where: { id: userId },
+      data: { profile_picture: path },
+    });
+
+    return { profile_picture: path };
   }
 
   /**
