@@ -10,7 +10,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { AinvoxService } from './ainvox.service';
+import { AinvoxService, AinvoxError } from './ainvox.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -90,12 +90,23 @@ export class AdminCallsController {
     const flowUrl = `${base}/api/calls/flow?token=${encodeURIComponent(flowToken)}&action=dial&to=${encodeURIComponent(studentPhone)}`;
     const callStatusUrl = `${base}/api/calls/status`;
 
-    const result = await this.ainvox.createCall({
-      phoneNumber: agentPhone,
-      callerId,
-      flowUrl,
-      callStatusUrl,
-    });
+    let result;
+    try {
+      result = await this.ainvox.createCall({
+        phoneNumber: agentPhone,
+        callerId,
+        flowUrl,
+        callStatusUrl,
+      });
+    } catch (err) {
+      // Surface Ainvox provider failures (e.g. 402 out-of-balance, 401 bad keys)
+      // as a clean, user-facing message instead of a generic 500.
+      if (err instanceof AinvoxError) {
+        this.logger.warn(`Ainvox createCall failed (${err.code}): ${err.message}`);
+        throw new ServiceUnavailableException(err.message);
+      }
+      throw err;
+    }
     return { uuid: result.uuid, agentPhone, studentPhone };
   }
 
