@@ -37,6 +37,7 @@ describe('Document route record-access (e2e)', () => {
   const appIds: number[] = [];
   const leadIds: number[] = [];
   const docRowIds: number[] = [];
+  const appDocIds: number[] = [];
   let docTypeId: number;
 
   const uniquePhone = () => `97${String(Date.now()).slice(-7)}${phoneSeq++ % 10}`;
@@ -278,6 +279,17 @@ describe('Document route record-access (e2e)', () => {
     if (leadIds.length) {
       await prisma.leads.deleteMany({ where: { id: { in: leadIds } } });
     }
+    if (appDocIds.length || appIds.length) {
+      await prisma.application_document.deleteMany({
+        where: {
+          OR: [
+            ...(appDocIds.length ? [{ id: { in: appDocIds } }] : []),
+            ...(appIds.length ? [{ application_id: { in: appIds } }] : []),
+            { label: { startsWith: TAG } },
+          ],
+        },
+      });
+    }
     if (appIds.length) {
       await prisma.qualification.deleteMany({ where: { application_id: { in: appIds } } });
       await prisma.applications.deleteMany({ where: { application_id: { in: appIds } } });
@@ -364,6 +376,75 @@ describe('Document route record-access (e2e)', () => {
         .get(`/api/files/student-document/${uploadedDocId}/download`)
         .set(authHeader(tokens.student));
       expect(student.status).toBe(403);
+    });
+  });
+
+  // ---- GET /files/application-document/:id/download --------------------------
+  //
+  // Application documents are application_document rows — a SEPARATE table and
+  // id-space from student_document — so they are served by the WS1-added, record-
+  // access-scoped twin route (HIGH 1). The documents list the detail page renders
+  // (GET /applications/:id/documents) exposes application_document.id, and the
+  // download must be permission + record-access scoped exactly like its student-
+  // document sibling: the owning counsellor downloads (200), an out-of-scope
+  // counsellor is refused at the access layer (403), and a Student is refused at
+  // the permission guard (403).
+
+  describe('GET /api/files/application-document/:id/download', () => {
+    let appDocId: number;
+
+    beforeAll(async () => {
+      // Put a real file on disk (the generic upload is authenticated-only), then point
+      // an application_document at it so the owner's download streams real bytes (200).
+      const up = await request(http)
+        .post('/api/files/upload')
+        .set(authHeader(tokens.counsellorA))
+        .attach('file', PDF, { filename: 'appdoc.pdf', contentType: 'application/pdf' });
+      expect(up.status).toBe(201);
+      const storedPath = up.body.data.path as string;
+      expect(storedPath).toBeTruthy();
+
+      const row = await prisma.application_document.create({
+        data: {
+          application_id: appA, // owned by counsellor A
+          file_path: storedPath,
+          label: `${TAG} appdoc`,
+          original_name: 'appdoc.pdf',
+          mime_type: 'application/pdf',
+          created_at: new Date(),
+        },
+      });
+      appDocId = row.id;
+      appDocIds.push(appDocId);
+    });
+
+    it('the owner (A) can download an application document (200)', async () => {
+      const mine = await request(http)
+        .get(`/api/files/application-document/${appDocId}/download`)
+        .set(authHeader(tokens.counsellorA));
+      expect(mine.status).toBe(200);
+    });
+
+    it('an out-of-scope counsellor (B) is refused (403)', async () => {
+      const theirs = await request(http)
+        .get(`/api/files/application-document/${appDocId}/download`)
+        .set(authHeader(tokens.counsellorB));
+      expect(theirs.status).toBe(403);
+      expect(String(theirs.body.message)).toBe('Access denied');
+    });
+
+    it('a Student token is refused by the permission guard (403)', async () => {
+      const student = await request(http)
+        .get(`/api/files/application-document/${appDocId}/download`)
+        .set(authHeader(tokens.student));
+      expect(student.status).toBe(403);
+    });
+
+    it('a missing application-document id is 404 for the owner', async () => {
+      const res = await request(http)
+        .get('/api/files/application-document/999999999/download')
+        .set(authHeader(tokens.counsellorA));
+      expect(res.status).toBe(404);
     });
   });
 

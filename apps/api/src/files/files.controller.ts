@@ -166,4 +166,54 @@ export class FilesController {
 
     stream.pipe(res);
   }
+
+  /**
+   * Stream the stored file for an application_document (the pre-conversion
+   * admissions document the detail page lists via GET /applications/:id/documents).
+   *
+   * DELIBERATE API ADDITION (WS1 frontend QA, HIGH 1): the committed
+   * GET /files/student-document/:id/download keys on
+   * student_document.student_document_id — a DIFFERENT table and id-space from
+   * application_document.id (what the documents list exposes) — so it genuinely
+   * cannot serve these rows. This is its record-access-scoped twin for application
+   * documents: it carries the SAME @RequirePermission('crm:applications.view') and
+   * delegates to FilesService.getApplicationDocumentForDownload, which runs the
+   * SAME RecordAccessService.assertCanView used across the workflow and 403s an
+   * out-of-scope caller BEFORE a single byte is streamed.
+   *
+   * Same non-passthrough @Res() + pipe pattern as the student-document twin, so it
+   * bypasses the global ResponseInterceptor (which would wrap the binary body in the
+   * {status,message,data} JSON envelope). Lookup / not-found / 403 errors are thrown
+   * BEFORE any byte is written, so they still flow through AllExceptionsFilter as the
+   * normal JSON error envelope.
+   */
+  @Get('application-document/:id/download')
+  @RequirePermission('crm:applications.view')
+  async downloadApplicationDocument(
+    @Param('id', ParseIntPipe) id: number,
+    @Res() res: Response,
+    @CurrentUser() user: AccessUser,
+  ): Promise<void> {
+    const { stream, filename } =
+      await this.files.getApplicationDocumentForDownload(id, user);
+
+    res.set({
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    });
+
+    stream.on('error', () => {
+      if (!res.headersSent) {
+        res.status(500).json({
+          status: false,
+          message: 'Failed to read file',
+          data: null,
+        });
+      } else {
+        res.destroy();
+      }
+    });
+
+    stream.pipe(res);
+  }
 }

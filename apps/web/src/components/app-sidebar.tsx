@@ -1,5 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useAccess } from "@/components/applications/use-access";
 import {
   LayoutDashboard,
   GraduationCap,
@@ -29,17 +30,23 @@ import {
 
 import { BrandLogo } from "@/components/brand/brand-logo";
 
-type SubItem = { to: string; label: string; icon: typeof LayoutDashboard };
+type SubItem = {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  search?: Record<string, unknown>;
+};
 
 type NavItem = {
   to: string;
   label: string;
   icon: typeof LayoutDashboard;
   badge?: string;
+  search?: Record<string, unknown>;
   children?: SubItem[];
 };
 
-const items: NavItem[] = [
+const BASE_ITEMS: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   {
     to: "/students",
@@ -117,6 +124,49 @@ const items: NavItem[] = [
   },
 ];
 
+/**
+ * Role-aware navigation, derived from GET /auth/me/access (role_key — never a
+ * hard-coded role id). Accounts gains Fees › Registration fees; Student Affairs
+ * gains a Verification queue shortcut. Admin / Super Admin see both. The server
+ * still enforces every route; this only hides what a role cannot use.
+ */
+function buildNav(roleKey: string | null | undefined): NavItem[] {
+  const isAccounts = roleKey === "accounts";
+  const isSA = roleKey === "student_affairs";
+  const isAdmin = roleKey === "admin" || roleKey === "super_admin";
+
+  let items = BASE_ITEMS.map((item) => {
+    if (item.to === "/fees" && (isAccounts || isAdmin)) {
+      return {
+        ...item,
+        children: [
+          ...(item.children ?? []),
+          {
+            to: "/fees/registration-verification",
+            label: "Registration fees",
+            icon: ShieldCheck,
+          },
+        ],
+      };
+    }
+    return item;
+  });
+
+  if (isSA || isAdmin) {
+    const verificationQueue: NavItem = {
+      to: "/students/applications",
+      label: "Verification queue",
+      icon: UserCheck,
+      search: { stage: "sa_verification" },
+    };
+    const studentsIndex = items.findIndex((i) => i.to === "/students");
+    const at = studentsIndex >= 0 ? studentsIndex + 1 : items.length;
+    items = [...items.slice(0, at), verificationQueue, ...items.slice(at)];
+  }
+
+  return items;
+}
+
 interface AppSidebarProps {
   collapsed: boolean;
   mobileOpen: boolean;
@@ -126,6 +176,8 @@ interface AppSidebarProps {
 export function AppSidebar({ collapsed, mobileOpen, onNavigate }: AppSidebarProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const access = useAccess();
+  const items = useMemo(() => buildNav(access.data?.role_key), [access.data?.role_key]);
 
   const toggleExpand = (key: string) => {
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -186,6 +238,7 @@ export function AppSidebar({ collapsed, mobileOpen, onNavigate }: AppSidebarProp
                   )}
                   <Link
                     to={item.to as any}
+                    search={item.search as any}
                     onClick={onNavigate}
                     className={[
                       "group flex items-center gap-3 rounded-xl text-sm font-medium transition-all",
@@ -246,6 +299,7 @@ export function AppSidebar({ collapsed, mobileOpen, onNavigate }: AppSidebarProp
                         <li key={child.to}>
                           <Link
                             to={child.to as any}
+                            search={child.search as any}
                             onClick={onNavigate}
                             className={[
                               "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-all",

@@ -211,6 +211,57 @@ export function useCounsellorOptions() {
   return { ...query, ...counsellors };
 }
 
+/* ---------------- Teams ---------------- */
+
+interface SalesTeamRow {
+  id: number;
+  name: string | null;
+}
+
+/**
+ * Sales teams (GET /sales-teams). Used by the Applications list's team filter,
+ * shown only to roles that can own more than one counsellor's rows.
+ */
+export function useTeamOptions() {
+  const query = useQuery({
+    queryKey: ["catalog", "sales-teams"],
+    queryFn: () => apiGet<Paged<SalesTeamRow>>("/sales-teams", { limit: CATALOG_LIMIT }),
+    staleTime: CATALOG_STALE_MS,
+  });
+  const options = useMemo(
+    () =>
+      toOptions(query.data?.items, (t) => t.id, (t) => t.name).sort((a, b) =>
+        a.label.localeCompare(b.label),
+      ),
+    [query.data],
+  );
+  return { ...query, options };
+}
+
+/* ---------------- Counsellor groups ---------------- */
+
+interface GroupRow {
+  id: number;
+  name: string | null;
+}
+
+/** Counsellor groups (GET /consultants/groups) — the top of the hierarchy. */
+export function useGroupOptions() {
+  const query = useQuery({
+    queryKey: ["catalog", "counsellor-groups"],
+    queryFn: () => apiGet<Paged<GroupRow>>("/consultants/groups", { limit: CATALOG_LIMIT }),
+    staleTime: CATALOG_STALE_MS,
+  });
+  const options = useMemo(
+    () =>
+      toOptions(query.data?.items, (g) => g.id, (g) => g.name).sort((a, b) =>
+        a.label.localeCompare(b.label),
+      ),
+    [query.data],
+  );
+  return { ...query, options };
+}
+
 /* ---------------- Lead sources ---------------- */
 
 interface LeadSourceRow {

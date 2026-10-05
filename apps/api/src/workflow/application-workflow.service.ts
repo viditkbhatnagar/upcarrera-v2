@@ -298,7 +298,7 @@ export class ApplicationWorkflowService {
       reviewed_by: d.reviewed_by,
       reviewed_at: d.reviewed_at,
       rejection_reason: d.rejection_reason,
-      download_url: `/api/files/application-documents/${d.id}/download`,
+      download_url: `/api/files/application-document/${d.id}/download`,
       created_at: d.created_at,
     }));
     return { items, total: items.length };

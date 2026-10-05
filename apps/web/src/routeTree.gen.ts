@@ -35,6 +35,7 @@ import { Route as UniversitiesCoursesRouteImport } from './routes/universities.c
 import { Route as StudentsStudentsRouteImport } from './routes/students.students'
 import { Route as StudentsApplicationsRouteImport } from './routes/students.applications'
 import { Route as FeesSummaryRouteImport } from './routes/fees.summary'
+import { Route as FeesRegistrationVerificationRouteImport } from './routes/fees.registration-verification'
 import { Route as FeesPaymentVerificationRouteImport } from './routes/fees.payment-verification'
 import { Route as FeesDashboardRouteImport } from './routes/fees.dashboard'
 import { Route as FeesCollectionRouteImport } from './routes/fees.collection'
@@ -191,6 +192,12 @@ const FeesSummaryRoute = FeesSummaryRouteImport.update({
   path: '/summary',
   getParentRoute: () => FeesRoute,
 } as any)
+const FeesRegistrationVerificationRoute =
+  FeesRegistrationVerificationRouteImport.update({
+    id: '/registration-verification',
+    path: '/registration-verification',
+    getParentRoute: () => FeesRoute,
+  } as any)
 const FeesPaymentVerificationRoute = FeesPaymentVerificationRouteImport.update({
   id: '/payment-verification',
   path: '/payment-verification',
@@ -343,6 +350,7 @@ export interface FileRoutesByFullPath {
   '/fees/collection': typeof FeesCollectionRoute
   '/fees/dashboard': typeof FeesDashboardRoute
   '/fees/payment-verification': typeof FeesPaymentVerificationRoute
+  '/fees/registration-verification': typeof FeesRegistrationVerificationRoute
   '/fees/summary': typeof FeesSummaryRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
@@ -388,6 +396,7 @@ export interface FileRoutesByTo {
   '/fees/collection': typeof FeesCollectionRoute
   '/fees/dashboard': typeof FeesDashboardRoute
   '/fees/payment-verification': typeof FeesPaymentVerificationRoute
+  '/fees/registration-verification': typeof FeesRegistrationVerificationRoute
   '/fees/summary': typeof FeesSummaryRoute
   '/universities/courses': typeof UniversitiesCoursesRoute
   '/universities/fee-structure': typeof UniversitiesFeeStructureRoute
@@ -438,6 +447,7 @@ export interface FileRoutesById {
   '/fees/collection': typeof FeesCollectionRoute
   '/fees/dashboard': typeof FeesDashboardRoute
   '/fees/payment-verification': typeof FeesPaymentVerificationRoute
+  '/fees/registration-verification': typeof FeesRegistrationVerificationRoute
   '/fees/summary': typeof FeesSummaryRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
@@ -491,6 +501,7 @@ export interface FileRouteTypes {
     | '/fees/collection'
     | '/fees/dashboard'
     | '/fees/payment-verification'
+    | '/fees/registration-verification'
     | '/fees/summary'
     | '/students/applications'
     | '/students/students'
@@ -536,6 +547,7 @@ export interface FileRouteTypes {
     | '/fees/collection'
     | '/fees/dashboard'
     | '/fees/payment-verification'
+    | '/fees/registration-verification'
     | '/fees/summary'
     | '/universities/courses'
     | '/universities/fee-structure'
@@ -585,6 +597,7 @@ export interface FileRouteTypes {
     | '/fees/collection'
     | '/fees/dashboard'
     | '/fees/payment-verification'
+    | '/fees/registration-verification'
     | '/fees/summary'
     | '/students/applications'
     | '/students/students'
@@ -806,6 +819,13 @@ declare module '@tanstack/react-router' {
       path: '/summary'
       fullPath: '/fees/summary'
       preLoaderRoute: typeof FeesSummaryRouteImport
+      parentRoute: typeof FeesRoute
+    }
+    '/fees/registration-verification': {
+      id: '/fees/registration-verification'
+      path: '/registration-verification'
+      fullPath: '/fees/registration-verification'
+      preLoaderRoute: typeof FeesRegistrationVerificationRouteImport
       parentRoute: typeof FeesRoute
     }
     '/fees/payment-verification': {
@@ -1040,6 +1060,7 @@ interface FeesRouteChildren {
   FeesCollectionRoute: typeof FeesCollectionRoute
   FeesDashboardRoute: typeof FeesDashboardRoute
   FeesPaymentVerificationRoute: typeof FeesPaymentVerificationRoute
+  FeesRegistrationVerificationRoute: typeof FeesRegistrationVerificationRoute
   FeesSummaryRoute: typeof FeesSummaryRoute
   FeesIndexRoute: typeof FeesIndexRoute
 }
@@ -1048,6 +1069,7 @@ const FeesRouteChildren: FeesRouteChildren = {
   FeesCollectionRoute: FeesCollectionRoute,
   FeesDashboardRoute: FeesDashboardRoute,
   FeesPaymentVerificationRoute: FeesPaymentVerificationRoute,
+  FeesRegistrationVerificationRoute: FeesRegistrationVerificationRoute,
   FeesSummaryRoute: FeesSummaryRoute,
   FeesIndexRoute: FeesIndexRoute,
 }

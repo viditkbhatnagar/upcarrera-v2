@@ -281,6 +281,47 @@ export class FilesService {
   }
 
   /**
+   * Look up an application_document row and return it plus an open read stream for
+   * its stored file. This is the APPLICATION-document twin of
+   * getStudentDocumentForDownload: the two live in SEPARATE tables with SEPARATE
+   * id-spaces (student_document.student_document_id vs application_document.id), so
+   * one route cannot serve the other — the documents list the detail page renders
+   * (GET /applications/:id/documents) is application_document rows, keyed by their
+   * own id.
+   *
+   * AUTHENTICATED (global JwtAuthGuard) AND record-access scoped: unlike the
+   * overloaded student_document.application_id, application_document.application_id
+   * is ALWAYS a real applications.application_id, so the caller must be able to VIEW
+   * that application — RecordAccessService.assertCanView (the SAME authorizer
+   * assertCanAccessDocumentRow applies to application/student docs) 403s out-of-scope
+   * BEFORE any byte is streamed, so a document id can no longer be guessed to pull
+   * another applicant's Aadhaar/marksheet. The controller additionally carries
+   * @RequirePermission('crm:applications.view').
+   */
+  async getApplicationDocumentForDownload(id: number, user: AccessUser) {
+    const document = await this.prisma.application_document.findFirst({
+      where: { id, deleted_at: null },
+    });
+
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    // Record-access: 403 unless the caller may view the owning application.
+    await this.access.assertCanView(user, document.application_id);
+
+    if (!document.file_path) {
+      throw new NotFoundException('Document has no stored file');
+    }
+
+    const stream = await this.storage.streamPath(document.file_path);
+    const filename =
+      document.original_name ?? this.storage.basename(document.file_path);
+
+    return { document, stream, filename };
+  }
+
+  /**
    * SECURE port of the legacy CI4 FileController::serveFile.
    *
    * Legacy behaviour: `?item=<base64>` was base64-decoded to a path RELATIVE to
