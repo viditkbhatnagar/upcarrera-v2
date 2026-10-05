@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -10,14 +11,42 @@ import { CreateCandidateDocumentDto } from './dto/create-candidate-document.dto'
 import { UpdateCandidateDocumentDto } from './dto/update-candidate-document.dto';
 import { UploadedFileType } from './uploaded-file.type';
 import { contentTypeFor } from './content-type';
+import {
+  AccessUser,
+  RecordAccessService,
+} from '../workflow/record-access.service';
+import {
+  CANDIDATE_DOCS_SUBDIR,
+  candidateDocFileWhereOr,
+  isCandidateDocFile,
+} from '../common/candidate-doc';
 
 /** Subdir under uploads/ for ad-hoc uploads, student docs and candidate docs. */
 const GENERIC_SUBDIR = 'files';
 const STUDENT_DOCS_SUBDIR = 'student_documents';
 const AVATAR_SUBDIR = 'avatars';
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
-/** Mirrors the legacy 'canditates/documents' upload path (App/Upload_document). */
-const CANDIDATE_DOCS_SUBDIR = 'candidate_documents';
+// CANDIDATE_DOCS_SUBDIR (where candidate docs are written) and the candidate-doc
+// discriminator live in common/candidate-doc.ts — the ONE source of truth shared
+// with RecordAccessService (the document-row authorizer) and StudentProfileService
+// (the profile read), so no route can drift on what counts as a candidate doc.
+
+/**
+ * Upload subdirs that the unscoped GET /files/serve may stream. These are
+ * public-by-design: avatars (POST /files/avatar) and the generic upload dir
+ * (POST /files/upload, which the counsellor-create screen uses for profile
+ * photos — see use-avatar-url.ts). SENSITIVE document dirs (student_documents/,
+ * candidate_documents/, application_payments/ proofs, KYC) are deliberately NOT
+ * in this allow-list: they are served ONLY through the record-access-scoped
+ * download routes (GET /files/student-document/:id/download and the candidate
+ * twin), so a client-supplied path can no longer pull another owner's
+ * Aadhaar/marksheet/payment proof. Allow-list (fail-closed) rather than deny-list
+ * so any future subdir is refused until it is explicitly declared public.
+ */
+const PUBLIC_SERVE_SUBDIRS: ReadonlySet<string> = new Set([
+  AVATAR_SUBDIR,
+  GENERIC_SUBDIR,
+]);
 
 /**
  * File upload + secure download service.
@@ -31,11 +60,29 @@ export class FilesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly access: RecordAccessService,
   ) {}
+
+  // Record-access for a student_document acted on BY ITS ROW id (download, and the
+  // candidate update/delete routes whose :id is the document id) is the SHARED,
+  // discriminator-aware RecordAccessService.assertCanAccessDocumentRow — the SAME
+  // method the students/applications document routes call — so the overloaded
+  // application_id column (a leads.id for candidate docs, a real
+  // applications.application_id for application/student docs) is resolved identically
+  // on every route and a candidate doc can never be reached as an application doc.
+  // The candidate-doc discriminator itself lives in common/candidate-doc.ts.
 
   /**
    * Generic upload: store the file and return its metadata. The returned `path`
    * is the relative storage key the caller persists/references later.
+   *
+   * ACCEPTED FOLLOW-UP (not fixed here): POST /files/upload carries no permission
+   * slug and its GENERIC_SUBDIR (files/) is on the /files/serve public allow-list.
+   * This is the pre-existing generic-upload pattern and the counsellor-create
+   * profile-photo source (see use-avatar-url.ts): it is authenticated-only (global
+   * JwtAuthGuard), writes nothing to the student_document table and touches no
+   * sensitive document dir, so it is not part of this document-integrity fix.
+   * Worth a later dedicated pass (add an explicit slug / tighten the generic dir).
    */
   async upload(file?: UploadedFileType) {
     if (!file?.buffer?.length) {
@@ -100,9 +147,10 @@ export class FilesService {
    */
   async createStudentDocument(
     dto: CreateStudentDocumentDto,
-    userId: number,
+    user: AccessUser,
     file?: UploadedFileType,
   ) {
+    const userId = Number(user.userId ?? user.id);
     if (!file?.buffer?.length) {
       throw new BadRequestException('No file uploaded');
     }
@@ -126,6 +174,42 @@ export class FilesService {
       throw new NotFoundException('Document type not found');
     }
 
+    // Scope the write BEFORE touching disk: never blindly trust the client-supplied
+    // student_id / application_id. When an application_id is supplied the caller
+    // must be able to view THAT application; otherwise resolve the student's owning
+    // application and scope to it. Fail closed (403) when nothing resolves, so a
+    // counsellor cannot attach a document to another owner's applicant.
+    let effectiveStudentId: number | null = dto.student_id;
+    if (dto.application_id != null) {
+      // The caller must be able to view THAT application (403 out of scope)...
+      await this.access.assertCanView(user, dto.application_id);
+      // ...AND the supplied student_id must be consistent with it. A converted
+      // application owns exactly one student, so an owner of application X can no
+      // longer stamp another owner's student onto {application_id: X, student_id:
+      // victim} — a mismatch is rejected (400). A not-yet-converted application has
+      // no student to attribute to, so the doc is stored UNATTRIBUTED (student_id =
+      // null) and the convert step stamps the real id later (see convertApplication
+      // student_document.updateMany), rather than trusting the client value.
+      const linkedStudentId = await this.access.resolveApplicationStudentId(
+        dto.application_id,
+      );
+      if (linkedStudentId != null && linkedStudentId !== dto.student_id) {
+        throw new BadRequestException(
+          'student_id does not belong to the supplied application',
+        );
+      }
+      effectiveStudentId = linkedStudentId;
+    } else {
+      const applicationId = await this.access.resolveDocumentApplicationId({
+        application_id: null,
+        student_id: dto.student_id,
+      });
+      if (applicationId == null) {
+        throw new ForbiddenException('Access denied');
+      }
+      await this.access.assertCanView(user, applicationId);
+    }
+
     const path = await this.storage.save(
       file.buffer,
       STUDENT_DOCS_SUBDIR,
@@ -134,20 +218,28 @@ export class FilesService {
 
     const now = new Date();
 
-    const document = await this.prisma.$transaction(async (tx) => {
-      return tx.student_document.create({
-        data: {
-          label: docType.title ?? null,
-          file: path,
-          student_id: dto.student_id,
-          application_id: dto.application_id ?? null,
-          created_by: userId,
-          created_at: now,
-          updated_by: userId,
-          updated_at: now,
-        },
+    // The disk write cannot join the DB transaction, so if the insert throws, roll
+    // the orphaned file back off disk (storage.delete is a best-effort no-op when it
+    // is already gone) — a rejected write must leave no stored proof behind.
+    const document = await this.prisma
+      .$transaction((tx) =>
+        tx.student_document.create({
+          data: {
+            label: docType.title ?? null,
+            file: path,
+            student_id: effectiveStudentId,
+            application_id: dto.application_id ?? null,
+            created_by: userId,
+            created_at: now,
+            updated_by: userId,
+            updated_at: now,
+          },
+        }),
+      )
+      .catch(async (err) => {
+        await this.storage.delete(path);
+        throw err;
       });
-    });
 
     return {
       document,
@@ -159,15 +251,14 @@ export class FilesService {
 
   /**
    * Look up a student_document row and return the row plus an open read stream
-   * for its stored file. AUTHENTICATED via the global JwtAuthGuard — unlike the
-   * legacy open serve.
-   *
-   * TODO(ownership): scope access by the acting user's role/relationship to the
-   * student (telecaller/institution/admin) once the RBAC port lands. For now any
-   * authenticated user may download; this is still strictly tighter than the
-   * legacy unauthenticated FileController::serveFile.
+   * for its stored file. AUTHENTICATED via the global JwtAuthGuard AND scoped:
+   * the caller must be able to VIEW the owning application/lead, so leaking a
+   * student's Aadhaar/marksheet by guessing a document id is no longer possible
+   * (the controller carries @RequirePermission('crm:applications.view')). The
+   * scope check runs BEFORE any byte is streamed, so a 403/404 still flows through
+   * AllExceptionsFilter as the normal JSON error envelope.
    */
-  async getStudentDocumentForDownload(id: number) {
+  async getStudentDocumentForDownload(id: number, user: AccessUser) {
     const document = await this.prisma.student_document.findFirst({
       where: { student_document_id: id, deleted_at: null },
     });
@@ -175,6 +266,10 @@ export class FilesService {
     if (!document) {
       throw new NotFoundException('Document not found');
     }
+
+    // Record-access: 403 unless the caller may view the owning application/lead.
+    await this.access.assertCanAccessDocumentRow(user, document);
+
     if (!document.file) {
       throw new NotFoundException('Document has no stored file');
     }
@@ -240,6 +335,19 @@ export class FilesService {
       throw new NotFoundException('File not found');
     }
 
+    // RECORD-ACCESS BOUNDARY: this route is unscoped (no slug, no owner check), so
+    // it may ONLY stream public-by-design subdirs. The first path segment must be
+    // allow-listed; anything else — notably the sensitive document dirs
+    // (student_documents/, candidate_documents/, application_payments/, KYC) — is
+    // refused with a 404 (same shape as a missing file, so existence is not
+    // revealed). Those documents are served only via the record-access-scoped
+    // download routes, so a client-supplied path can no longer leak another owner's
+    // Aadhaar/marksheet/payment proof even though such paths are exposed elsewhere.
+    const [subdir] = relativePath.split(/[\\/]/);
+    if (!PUBLIC_SERVE_SUBDIRS.has(subdir)) {
+      throw new NotFoundException('File not found');
+    }
+
     // streamPath -> resolveAbsolute enforces the uploads-root prefix check and
     // throws NotFound for anything that escapes the root or does not exist.
     const stream = await this.storage.streamPath(relativePath);
@@ -264,11 +372,32 @@ export class FilesService {
    * GET /candidates/:id/documents — list a candidate's (lead's) documents.
    * Legacy: Upload_document::index() -> get(['candidate_id' => $id]).
    */
-  async listCandidateDocuments(candidateId: number) {
-    await this.assertCandidateExists(candidateId);
+  async listCandidateDocuments(candidateId: number, user: AccessUser) {
+    const candidate = await this.assertCandidateExists(candidateId);
 
+    // Record-access: the candidate docs expose stored file paths + labels, so the
+    // caller must be able to access this lead (403 otherwise). 'leaking marksheets
+    // is as bad as editing them' — the controller carries crm:applications.view.
+    await this.access.assertCanViewLead(user, candidate);
+
+    // COLLISION GUARD (see the ID-SPACE note below): student_document.application_id
+    // is overloaded — a candidate doc holds a leads.id, an application/student doc
+    // holds a real applications.application_id — and the two id-spaces can collide.
+    // So this list is restricted to rows genuinely created via the candidate path
+    // (stored under candidate_documents/, or the legacy canditates/ dir); an
+    // application document whose application_id merely EQUALS this lead id can no
+    // longer leak here with only a lead-ownership check. (Limitation: a legacy
+    // candidate doc stored under neither prefix is not listed — fail closed; no
+    // application document is ever exposed, which is the property that matters.)
     return this.prisma.student_document.findMany({
-      where: { application_id: candidateId, deleted_at: null },
+      where: {
+        application_id: candidateId,
+        deleted_at: null,
+        // Shared candidate-doc discriminator (common/candidate-doc.ts): restrict to
+        // rows genuinely created via the candidate path, so an application document
+        // whose application_id merely equals this lead id cannot leak here.
+        OR: candidateDocFileWhereOr(),
+      },
       orderBy: { student_document_id: 'desc' },
     });
   }
@@ -284,18 +413,24 @@ export class FilesService {
   async createCandidateDocument(
     candidateId: number,
     dto: CreateCandidateDocumentDto,
-    userId: number,
+    user: AccessUser,
     file?: UploadedFileType,
   ) {
+    const userId = Number(user.userId ?? user.id);
     if (!file?.buffer?.length) {
       throw new BadRequestException('No file uploaded');
     }
 
     // Validate FK targets up-front so we fail before writing anything to disk.
-    const [, docType] = await Promise.all([
+    const [candidate, docType] = await Promise.all([
       this.assertCandidateExists(candidateId),
       this.findDocumentType(dto.document_type_id),
     ]);
+
+    // Scope the write to a lead the caller may access (403 otherwise). The row is
+    // keyed on the LEAD id via the application_id column (see the ID-SPACE note
+    // below), so we scope through lead ownership, not applications.
+    await this.access.assertCanViewLead(user, candidate);
 
     const path = await this.storage.save(
       file.buffer,
@@ -305,21 +440,37 @@ export class FilesService {
 
     const now = new Date();
 
-    const document = await this.prisma.$transaction(async (tx) => {
-      return tx.student_document.create({
-        data: {
-          // The legacy free-text `title` and `document_type` both collapse into
-          // the single `label` column that exists; the resolved type title wins.
-          label: docType.title ?? dto.title ?? null,
-          file: path,
-          application_id: candidateId,
-          created_by: userId,
-          created_at: now,
-          updated_by: userId,
-          updated_at: now,
-        },
+    // As in createStudentDocument, the disk write cannot join the DB transaction,
+    // so roll the orphaned file back off disk if the insert throws.
+    const document = await this.prisma
+      .$transaction((tx) =>
+        tx.student_document.create({
+          data: {
+            // The legacy free-text `title` and `document_type` both collapse into
+            // the single `label` column that exists; the resolved type title wins.
+            label: docType.title ?? dto.title ?? null,
+            file: path,
+            // ID-SPACE MISMATCH (deliberately preserved — see notFixed): the real
+            // application flow stores a real applications.application_id here, but a
+            // candidate doc stores a leads.id (there is NO candidate_id column, and
+            // listCandidateDocuments reads this column back as the lead id). Changing
+            // the column now would silently detach every existing candidate doc, so
+            // the legacy behaviour is kept and the row is scoped through the lead
+            // above instead. The candidate_documents/ file prefix is the
+            // discriminator that stops this overloaded id from colliding with a real
+            // application (see isCandidateDocFile / listCandidateDocuments).
+            application_id: candidateId,
+            created_by: userId,
+            created_at: now,
+            updated_by: userId,
+            updated_at: now,
+          },
+        }),
+      )
+      .catch(async (err) => {
+        await this.storage.delete(path);
+        throw err;
       });
-    });
 
     return {
       document,
@@ -337,10 +488,19 @@ export class FilesService {
   async updateCandidateDocument(
     documentId: number,
     dto: UpdateCandidateDocumentDto,
-    userId: number,
+    user: AccessUser,
     file?: UploadedFileType,
   ) {
+    const userId = Number(user.userId ?? user.id);
     const existing = await this.findCandidateDocument(documentId);
+
+    // Record-access: 403 unless the caller may access the owning application/lead.
+    // The :id is the DOCUMENT id, so this route can target ANY student_document
+    // row (a real applicant's / converted student's doc, not just a candidate's);
+    // assertCanAccessDocumentRow resolves whichever it is and scopes to it. The
+    // stored file is only ever replaced from freshly uploaded bytes below (a
+    // server-generated path via StorageService) — no client-supplied path is honoured.
+    await this.access.assertCanAccessDocumentRow(user, existing);
 
     const data: {
       label?: string | null;
@@ -361,13 +521,19 @@ export class FilesService {
       data.label = dto.title;
     }
 
-    // Replace the stored file only when a new one was actually attached.
+    // Replace the stored file only when a new one was actually attached. This route
+    // can target ANY student_document by its id, so PRESERVE the row's class: write
+    // the replacement under the SAME prefix the row already has — candidate rows stay
+    // under candidate_documents/, application/student rows stay under
+    // student_documents/. Saving every replacement under candidate_documents/ would
+    // flip a non-candidate row into looking like a candidate doc and corrupt the
+    // overloaded-id discriminator (common/candidate-doc.ts), so the class cannot be
+    // changed by an edit.
     if (file?.buffer?.length) {
-      data.file = await this.storage.save(
-        file.buffer,
-        CANDIDATE_DOCS_SUBDIR,
-        file.originalname,
-      );
+      const subdir = isCandidateDocFile(existing.file)
+        ? CANDIDATE_DOCS_SUBDIR
+        : STUDENT_DOCS_SUBDIR;
+      data.file = await this.storage.save(file.buffer, subdir, file.originalname);
     }
 
     return this.prisma.student_document.update({
@@ -381,8 +547,14 @@ export class FilesService {
    * Legacy: Upload_document::delete() hard-deleted; we soft-delete to match the
    * rest of this migration (deleted_at convention).
    */
-  async deleteCandidateDocument(documentId: number, userId: number) {
-    await this.findCandidateDocument(documentId);
+  async deleteCandidateDocument(documentId: number, user: AccessUser) {
+    const userId = Number(user.userId ?? user.id);
+    const existing = await this.findCandidateDocument(documentId);
+
+    // Record-access: 403 unless the caller may access the owning application/lead
+    // (same resolution as updateCandidateDocument — this route also acts on any
+    // student_document row by its id, so it must be scoped before the soft delete).
+    await this.access.assertCanAccessDocumentRow(user, existing);
 
     await this.prisma.student_document.update({
       where: { student_document_id: documentId },
@@ -406,11 +578,15 @@ export class FilesService {
     return docType;
   }
 
-  /** Ensure the candidate (lead) exists and is not soft-deleted, else 404. */
+  /**
+   * Ensure the candidate (lead) exists and is not soft-deleted, else 404. Returns
+   * the lead's ownership columns (created_by / telecaller_id) so the caller can run
+   * the lead record-access check (assertCanViewLead).
+   */
   private async assertCandidateExists(candidateId: number) {
     const candidate = await this.prisma.leads.findFirst({
       where: { id: candidateId, deleted_at: null },
-      select: { id: true },
+      select: { id: true, created_by: true, telecaller_id: true },
     });
     if (!candidate) {
       throw new NotFoundException('Candidate not found');

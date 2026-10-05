@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma, students } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeIndianMobile } from './indian-mobile';
+import { candidateDocFileWhereOr } from '../common/candidate-doc';
 
 /**
  * The read side of the student profile (QA ST01): the application the student
@@ -209,7 +210,13 @@ export class StudentProfileService {
   private async applicationByRecords(userId: number) {
     const [docs, quals] = await Promise.all([
       this.prisma.student_document.findMany({
-        where: { student_id: userId, application_id: { not: null } },
+        // Defensive: exclude candidate-prefixed rows so a stray lead doc can
+        // never drive the records-based application lookup (candidate-doc.ts).
+        where: {
+          student_id: userId,
+          application_id: { not: null },
+          OR: [{ file: null }, { NOT: { OR: candidateDocFileWhereOr() } }],
+        },
         select: { application_id: true },
       }),
       this.prisma.qualification.findMany({
@@ -281,7 +288,17 @@ export class StudentProfileService {
     // application_id. Followed only for a hard link: a contact-details match is
     // good enough to show the application, not to attach its files.
     if (application && application.link_basis !== 'contact') {
-      or.push({ application_id: application.application_id });
+      // NON-candidate rows only (MEDIUM): student_document.application_id is
+      // overloaded, so a DIFFERENT entity's candidate (lead) doc whose leads.id
+      // equals this application id must NOT be merged into the profile. Mirror the
+      // shared isCandidateDocFile discriminator exactly — a null file is NOT a
+      // candidate doc — so genuine application/student rows are kept and only
+      // candidate-prefixed rows are excluded. (common/candidate-doc.ts.) The
+      // student_id-linked rows above are kept regardless of file prefix.
+      or.push({
+        application_id: application.application_id,
+        OR: [{ file: null }, { NOT: { OR: candidateDocFileWhereOr() } }],
+      });
     }
 
     const rows = await this.prisma.student_document.findMany({

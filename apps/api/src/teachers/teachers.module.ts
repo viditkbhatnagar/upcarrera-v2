@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TeachersService } from './teachers.service';
+import { WorkflowCoreModule } from '../workflow/workflow-core.module';
 import {
   TeachersController,
   TeacherSchedulesController,
@@ -10,6 +11,7 @@ import {
 } from './teachers.controller';
 
 @Module({
+  imports: [WorkflowCoreModule],
   controllers: [
     TeachersController,
     TeacherSchedulesController,

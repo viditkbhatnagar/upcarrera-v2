@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -23,6 +24,11 @@ import {
   isIndianNational,
   storedPhoneVariants,
 } from './consultant-phone';
+import {
+  RecordAccessService,
+  AccessUser,
+} from '../workflow/record-access.service';
+import { UserStateService } from '../common/user-state.service';
 
 import {
   stripUserSecrets,
@@ -263,7 +269,39 @@ function targetTypeLabel(type: number): string {
  */
 @Injectable()
 export class ConsultantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly access: RecordAccessService,
+    private readonly userState: UserStateService,
+  ) {}
+
+  /**
+   * Flush the live-state + record-access caches for a user after an access-
+   * affecting write (status change / soft-delete), so a deactivated counsellor
+   * loses access within seconds rather than at the cache TTL (finding #9). The TTL
+   * stays a backstop. Mirrors PlatformService.invalidateUserCaches.
+   */
+  private invalidateUserCaches(userId: number): void {
+    this.userState.invalidate(userId);
+    this.access.invalidate(userId);
+  }
+
+  /**
+   * 403 unless `user` may view consultant `id`'s records, scoped exactly like
+   * application record access (CRITIQUE #2): super_admin/admin -> any; a counsellor
+   * -> only their own id; a team leader/manager -> their team/group member ids.
+   * Any other role (accounts, student affairs, student, telecaller ...) is denied,
+   * so a bare JWT can no longer read a counsellor's applications + student roster.
+   */
+  private async assertCanViewConsultant(user: AccessUser, id: number): Promise<void> {
+    const scope = await this.access.scopeFor(user);
+    const allowed =
+      scope.scope === 'all' ||
+      (scope.scope === 'owners' && scope.ids.includes(id));
+    if (!allowed) {
+      throw new ForbiddenException('Access denied');
+    }
+  }
 
   private normalizePagination(page?: number, limit?: number) {
     const safePage = page && page > 0 ? page : DEFAULT_PAGE;
@@ -900,6 +938,8 @@ export class ConsultantsService {
       );
     }
 
+    // An edit may flip users.status -> flush the access caches (finding #9).
+    this.invalidateUserCaches(id);
     return this.stripSecrets(consultant);
   }
 
@@ -912,6 +952,8 @@ export class ConsultantsService {
       where: { id },
       data: { deleted_at: now, deleted_by: actorUserId, updated_at: now },
     });
+    // Soft-deleted -> drop the cached live state + scope at once (finding #9).
+    this.invalidateUserCaches(id);
     return { id };
   }
 
@@ -1007,10 +1049,19 @@ export class ConsultantsService {
    * total_fee_revenue (port of Consultant::performance). Honours the same
    * search/status filters as the list endpoint.
    */
-  async performanceAll(query: ListConsultantsDto) {
+  async performanceAll(query: ListConsultantsDto, user: AccessUser) {
+    // Scope the roster the same way as the per-id route (CRITIQUE #2): admin sees
+    // every consultant, a counsellor only themselves, a leader/manager their team;
+    // any other role sees none. The @RequirePermission on the route already blocks
+    // students/telecallers, this stops an in-scope counsellor enumerating peers.
+    const scope = await this.access.scopeFor(user);
+    if (scope.scope !== 'all' && scope.scope !== 'owners') {
+      return { items: [], total: 0 };
+    }
     const where = {
       deleted_at: null,
       role_id: CONSULTANT_ROLE_ID,
+      ...(scope.scope === 'owners' ? { id: { in: scope.ids } } : {}),
       ...(query.search
         ? {
             OR: [
@@ -1058,7 +1109,10 @@ export class ConsultantsService {
    *   - the Group -> Team -> Counsellor chain and reports_to_name.
    * Every added field is additive; the original response keys are unchanged.
    */
-  async performanceOne(id: number) {
+  async performanceOne(id: number, user: AccessUser) {
+    // Row-level scope: a counsellor may only read their own profile; a leader/
+    // manager their team's; admin any. Out of scope -> 403 (CRITIQUE #2).
+    await this.assertCanViewConsultant(user, id);
     const consultant = await this.getConsultantOrThrow(id);
 
     // An application belongs to a counsellor through pipeline_user, falling back
@@ -1942,6 +1996,13 @@ export class ConsultantsService {
       ...rosterWrites,
     ]);
 
+    // A team move changes this counsellor's placement AND which rows the old/new
+    // team's leader + group manager may see — and those scopes are cached per
+    // VIEWER, so clear the record-access cache wholesale rather than guess every
+    // affected viewer (finding #9). The TTL stays a backstop.
+    this.userState.invalidate(consultant.id);
+    this.access.invalidate();
+
     const [decorated] = await this.decorateHierarchy([
       this.stripSecrets(await this.getConsultantOrThrow(consultantId)),
     ]);
@@ -1962,10 +2023,16 @@ export class ConsultantsService {
       if (!group) throw new NotFoundException('Counsellor group not found!');
     }
 
-    return this.prisma.sales_team.update({
+    const updated = await this.prisma.sales_team.update({
       where: { id: teamId },
       data: { group_id: groupId, updated_by: actorUserId, updated_at: new Date() },
     });
+
+    // Re-grouping a team changes which rows its group manager may see; that scope
+    // is cached per VIEWER, so clear the record-access cache wholesale (finding #9).
+    this.access.invalidate();
+
+    return updated;
   }
 
   /** Parse the legacy sales_team.members JSON into numeric ids, tolerating junk. */

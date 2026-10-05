@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
+import { RecordAccessService } from '../workflow/record-access.service';
+import { UserStateService } from '../common/user-state.service';
 import { CreateTeacherDto } from './dto/create-teacher.dto';
 import { UpdateTeacherDto } from './dto/update-teacher.dto';
 import { CreateScheduleDto } from './dto/create-schedule.dto';
@@ -62,7 +64,21 @@ const MS_PER_MINUTE = 60_000;
  */
 @Injectable()
 export class TeachersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly access: RecordAccessService,
+    private readonly userState: UserStateService,
+  ) {}
+
+  /**
+   * Flush the live-state + record-access caches after an access-affecting write
+   * (status change / soft-delete), so a deactivated teacher loses access within
+   * seconds rather than at the cache TTL (finding #9). The TTL stays a backstop.
+   */
+  private invalidateUserCaches(userId: number): void {
+    this.userState.invalidate(userId);
+    this.access.invalidate(userId);
+  }
 
   private normalizePagination(page?: number, limit?: number) {
     const safePage = page && page > 0 ? page : DEFAULT_PAGE;
@@ -222,6 +238,8 @@ export class TeachersService {
     }
 
     const teacher = await this.prisma.users.update({ where: { id }, data });
+    // An edit may flip users.status -> flush the access caches (finding #9).
+    this.invalidateUserCaches(id);
     return this.stripSecrets(teacher);
   }
 
@@ -233,6 +251,8 @@ export class TeachersService {
       where: { id },
       data: { deleted_at: now, updated_at: now },
     });
+    // Soft-deleted -> drop the cached live state + scope at once (finding #9).
+    this.invalidateUserCaches(id);
     return { id };
   }
 

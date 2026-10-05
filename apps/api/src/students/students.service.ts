@@ -1,13 +1,15 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   NotImplementedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, applications } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { candidateDocFileWhereOr } from '../common/candidate-doc';
 import { StudentProfileService } from './student-profile.service';
 import { CreateStudentDto } from './dto/create-student.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
@@ -35,6 +37,20 @@ import {
   assertApplicationReferences,
   changesProgramme,
 } from './application-references';
+import { AuditService } from '../workflow/audit.service';
+import { StageEngineService } from '../workflow/stage-engine.service';
+import { RecordAccessService, AccessUser, AccessScope } from '../workflow/record-access.service';
+import {
+  effectiveStage,
+  effectiveStageWhere,
+  stageNo,
+  allowedActions,
+  lmsPaidTo,
+  lmsPaymentMode,
+  Stage,
+  STAGES,
+} from '../workflow/stages';
+import { istYear } from '../workflow/ist-date';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -117,6 +133,23 @@ function formatApplicationId(createdAt: Date, applicationId: number): string {
   return `APP-${createdAt.getFullYear()}-${String(applicationId).padStart(6, '0')}`;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Whole days the application has been in its current stage. For NULL-stage legacy
+ * rows (no stage_entered_at) it falls back to updated_at, then created_at.
+ */
+function daysInStage(row: {
+  stage_entered_at: Date | null;
+  updated_at: Date | null;
+  created_at: Date | null;
+}): number {
+  const since = row.stage_entered_at ?? row.updated_at ?? row.created_at;
+  if (!since) return 0;
+  const diff = Date.now() - new Date(since).getTime();
+  return diff > 0 ? Math.floor(diff / MS_PER_DAY) : 0;
+}
+
 /** bcrypt cost factor, matching the rest of the codebase. */
 const BCRYPT_ROUNDS = 10;
 
@@ -129,6 +162,9 @@ export class StudentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly profile: StudentProfileService,
+    private readonly audit: AuditService,
+    private readonly stageEngine: StageEngineService,
+    private readonly access: RecordAccessService,
   ) {}
 
   // GET /students — paginate + optional filters.
@@ -754,9 +790,21 @@ export class StudentsService {
   // it), not the students PK this route takes. Matching the PK returned another
   // student's documents, or none (QA ST01). Rows uploaded with the linked
   // application before conversion are included too.
-  async getStudentDocuments(id: number) {
-    const student = await this.getStudent(id);
-    return this.profile.documents(student);
+  async getStudentDocuments(id: number, user: AccessUser) {
+    const student = await this.getStudent(id); // 404 if missing/soft-deleted
+
+    // The rows carry stored file paths, so scope this read the SAME way as the other
+    // document routes. When the student links to an application, the caller must be
+    // able to VIEW that application; otherwise fall back to the student
+    // record-access rule (owner/team/admin). 403 out of scope — never an unscoped
+    // branch. The resolved link is reused so documents() does not re-resolve it.
+    const linked = await this.profile.linkedApplication(student);
+    if (linked) {
+      await this.access.assertCanView(user, linked.application_id);
+    } else {
+      await this.access.assertCanViewStudent(user, student);
+    }
+    return this.profile.documents(student, linked);
   }
 
   // GET /students/:id/qualifications
@@ -798,6 +846,7 @@ export class StudentsService {
    */
   private async decorateApplications<
     T extends {
+      application_id: number;
       pipeline_user: number | null;
       created_by: number | null;
       course_id: number | null;
@@ -810,6 +859,11 @@ export class StudentsService {
       is_converted: number | null;
       is_archived: boolean;
       status: boolean | null;
+      stage: string | null;
+      stage_entered_at: Date | null;
+      hold_at: Date | null;
+      updated_at: Date | null;
+      created_at: Date | null;
     },
   >(rows: T[]) {
     if (rows.length === 0) return [];
@@ -930,6 +984,14 @@ export class StudentsService {
             : null,
         // Human lifecycle label.
         status_label: applicationStatusLabel(row),
+        // Phase 1 stage engine (migration 002): the effective stage, its number
+        // (1-7, 0 for the terminal rejected), whether it is on hold, and how long
+        // it has sat in the current stage.
+        stage: effectiveStage(row),
+        stage_no: stageNo(effectiveStage(row)),
+        stage_source: row.stage ? 'workflow' : 'legacy',
+        on_hold: row.hold_at != null,
+        days_in_stage: daysInStage(row),
       };
     });
   }
@@ -976,31 +1038,33 @@ export class StudentsService {
    * Verification Pending) have no column behind them and are reported as 0 rather
    * than guessed; they arrive with the Phase 1 stage engine.
    */
-  private async applicationStageCounts(where: Prisma.applicationsWhereInput) {
+  private async applicationStageCounts(
+    where: Prisma.applicationsWhereInput,
+  ): Promise<{ counts: Record<Stage, number>; on_hold: number }> {
     const groups = await this.prisma.applications.groupBy({
-      by: ['is_converted', 'is_archived', 'status'],
+      by: ['stage', 'is_converted', 'is_archived', 'status'],
       where,
       _count: { _all: true },
     });
 
-    const counts = {
-      'New Lead': 0,
-      'Form Pending': 0,
-      'Registration Fee Pending': 0,
-      'Registration Fee Paid': 0,
-      'Admin Verification Pending': 0,
-      Enrolled: 0,
-      Rejected: 0,
-    };
-
+    const counts = Object.fromEntries(STAGES.map((s) => [s, 0])) as Record<Stage, number>;
     for (const g of groups) {
-      const n = g._count._all;
-      if (g.is_converted === 1) counts.Enrolled += n;
-      else if (g.is_archived || g.status === false) counts.Rejected += n;
-      else counts['New Lead'] += n;
+      const s = effectiveStage({
+        stage: g.stage,
+        is_converted: g.is_converted,
+        is_archived: g.is_archived,
+        status: g.status,
+      });
+      counts[s] += g._count._all;
     }
 
-    return counts;
+    // On Hold overlaps the stage cards (a held row keeps its stage), so it is a
+    // sibling of `counts`, never summed into it.
+    const on_hold = await this.prisma.applications.count({
+      where: { AND: [where, { hold_at: { not: null } }] },
+    });
+
+    return { counts, on_hold };
   }
 
   /**
@@ -1015,30 +1079,8 @@ export class StudentsService {
     stage: ApplicationStage | undefined,
   ): Prisma.applicationsWhereInput | undefined {
     if (!stage) return undefined;
-
-    const notConverted: Prisma.applicationsWhereInput = {
-      OR: [{ is_converted: null }, { is_converted: { not: 1 } }],
-    };
-
-    switch (stage) {
-      case 'Enrolled':
-        return { is_converted: 1 };
-      case 'Rejected':
-        return {
-          AND: [notConverted, { OR: [{ is_archived: true }, { status: false }] }],
-        };
-      case 'New Lead':
-        return {
-          AND: [
-            notConverted,
-            { is_archived: false },
-            { OR: [{ status: null }, { status: true }] },
-          ],
-        };
-      default:
-        // No column records this stage yet (Phase 1 stage engine) — it is empty.
-        return { application_id: { in: [] } };
-    }
+    // NULL-safe effective-stage predicate, shared with the counts and the engine.
+    return effectiveStageWhere(stage as Stage);
   }
 
   /**
@@ -1081,8 +1123,47 @@ export class StudentsService {
    * so the pipeline cards keep showing the whole funnel of the filtered set
    * while the table narrows to one stage.
    */
+  /** The display-counsellor predicate: pipeline_user, else created_by. */
+  private consultantFilter(ids: number[]): Prisma.applicationsWhereInput {
+    return {
+      OR: [
+        { pipeline_user: { in: ids } },
+        { pipeline_user: null, created_by: { in: ids } },
+      ],
+    };
+  }
+
+  /** users.id of every member of a team (users.team_id). */
+  private async teamMemberIds(teamId: number): Promise<number[]> {
+    const members = await this.prisma.users.findMany({
+      where: { team_id: teamId, deleted_at: null },
+      select: { id: true },
+    });
+    return members.map((m) => m.id);
+  }
+
+  /** users.id of the members and leaders of every team in a group. */
+  private async groupMemberIds(groupId: number): Promise<number[]> {
+    const teams = await this.prisma.sales_team.findMany({
+      where: { group_id: groupId, deleted_at: null },
+      select: { id: true, leader: true },
+    });
+    const teamIds = teams.map((t) => t.id);
+    const leaderIds = teams
+      .map((t) => Number(t.leader))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const members = teamIds.length
+      ? await this.prisma.users.findMany({
+          where: { team_id: { in: teamIds }, deleted_at: null },
+          select: { id: true },
+        })
+      : [];
+    return [...new Set([...members.map((m) => m.id), ...leaderIds])];
+  }
+
   private async applicationListWhere(
     query: ListApplicationsDto,
+    user: AccessUser,
   ): Promise<Prisma.applicationsWhereInput> {
     const and: Prisma.applicationsWhereInput[] = [];
 
@@ -1095,31 +1176,42 @@ export class StudentsService {
     if (query.course_id != null) and.push({ course_id: query.course_id });
     if (query.session_id != null) and.push({ session_id: query.session_id });
 
-    // The counsellor the list displays: pipeline_user, else created_by.
-    if (query.consultant_id != null) {
-      and.push({
-        OR: [
-          { pipeline_user: query.consultant_id },
-          { pipeline_user: null, created_by: query.consultant_id },
-        ],
-      });
+    const counsellorId = query.consultant_id ?? query.counsellor_id;
+    if (counsellorId != null) and.push(this.consultantFilter([counsellorId]));
+    if (query.team_id != null) {
+      and.push(this.consultantFilter(await this.teamMemberIds(query.team_id)));
+    }
+    if (query.group_id != null) {
+      and.push(this.consultantFilter(await this.groupMemberIds(query.group_id)));
     }
 
-    return and.length > 0 ? { deleted_at: null, AND: and } : { deleted_at: null };
+    if (query.on_hold === 'true') and.push({ hold_at: { not: null } });
+    if (query.followup_due === 'true') {
+      and.push({ hold_at: { not: null }, hold_followup_date: { lte: new Date() } });
+    }
+    if (query.date_from) and.push({ created_at: { gte: new Date(query.date_from) } });
+    if (query.date_to) and.push({ created_at: { lte: new Date(query.date_to) } });
+
+    // Record access (QA AP04): rows are ANDed with the caller's scope. Admin /
+    // Super Admin -> {} (no restriction); unknown roles -> matches nothing.
+    const scope = await this.access.scopeFor(user);
+    and.push(this.access.scopeWhere(scope));
+
+    return { deleted_at: null, AND: and };
   }
 
-  async listApplications(query: ListApplicationsDto) {
+  async listApplications(query: ListApplicationsDto, user: AccessUser) {
     const page = query.page ?? DEFAULT_PAGE;
     const limit = query.limit ?? DEFAULT_LIMIT;
     const skip = (page - 1) * limit;
 
-    const filtered = await this.applicationListWhere(query);
+    const filtered = await this.applicationListWhere(query, user);
     const stage = this.applicationStageFilter(query.stage);
     const where: Prisma.applicationsWhereInput = stage
       ? { AND: [filtered, stage] }
       : filtered;
 
-    const [rows, total, counts] = await Promise.all([
+    const [rows, total, stageCounts] = await Promise.all([
       this.prisma.applications.findMany({
         where,
         skip,
@@ -1134,7 +1226,14 @@ export class StudentsService {
 
     const items = await this.decorateApplications(rows);
 
-    return { items, total, page, limit, counts };
+    return {
+      items,
+      total,
+      page,
+      limit,
+      counts: stageCounts.counts,
+      on_hold: stageCounts.on_hold,
+    };
   }
 
   /**
@@ -1225,178 +1324,359 @@ export class StudentsService {
   }
 
   /**
-   * POST /applications/:id/convert — application -> student saga.
-   * Port of App/Controllers/App/Application::convert().
-   *
-   * One interactive transaction performs, atomically:
-   *   1. users            — a role_id=4 (student) account, password = bcrypt(phone)
-   *   2. student_payments — a 'Registration Fee' / 'Paid' row (legacy student_fee)
-   *   3. students         — the student profile row (student_id = new user id),
-   *                         with adm_pipeline derived from the creator's role
-   *   4. qualification    — stamp the new student_id onto the application's rows
-   *   5. student_document — stamp the new student_id onto the application's rows
-   *   6. applications     — flag converted (is_converted=1, converted_by, converted_at)
-   *
-   * Returns { user_id, student_id }.
+   * GET /applications/:id — the Summary payload: the decorated row plus the
+   * effective stage, hold block, owner and the actions THIS user may take
+   * (allowed_actions). Record access is enforced by ApplicationAccessGuard.
    */
-  async convertApplication(applicationId: number, actorUserId: number) {
-    const application = await this.getApplication(applicationId); // 404 if missing/deleted
+  async getApplicationDetail(applicationId: number, user: AccessUser) {
+    const application = await this.getApplication(applicationId);
+    const [decorated] = await this.decorateApplications([application]);
+    const scope = await this.access.scopeFor(user);
+    const ctx = this.access.actorContext(scope, application);
+    const actions = allowedActions(application, ctx);
 
-    if (application.is_converted === 1) {
+    const holdLog = application.hold_at
+      ? await this.prisma.application_stage_log.findFirst({
+          where: { application_id: applicationId, event: 'hold' },
+          orderBy: { id: 'desc' },
+        })
+      : null;
+
+    return {
+      ...decorated,
+      effective_stage: decorated.stage,
+      hold: application.hold_at
+        ? {
+            at: application.hold_at,
+            followup_date: application.hold_followup_date,
+            reason: holdLog?.reason ?? null,
+            by: holdLog?.actor_id ?? null,
+          }
+        : null,
+      owner: {
+        consultant_id: decorated.consultant_id,
+        consultant_name: decorated.consultant_name,
+      },
+      allowed_actions: actions,
+    };
+  }
+
+  /**
+   * Allocate the next gap-free STU-YYYY-NNNNNN inside the conversion transaction.
+   * The INSERT ... ON DUPLICATE KEY UPDATE ... LAST_INSERT_ID() idiom serialises
+   * concurrent conversions on the doc_sequence row lock (002 header). The counter
+   * column is `last_no` on the committed schema, the aligned dev DB and production
+   * (002's manual rename is applied), so it is used unconditionally — no
+   * information_schema probe. It is a fixed identifier, never user input, so the raw
+   * SQL is injection-free.
+   */
+  private async allocateStudentNo(tx: Prisma.TransactionClient): Promise<string> {
+    const year = istYear();
+    await tx.$executeRawUnsafe(
+      'INSERT INTO doc_sequence (seq_key, seq_year, `last_no`, updated_at) ' +
+        "VALUES ('STU', ?, LAST_INSERT_ID(1), UTC_TIMESTAMP()) " +
+        'ON DUPLICATE KEY UPDATE `last_no` = LAST_INSERT_ID(`last_no` + 1), updated_at = UTC_TIMESTAMP()',
+      year,
+    );
+    const rows = await tx.$queryRawUnsafe<Array<{ n: bigint }>>(
+      'SELECT LAST_INSERT_ID() AS n',
+    );
+    const n = Number(rows[0]?.n ?? 0);
+    return `STU-${year}-${String(n).padStart(6, '0')}`;
+  }
+
+  /**
+   * Validate the application against the NARROWER LMS target columns BEFORE the
+   * conversion transaction (002 header): users.name <= 100, users.email <= 50,
+   * students.state <= 60, students.source <= 50, and students.application_id /
+   * enrollment_id <= 50. Returns 400 naming the offending field so a counsellor
+   * fixes it before approval, rather than the write failing mid-transaction.
+   * (address is coerced to '' in runConversion — students.address is TEXT NOT
+   * NULL — so a NULL address can never fail the write and needs no gate here.)
+   */
+  assertConvertible(application: applications): void {
+    const limits: Array<[string, string | null, number]> = [
+      ['name', application.name, 100],
+      ['email', application.email, 50],
+      ['state', application.state, 60],
+      ['source', application.source, 50],
+      ['custom_application_id', application.custom_application_id, 50],
+      ['enrollment_id', application.enrollment_id, 50],
+    ];
+    for (const [field, value, max] of limits) {
+      if (typeof value === 'string' && value.length > max) {
+        throw new BadRequestException(
+          `Cannot convert: ${field} is ${value.length} characters but the LMS stores at most ${max}. Shorten it and try again.`,
+        );
+      }
+    }
+  }
+
+  /**
+   * The application -> student conversion, run INSIDE the caller's transaction
+   * (Student Affairs approval or the Super-Admin legacy convert). It is race-safe:
+   * it first CLAIMS the row (updateMany WHERE not-converted; 0 rows -> 409), so two
+   * concurrent approvals cannot create two students. The password is hashed by the
+   * caller BEFORE the transaction, the STU number is allocated under the row lock,
+   * the registration-fee ledger row is sourced from the verified application_payment
+   * (mapped to the LMS vocabulary), and consultant_id = pipeline_user ?? created_by.
+   */
+  async runConversion(
+    tx: Prisma.TransactionClient,
+    application: applications,
+    actor: { userId: number; roleId: number | null },
+    opts: {
+      hashedPassword: string;
+      payment?: {
+        amount: Prisma.Decimal | number;
+        paid_on: Date;
+        payment_mode: string;
+        paid_to: string;
+      } | null;
+      event: 'converted' | 'legacy_convert';
+      reason?: string | null;
+      /**
+       * Extra stage guard ANDed into the claim WHERE (CRITIQUE #4), so the claim
+       * only wins while the application is still at the stage the caller verified
+       * (sa_verification for SA approve; sa_verification or a NULL-stage row for
+       * the legacy /convert). Combined with hold_at: null it makes a concurrent
+       * send_back / hold beat a racing approve to 0 rows -> 409.
+       */
+      claimStageWhere?: Prisma.applicationsWhereInput;
+    },
+  ): Promise<{ user_id: number; student_id: number; student_no: string }> {
+    const now = new Date();
+    const fromStage = effectiveStage(application);
+
+    // Claim the row first — the single point that serialises conversions. Guarded
+    // by not-converted AND not-on-hold AND (when given) the caller's stage set, so
+    // a concurrent send_back / hold / approve can never double-process (CRITIQUE #4).
+    const claim = await tx.applications.updateMany({
+      where: {
+        AND: [
+          { application_id: application.application_id, deleted_at: null },
+          { OR: [{ is_converted: null }, { is_converted: { not: 1 } }] },
+          { hold_at: null },
+          ...(opts.claimStageWhere ? [opts.claimStageWhere] : []),
+        ],
+      },
+      data: {
+        is_converted: 1,
+        converted_by: actor.userId,
+        converted_at: now,
+        stage: 'converted',
+        stage_entered_at: now,
+        updated_by: actor.userId,
+        updated_at: now,
+      },
+    });
+    if (claim.count === 0) {
       throw new ConflictException('Application is already converted!');
     }
 
+    const studentNo = await this.allocateStudentNo(tx);
+
+    // 1. users row (role_id = 4 student); password pre-hashed by the caller.
+    const user = await tx.users.create({
+      data: {
+        name: application.name ?? null,
+        email: application.email ?? null,
+        code: application.code ?? null,
+        phone: application.phone ?? null,
+        university_id: application.university_id ?? null,
+        gender: application.gender ?? null,
+        country_id: application.country_id ?? null,
+        profile_picture: application.cropped_image ?? null,
+        dob: application.dob ?? null,
+        role_id: STUDENT_ROLE_ID,
+        status: 1,
+        password: opts.hashedPassword,
+        created_by: actor.userId,
+        updated_by: actor.userId,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+
+    // 2. registration-fee ledger row, sourced from the verified payment when
+    //    present (mapped to the LMS vocabulary), else the legacy columns.
+    const p = opts.payment ?? null;
+    await tx.student_payments.create({
+      data: {
+        installment_details: 'Registration Fee',
+        amount: p ? Math.round(Number(p.amount)) : (application.amount ?? null),
+        paid_date: p ? p.paid_on : (application.paid_date ?? null),
+        payment_mode: p ? lmsPaymentMode(p.payment_mode) : (application.payment_mode ?? null),
+        payment_to: p ? lmsPaidTo(p.paid_to) : (application.payment_to ?? null),
+        status: 'Paid',
+        student_id: user.id,
+        created_by: application.created_by ?? actor.userId,
+        created_at: application.created_at ?? now,
+      },
+    });
+
+    // adm_pipeline / pipeline_user keep the legacy creator-role derivation.
     const CONSULTANT_ROLE_ID = 6;
     const CLIENT_ROLE_ID = 8;
+    const creator = application.created_by
+      ? await tx.users.findUnique({
+          where: { id: application.created_by },
+          select: { role_id: true },
+        })
+      : null;
+    const creatorRoleId = creator?.role_id ?? null;
+    let admPipeline = application.adm_pipeline ?? 'consultant';
+    let pipelineUser = application.pipeline_user ?? null;
+    if (creatorRoleId === CONSULTANT_ROLE_ID) {
+      admPipeline = 'consultant';
+      pipelineUser = pipelineUser ?? application.created_by ?? null;
+    } else if (creatorRoleId === CLIENT_ROLE_ID) {
+      admPipeline = 'client';
+      pipelineUser = pipelineUser ?? application.created_by ?? null;
+    }
+    // CRITIQUE: the consultant is pipeline_user, else created_by.
+    const consultantId =
+      application.pipeline_user ?? application.created_by ?? actor.userId;
 
-    return this.prisma.$transaction(async (tx) => {
-      const now = new Date();
+    const age = application.dob
+      ? Math.floor(
+          (now.getTime() - new Date(application.dob).getTime()) /
+            (365.25 * 24 * 60 * 60 * 1000),
+        )
+      : null;
 
-      // Password defaults to the applicant's phone (legacy behaviour).
-      const hashedPassword = await bcrypt.hash(application.phone ?? '', 10);
-
-      // 1. users row (role_id = 4 student)
-      const user = await tx.users.create({
-        data: {
-          name: application.name ?? null,
-          email: application.email ?? null,
-          code: application.code ?? null,
-          phone: application.phone ?? null,
-          university_id: application.university_id ?? null,
-          gender: application.gender ?? null,
-          country_id: application.country_id ?? null,
-          profile_picture: application.cropped_image ?? null,
-          dob: application.dob ?? null,
-          role_id: STUDENT_ROLE_ID,
-          status: 1,
-          password: hashedPassword,
-          created_by: actorUserId,
-          updated_by: actorUserId,
-          created_at: now,
-          updated_at: now,
-        },
-      });
-
-      // 2. registration fee — legacy student_fee == student_payments table.
-      await tx.student_payments.create({
-        data: {
-          installment_details: 'Registration Fee',
-          amount: application.amount ?? null,
-          paid_date: application.paid_date ?? null,
-          payment_mode: application.payment_mode ?? null,
-          payment_to: application.payment_to ?? null,
-          status: 'Paid',
-          student_id: user.id,
-          created_by: application.created_by ?? actorUserId,
-          created_at: application.created_at ?? now,
-        },
-      });
-
-      // The admission pipeline depends on the role of whoever created the application.
-      const creator = application.created_by
-        ? await tx.users.findUnique({
-            where: { id: application.created_by },
-            select: { role_id: true },
-          })
-        : null;
-      const creatorRoleId = creator?.role_id ?? null;
-
-      let admPipeline = 'consultant';
-      let consultantId = application.created_by ?? actorUserId;
-      let pipelineUser = application.pipeline_user ?? null;
-
-      if (creatorRoleId === CONSULTANT_ROLE_ID) {
-        admPipeline = 'consultant';
-        consultantId = application.created_by ?? actorUserId;
-        pipelineUser = application.created_by ?? null;
-      } else if (creatorRoleId === CLIENT_ROLE_ID) {
-        admPipeline = 'client';
-        pipelineUser = application.created_by ?? null;
-      }
-
-      // Derive age in whole years from the applicant's DOB, when present.
-      const age = application.dob
-        ? Math.floor(
-            (now.getTime() - new Date(application.dob).getTime()) /
-              (365.25 * 24 * 60 * 60 * 1000),
-          )
-        : null;
-
-      // 3. students profile row (student_id = new user id)
-      await tx.students.create({
-        data: {
-          student_id: user.id,
-          age,
-          enrollment_id: application.enrollment_id ?? null,
-          application_id: application.custom_application_id ?? null,
-          abc_id: application.abc_id ?? null,
-          dob: application.dob ?? null,
-          nationality: application.nationality ?? null,
-          second_code:
-            application.second_code != null
-              ? String(application.second_code)
-              : null,
-          second_phone: application.second_phone ?? null,
-          whatsapp_no: application.whatsapp_no ?? null,
-          state: application.state ?? null,
-          district: application.district ?? null,
-          // address is a NOT NULL column.
-          address: application.address ?? '',
-          session_id: application.session_id ?? null,
-          source: application.source ?? null,
-          admission_status:
-            application.admission_status != null
-              ? Number(application.admission_status)
-              : null,
-          // consultant_id is a NOT NULL column.
-          consultant_id: consultantId,
-          specialisation_id: application.specialisation_id ?? null,
-          course_id: application.course_id ?? null,
-          enrollment_date: application.enrollment_date ?? null,
-          referred_by: application.created_by ?? null,
-          adm_pipeline: admPipeline,
-          pipeline_user: pipelineUser,
-          created_by: actorUserId,
-          updated_by: actorUserId,
-          created_at: now,
-          updated_at: now,
-        },
-      });
-
-      // 4. stamp the new student onto the application's qualification rows.
-      await tx.qualification.updateMany({
-        where: { application_id: application.application_id },
-        data: {
-          student_id: user.id,
-          updated_at: now,
-          updated_by: actorUserId,
-        },
-      });
-
-      // 5. stamp the new student onto the application's document rows.
-      await tx.student_document.updateMany({
-        where: { application_id: application.application_id },
-        data: {
-          student_id: user.id,
-          updated_at: now,
-          updated_by: actorUserId,
-        },
-      });
-
-      // 6. mark the application converted.
-      await tx.applications.update({
-        where: { application_id: application.application_id },
-        data: {
-          is_converted: 1,
-          converted_by: actorUserId,
-          converted_at: now,
-          updated_by: actorUserId,
-          updated_at: now,
-        },
-      });
-
-      return { user_id: user.id, student_id: user.id };
+    // 3. students profile row (student_id = new user id), with the STU number.
+    await tx.students.create({
+      data: {
+        student_id: user.id,
+        age,
+        enrollment_id: application.enrollment_id ?? null,
+        application_id: application.custom_application_id ?? null,
+        abc_id: application.abc_id ?? null,
+        dob: application.dob ?? null,
+        nationality: application.nationality ?? null,
+        second_code:
+          application.second_code != null ? String(application.second_code) : null,
+        second_phone: application.second_phone ?? null,
+        whatsapp_no: application.whatsapp_no ?? null,
+        state: application.state ?? null,
+        district: application.district ?? null,
+        address: application.address ?? '',
+        session_id: application.session_id ?? null,
+        source: application.source ?? null,
+        admission_status:
+          application.admission_status != null
+            ? Number(application.admission_status)
+            : null,
+        consultant_id: consultantId,
+        specialisation_id: application.specialisation_id ?? null,
+        course_id: application.course_id ?? null,
+        enrollment_date: application.enrollment_date ?? null,
+        referred_by: application.referred_by ?? application.created_by ?? null,
+        adm_pipeline: admPipeline,
+        pipeline_user: pipelineUser,
+        student_no: studentNo,
+        created_by: actor.userId,
+        updated_by: actor.userId,
+        created_at: now,
+        updated_at: now,
+      },
     });
+
+    // 4 + 5. stamp the new student onto the application's qualification/document rows.
+    await tx.qualification.updateMany({
+      where: { application_id: application.application_id },
+      data: { student_id: user.id, updated_at: now, updated_by: actor.userId },
+    });
+    // Only genuine application/student documents are stamped with the new
+    // student id. A candidate (lead) document whose lead id happens to equal
+    // this application_id must be left alone (its application_id is a lead id,
+    // not an application id) — candidate-doc.ts, mirroring documents().
+    await tx.student_document.updateMany({
+      where: {
+        application_id: application.application_id,
+        OR: [{ file: null }, { NOT: { OR: candidateDocFileWhereOr() } }],
+      },
+      data: { student_id: user.id, updated_at: now, updated_by: actor.userId },
+    });
+
+    // Domain timeline + audit for the conversion.
+    await this.stageEngine.logStageEvent(tx, {
+      applicationId: application.application_id,
+      event: opts.event,
+      fromStage,
+      toStage: 'converted',
+      actor: { userId: actor.userId, roleId: actor.roleId, onBehalf: opts.event === 'legacy_convert' },
+      reason: opts.reason ?? null,
+      refTable: 'users',
+      refId: user.id,
+    });
+    await this.audit.record(tx, {
+      action: 'create',
+      entity: 'students',
+      entityId: user.id,
+      applicationId: application.application_id,
+      actorId: actor.userId,
+      actorRoleId: actor.roleId,
+      context: { student_no: studentNo },
+    });
+
+    return { user_id: user.id, student_id: user.id, student_no: studentNo };
+  }
+
+  /**
+   * POST /applications/:id/convert — Super-Admin-only legacy direct conversion
+   * (was open to any JWT). Allowed only for a NULL-stage legacy row or one at
+   * sa_verification; everything else converts through Student Affairs approval.
+   */
+  async convertApplication(applicationId: number, user: AccessUser) {
+    const application = await this.getApplication(applicationId);
+    const actorUserId = Number(user.userId ?? user.id);
+    const scope = await this.access.scopeFor(user);
+
+    if (scope.roleKey !== 'super_admin') {
+      throw new ForbiddenException('Only a Super Admin can convert directly.');
+    }
+    if (application.is_converted === 1) {
+      throw new ConflictException('Application is already converted!');
+    }
+    const eff = effectiveStage(application);
+    const eligible =
+      (application.stage == null && eff === 'counsellor_review') ||
+      eff === 'sa_verification';
+    if (!eligible) {
+      throw new BadRequestException(
+        'This application must be converted through the Student Affairs approval flow.',
+      );
+    }
+
+    // Validate the narrow LMS target widths BEFORE the transaction (CRITIQUE #10).
+    this.assertConvertible(application);
+
+    // Hash BEFORE the transaction. Source the fee from a verified payment if any.
+    const hashedPassword = await bcrypt.hash(application.phone ?? '', BCRYPT_ROUNDS);
+    const payment = await this.prisma.application_payment.findFirst({
+      where: { application_id: applicationId, status: 'verified', deleted_at: null },
+      orderBy: { id: 'desc' },
+    });
+
+    // Legacy /convert claim guard (CRITIQUE #4): still at sa_verification, OR a
+    // NULL-stage active row (the only two states this override allows).
+    const claimStageWhere: Prisma.applicationsWhereInput = {
+      OR: [
+        effectiveStageWhere('sa_verification'),
+        { AND: [{ stage: null }, { is_archived: false }, { OR: [{ status: null }, { status: true }] }] },
+      ],
+    };
+
+    return this.prisma.$transaction((tx) =>
+      this.runConversion(
+        tx,
+        application,
+        { userId: actorUserId, roleId: scope.roleId },
+        { hashedPassword, payment, event: 'legacy_convert', claimStageWhere },
+      ),
+    );
   }
 
   // POST /students/:id/documents — document upload.
@@ -1778,16 +2058,30 @@ export class StudentsService {
   }
 
   /**
-   * PATCH /students/documents/:id — update a student_document's label / file.
+   * PATCH /students/documents/:id — update a student_document's label.
    * Ports App/Students::document_edit.
+   *
+   * CRITIQUE #1 (twin of PATCH /applications/documents/:id): the route param is the
+   * DOCUMENT id, so no per-row ApplicationAccessGuard applies. Resolve the owning
+   * application and run the SAME record-access check (403 out of scope / 404 when it
+   * cannot be resolved). The client-supplied `file` path is IGNORED: only metadata
+   * (label) changes here; the stored file is written by the upload path, never by a
+   * free-form body field.
    */
-  async updateDocument(documentId: number, dto: UpdateDocumentDto) {
-    await this.getDocumentOr404(documentId);
+  async updateDocument(documentId: number, dto: UpdateDocumentDto, user: AccessUser) {
+    const doc = await this.getDocumentOr404(documentId);
+
+    // Discriminator-aware record access shared with the files/candidates document
+    // routes: a candidate (lead) doc is scoped through its lead and an
+    // application/student doc through its application, so the overloaded
+    // application_id is never mistreated as the wrong id-space (candidate-doc.ts).
+    await this.access.assertCanAccessDocumentRow(user, doc);
+
     return this.prisma.student_document.update({
       where: { student_document_id: documentId },
       data: {
         ...(dto.label !== undefined ? { label: dto.label } : {}),
-        ...(dto.file !== undefined ? { file: dto.file } : {}),
+        updated_by: Number(user.userId ?? user.id),
         updated_at: new Date(),
       },
     });
@@ -1796,12 +2090,22 @@ export class StudentsService {
   /**
    * DELETE /students/documents/:id — soft-delete a student_document.
    * Ports App/Students::document_delete (the legacy model soft-deletes).
+   *
+   * CRITIQUE #1: same ownership resolution + record-access check as updateDocument,
+   * so a counsellor or Student token cannot delete another owner's document.
    */
-  async deleteDocument(documentId: number) {
-    await this.getDocumentOr404(documentId);
+  async deleteDocument(documentId: number, user: AccessUser) {
+    const doc = await this.getDocumentOr404(documentId);
+
+    // Discriminator-aware record access shared with the files/candidates document
+    // routes: a candidate (lead) doc is scoped through its lead and an
+    // application/student doc through its application, so the overloaded
+    // application_id is never mistreated as the wrong id-space (candidate-doc.ts).
+    await this.access.assertCanAccessDocumentRow(user, doc);
+
     await this.prisma.student_document.update({
       where: { student_document_id: documentId },
-      data: { deleted_at: new Date() },
+      data: { deleted_at: new Date(), deleted_by: Number(user.userId ?? user.id) },
     });
     return { student_document_id: documentId };
   }
@@ -2080,6 +2384,9 @@ export class StudentsService {
     }
     await assertApplicationReferences(this.prisma, dto, null);
 
+    // The creator's fresh role, for the 'created' stage-log actor (CRITIQUE #3).
+    const creatorScope = await this.access.scopeFor({ userId: actorUserId });
+
     return this.prisma.$transaction(async (tx) => {
       const created = await tx.applications.create({
         data: {
@@ -2088,8 +2395,17 @@ export class StudentsService {
           ...(enrollment_date !== undefined
             ? { enrollment_date: new Date(enrollment_date) }
             : {}),
+          // Keep the canonical mobile in sync on every write of phone (migration 002).
+          ...(dto.phone !== undefined
+            ? { phone_normalized: normalizeIndianMobile(dto.phone) }
+            : {}),
           is_converted: 0,
           is_archived: false,
+          // CRITIQUE #3: a new lead enters the workflow at stage 1 (lead_added), so
+          // stages 1-2 are reachable. Legacy/LMS rows stay NULL and derive their
+          // stage. The 'created' stage-log row below is the timeline's first entry.
+          stage: 'lead_added',
+          stage_entered_at: now,
           created_by: actorUserId,
           created_at: now,
         },
@@ -2119,6 +2435,15 @@ export class StudentsService {
         })),
       });
 
+      // Record the lead's creation on the stage timeline (actor = creator).
+      await this.stageEngine.logStageEvent(tx, {
+        applicationId: application.application_id,
+        event: 'created',
+        fromStage: null,
+        toStage: 'lead_added',
+        actor: { userId: actorUserId, roleId: creatorScope.roleId },
+      });
+
       return application;
     });
   }
@@ -2136,15 +2461,43 @@ export class StudentsService {
   }
 
   /**
-   * PATCH /applications/:id — generic bio/contact update.
-   * Ports the App/Application edit bio step.
+   * Lockdown for the legacy edit routes: a generic edit is allowed only while the
+   * application is at lead_added / form_pending, or for an Admin / Super Admin (who
+   * may act at any stage). Past that, fields change through /corrections or the
+   * stage actions. Returns the caller's scope so the handler can audit with the
+   * fresh role. `adminOnly` restricts the route to Admin / Super Admin outright.
+   */
+  private async assertEditableStage(
+    application: applications,
+    user: AccessUser,
+    opts: { adminOnly?: boolean } = {},
+  ): Promise<AccessScope> {
+    const scope = await this.access.scopeFor(user);
+    if (scope.scope === 'all') return scope; // Admin / Super Admin bypass.
+    if (opts.adminOnly) {
+      throw new ForbiddenException('Only an administrator can perform this action.');
+    }
+    const eff = effectiveStage(application);
+    if (eff !== 'lead_added' && eff !== 'form_pending') {
+      throw new ForbiddenException(
+        'This application can no longer be edited directly; use corrections or the stage actions.',
+      );
+    }
+    return scope;
+  }
+
+  /**
+   * PATCH /applications/:id — generic bio/contact update, locked to the early
+   * stages (or Admin). Every changed field is audited.
    */
   async updateApplication(
     applicationId: number,
     dto: UpdateApplicationDto,
-    actorUserId: number,
+    user: AccessUser,
   ) {
-    await this.getApplication(applicationId);
+    const before = await this.getApplication(applicationId);
+    const scope = await this.assertEditableStage(before, user);
+    const actorUserId = Number(user.userId ?? user.id);
 
     // Changing the mobile/email onto another application's is the same duplicate
     // the create path refuses (QA AP10). The row being edited is not its own match.
@@ -2160,32 +2513,59 @@ export class StudentsService {
     }
 
     const { dob, enrollment_date, ...rest } = dto;
-    return this.prisma.applications.update({
-      where: { application_id: applicationId },
-      data: {
-        ...rest,
-        ...(dob !== undefined ? { dob: new Date(dob) } : {}),
-        ...(enrollment_date !== undefined
-          ? { enrollment_date: new Date(enrollment_date) }
-          : {}),
-        updated_by: actorUserId,
-        updated_at: new Date(),
-      },
+    const changes = this.audit.diff(
+      before as unknown as Record<string, unknown>,
+      dto as unknown as Record<string, unknown>,
+      Object.keys(dto),
+      ['dob', 'enrollment_date'],
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.applications.update({
+        where: { application_id: applicationId },
+        data: {
+          ...rest,
+          ...(dob !== undefined ? { dob: new Date(dob) } : {}),
+          ...(enrollment_date !== undefined
+            ? { enrollment_date: new Date(enrollment_date) }
+            : {}),
+          ...(dto.phone !== undefined
+            ? { phone_normalized: normalizeIndianMobile(dto.phone) }
+            : {}),
+          updated_by: actorUserId,
+          updated_at: new Date(),
+        },
+      });
+      await this.audit.recordFieldChanges(
+        tx,
+        {
+          action: 'update',
+          entity: 'applications',
+          entityId: applicationId,
+          applicationId,
+          actorId: actorUserId,
+          actorRoleId: scope.roleId,
+        },
+        changes,
+      );
+      return updated;
     });
   }
 
   /**
-   * PATCH /applications/:id/course-fee — update the registration/course fee fields.
-   * Ports App/Application::edit_course_fee.
+   * PATCH /applications/:id/course-fee — Admin only now, since the registration
+   * fee goes through /payments. Ports App/Application::edit_course_fee.
    */
   async updateApplicationCourseFee(
     applicationId: number,
     dto: ApplicationCourseFeeDto,
-    actorUserId: number,
+    user: AccessUser,
   ) {
-    await this.getApplication(applicationId);
+    const existing = await this.getApplication(applicationId);
+    const scope = await this.assertEditableStage(existing, user, { adminOnly: true });
+    const actorUserId = Number(user.userId ?? user.id);
     const { paid_date, ...rest } = dto;
-    return this.prisma.applications.update({
+    const updated = await this.prisma.applications.update({
       where: { application_id: applicationId },
       data: {
         ...rest,
@@ -2194,48 +2574,77 @@ export class StudentsService {
         updated_at: new Date(),
       },
     });
+    await this.audit.record(this.prisma, {
+      action: 'update',
+      entity: 'applications',
+      entityId: applicationId,
+      applicationId,
+      field: 'course_fee',
+      actorId: actorUserId,
+      actorRoleId: scope.roleId,
+      context: { ...dto },
+    });
+    return updated;
   }
 
   /**
-   * PATCH /applications/:id/academic — update the academic/admission fields.
-   * Ports App/Application::academic.
-   *
-   * The legacy step force-set admission_status = 0 (false) on every save. The
-   * Edit Application dialog uses this route for ANY academic change (counsellor,
-   * source, intake), and convertApplication copies admission_status into the
-   * student, so the reset now happens only when the university or course really
-   * changes. References are checked (and a course/specialisation must fit the
-   * university/course it is paired with) before anything is written.
+   * PATCH /applications/:id/academic — update the academic/admission fields,
+   * locked to the early stages (or Admin). admission_status resets only when the
+   * programme (university/course) really changes.
    */
   async updateApplicationAcademic(
     applicationId: number,
     dto: ApplicationAcademicDto,
-    actorUserId: number,
+    user: AccessUser,
   ) {
     const existing = await this.getApplication(applicationId);
+    const scope = await this.assertEditableStage(existing, user);
+    const actorUserId = Number(user.userId ?? user.id);
     await assertApplicationReferences(this.prisma, dto, existing);
-    return this.prisma.applications.update({
-      where: { application_id: applicationId },
-      data: {
-        ...dto,
-        ...(changesProgramme(dto, existing) ? { admission_status: false } : {}),
-        updated_by: actorUserId,
-        updated_at: new Date(),
-      },
+    const changes = this.audit.diff(
+      existing as unknown as Record<string, unknown>,
+      dto as unknown as Record<string, unknown>,
+      Object.keys(dto),
+    );
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.applications.update({
+        where: { application_id: applicationId },
+        data: {
+          ...dto,
+          ...(changesProgramme(dto, existing) ? { admission_status: false } : {}),
+          updated_by: actorUserId,
+          updated_at: new Date(),
+        },
+      });
+      await this.audit.recordFieldChanges(
+        tx,
+        {
+          action: 'update',
+          entity: 'applications',
+          entityId: applicationId,
+          applicationId,
+          actorId: actorUserId,
+          actorRoleId: scope.roleId,
+        },
+        changes,
+      );
+      return updated;
     });
   }
 
   /**
    * PATCH /applications/:id/qualifications — bulk-update the application's
-   * qualification rows, matched by `qualification` label. Ports
-   * App/Application::edit_qualification.
+   * qualification rows, matched by `qualification` label, locked to the early
+   * stages (or Admin). Ports App/Application::edit_qualification.
    */
   async updateApplicationQualifications(
     applicationId: number,
     dto: UpdateQualificationsDto,
-    actorUserId: number,
+    user: AccessUser,
   ) {
-    await this.getApplication(applicationId);
+    const existing = await this.getApplication(applicationId);
+    await this.assertEditableStage(existing, user);
+    const actorUserId = Number(user.userId ?? user.id);
     const now = new Date();
 
     const results: Array<{ qualification: string; updated: number }> = [];
@@ -2266,24 +2675,71 @@ export class StudentsService {
   }
 
   /**
-   * DELETE /applications/:id — hard delete (legacy remove() removed the row).
-   * 404 if the application is missing/already deleted.
+   * DELETE /applications/:id — Admin-only SOFT delete now (was a hard delete).
+   * Sets deleted_at/deleted_by and audits it; 404 if missing/already deleted.
    */
-  async deleteApplication(applicationId: number) {
-    await this.getApplication(applicationId);
-    await this.prisma.applications.delete({
-      where: { application_id: applicationId },
+  async deleteApplication(applicationId: number, user: AccessUser) {
+    const existing = await this.getApplication(applicationId);
+    const scope = await this.assertEditableStage(existing, user, { adminOnly: true });
+    const actorUserId = Number(user.userId ?? user.id);
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.applications.update({
+        where: { application_id: applicationId },
+        data: { deleted_at: now, deleted_by: actorUserId, updated_at: now },
+      });
+      await this.audit.record(tx, {
+        action: 'delete',
+        entity: 'applications',
+        entityId: applicationId,
+        applicationId,
+        actorId: actorUserId,
+        actorRoleId: scope.roleId,
+      });
     });
+
     return { application_id: applicationId };
   }
 
   /**
-   * PATCH /applications/documents/:id — update an application document's label/file.
+   * PATCH /applications/documents/:id — update an application document's label.
    * Shares the student_document table with student docs. Ports
    * App/Application::document_edit.
+   *
+   * CRITIQUE #1: this route has no :id ApplicationAccessGuard (its param is the
+   * DOCUMENT id), so it MUST resolve the owning application and run the SAME
+   * record-access check as the application routes — otherwise a counsellor could
+   * edit another owner's (or a converted student's) document. The client-supplied
+   * `file` path is IGNORED here: only metadata (label) changes through this route;
+   * the stored file is written by the upload path, never by a free-form body field.
    */
-  async updateApplicationDocument(documentId: number, dto: UpdateDocumentDto) {
-    return this.updateDocument(documentId, dto);
+  async updateApplicationDocument(
+    documentId: number,
+    dto: UpdateDocumentDto,
+    user: AccessUser,
+  ) {
+    const doc = await this.prisma.student_document.findFirst({
+      where: { student_document_id: documentId, deleted_at: null },
+    });
+    if (!doc) {
+      throw new NotFoundException('Document not found!');
+    }
+
+    // Discriminator-aware record access shared with the files/candidates document
+    // routes: a candidate (lead) doc is scoped through its lead and an
+    // application/student doc through its application, so the overloaded
+    // application_id is never mistreated as the wrong id-space (candidate-doc.ts).
+    await this.access.assertCanAccessDocumentRow(user, doc);
+
+    return this.prisma.student_document.update({
+      where: { student_document_id: documentId },
+      data: {
+        ...(dto.label !== undefined ? { label: dto.label } : {}),
+        updated_by: Number(user.userId ?? user.id),
+        updated_at: new Date(),
+      },
+    });
   }
 
   /**

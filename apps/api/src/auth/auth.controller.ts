@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req } from '@nestjs/common';
+import type { Request } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { Public } from '../common/decorators/public.decorator';
@@ -13,8 +14,12 @@ export class AuthController {
   @Public()
   @Post('login')
   @ResponseMessage('Login successful!')
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto.username, dto.password);
+  login(@Body() dto: LoginDto, @Req() req: Request) {
+    // With `trust proxy` configured (main.ts), req.ip is the real client IP from
+    // the nearest X-Forwarded-For hop; never trust the raw header directly.
+    const ip = req.ip ?? req.socket?.remoteAddress ?? null;
+    const userAgent = (req.headers['user-agent'] as string | undefined) ?? null;
+    return this.auth.login(dto.username, dto.password, { ip, userAgent });
   }
 
   // Protected by the global JwtAuthGuard — returns the token's user snapshot.

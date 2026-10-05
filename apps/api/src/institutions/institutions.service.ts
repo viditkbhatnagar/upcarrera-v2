@@ -5,6 +5,8 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
+import { RecordAccessService } from '../workflow/record-access.service';
+import { UserStateService } from '../common/user-state.service';
 import { CreateInstitutionDto } from './dto/create-institution.dto';
 import { UpdateInstitutionDto } from './dto/update-institution.dto';
 import { ListInstitutionsDto } from './dto/list-institutions.dto';
@@ -31,7 +33,21 @@ const INSTITUTION_ROLE_ID = 5;
  */
 @Injectable()
 export class InstitutionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly access: RecordAccessService,
+    private readonly userState: UserStateService,
+  ) {}
+
+  /**
+   * Flush the live-state + record-access caches after an access-affecting write
+   * (soft-delete), so a removed institution user loses access within seconds rather
+   * than at the cache TTL (finding #9). The TTL stays a backstop.
+   */
+  private invalidateUserCaches(userId: number): void {
+    this.userState.invalidate(userId);
+    this.access.invalidate(userId);
+  }
 
   // GET /institutions — paginate + legacy search (name/phone/email) + university_id filter.
   async listInstitutions(query: ListInstitutionsDto) {
@@ -200,6 +216,8 @@ export class InstitutionsService {
       where: { id },
       data: { deleted_at: new Date(), deleted_by: userId },
     });
+    // Soft-deleted -> drop the cached live state + scope at once (finding #9).
+    this.invalidateUserCaches(id);
     return { id };
   }
 

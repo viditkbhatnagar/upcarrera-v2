@@ -1,12 +1,18 @@
 import 'reflect-metadata';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Trust the first proxy hop (nginx) so Express derives req.ip from the nearest
+  // X-Forwarded-For entry instead of the socket address. The login audit then
+  // records the real client IP via req.ip rather than a raw, spoofable header.
+  app.set('trust proxy', 1);
 
   // All routes are served under /api to match the legacy mobile contract.
   app.setGlobalPrefix('api');

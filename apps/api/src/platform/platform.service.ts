@@ -7,6 +7,8 @@ import {
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { UserStateService } from '../common/user-state.service';
+import { RecordAccessService } from '../workflow/record-access.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ResetPasswordDto, ChangePasswordDto } from './dto/password.dto';
@@ -39,7 +41,21 @@ export interface Paginated<T> {
  */
 @Injectable()
 export class PlatformService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly userState: UserStateService,
+    private readonly access: RecordAccessService,
+  ) {}
+
+  /**
+   * Flush the short-TTL caches that freeze a user's live role/status, so a
+   * role change or deactivation takes effect at once rather than after the TTL
+   * (CRITIQUE #13). The TTL stays as a backstop.
+   */
+  private invalidateUserCaches(userId: number): void {
+    this.userState.invalidate(userId);
+    this.access.invalidate(userId);
+  }
 
   private normalisePaging(page?: number, limit?: number) {
     const safePage = Number.isFinite(page) && (page as number) > 0 ? Math.floor(page as number) : DEFAULT_PAGE;
@@ -121,6 +137,8 @@ export class PlatformService {
         updated_at: now,
       },
     });
+    // A role_id or status change here must not wait out the guards' TTL.
+    this.invalidateUserCaches(id);
     return this.sanitizeUser(updated);
   }
 
@@ -131,6 +149,8 @@ export class PlatformService {
       where: { id },
       data: { deleted_at: now, updated_at: now },
     });
+    // Deactivation (soft-delete) must take effect at once, not after the TTL.
+    this.invalidateUserCaches(id);
     return { id };
   }
 

@@ -380,27 +380,41 @@ describe('Applications leads (e2e)', () => {
     });
 
     it('stage narrows the rows while the counts still describe the whole filtered set', async () => {
-      const enrolled = await list({ stage: 'Enrolled' });
+      // Phase 1 stage engine: effective stages. A null-stage active row (seeded via
+      // Prisma) derives to counsellor_review; is_converted -> converted; is_archived
+      // -> rejected. 'New Lead' was created via POST, which now enters a lead at
+      // stage lead_added (CRITIQUE #3), so it lands in lead_added, not counsellor_review.
+      const enrolled = await list({ stage: 'converted' });
       expect(namesOf(enrolled.items)).toEqual(['Converted']);
       expect(enrolled.total).toBe(1);
-      expect(enrolled.counts).toMatchObject({ 'New Lead': 3, Enrolled: 1, Rejected: 1 });
+      expect(enrolled.counts).toMatchObject({
+        lead_added: 1,
+        counsellor_review: 2,
+        converted: 1,
+        rejected: 1,
+      });
 
-      expect(namesOf((await list({ stage: 'Rejected' })).items)).toEqual(['Archived']);
-      expect(namesOf((await list({ stage: 'New Lead' })).items)).toEqual([
-        'New Lead',
+      expect(namesOf((await list({ stage: 'rejected' })).items)).toEqual(['Archived']);
+      expect(namesOf((await list({ stage: 'lead_added' })).items)).toEqual(['New Lead']);
+      expect(namesOf((await list({ stage: 'counsellor_review' })).items)).toEqual([
         'ViaCourse',
         'ViaFallback',
       ]);
-      // no column records this stage yet — empty, not guessed
-      const formPending = await list({ stage: 'Form Pending' });
+      // no row records this stage yet — empty, not guessed
+      const formPending = await list({ stage: 'form_pending' });
       expect(formPending.total).toBe(0);
       expect(formPending.items).toEqual([]);
     });
 
     it('filters compose with each other and with search', async () => {
-      const data = await list({ university_id: universityId, consultant_id: consultantId, stage: 'New Lead' });
-      expect(namesOf(data.items)).toEqual(['New Lead', 'ViaCourse', 'ViaFallback']);
-      expect(data.counts).toMatchObject({ 'New Lead': 3, Enrolled: 0, Rejected: 0 });
+      const data = await list({ university_id: universityId, consultant_id: consultantId, stage: 'counsellor_review' });
+      expect(namesOf(data.items)).toEqual(['ViaCourse', 'ViaFallback']);
+      expect(data.counts).toMatchObject({
+        lead_added: 1,
+        counsellor_review: 2,
+        converted: 0,
+        rejected: 0,
+      });
 
       const narrowed = await list({ search: `${TAG} ViaFallback`, university_id: universityId });
       expect(namesOf(narrowed.items)).toEqual(['ViaFallback']);

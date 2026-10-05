@@ -23,6 +23,8 @@ import {
 } from './dto/counsellor-group.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
+import type { AccessUser } from '../workflow/record-access.service';
 
 /**
  * Staff-facing consultant management. Protected by the global JwtAuthGuard.
@@ -48,9 +50,10 @@ export class ConsultantsController {
   // --- literal paths BEFORE :id --------------------------------------------
 
   @Get('performance')
+  @RequirePermission('crm:applications.index')
   @ResponseMessage('Consultant performance')
-  performanceAll(@Query() query: ListConsultantsDto) {
-    return this.consultants.performanceAll(query);
+  performanceAll(@Query() query: ListConsultantsDto, @CurrentUser() user: AccessUser) {
+    return this.consultants.performanceAll(query, user);
   }
 
   @Get('admissions')
@@ -134,9 +137,10 @@ export class ConsultantsController {
   }
 
   @Get(':id/performance')
+  @RequirePermission('crm:applications.index')
   @ResponseMessage('Consultant performance')
-  performanceOne(@Param('id', ParseIntPipe) id: number) {
-    return this.consultants.performanceOne(id);
+  performanceOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: AccessUser) {
+    return this.consultants.performanceOne(id, user);
   }
 
   @Get(':id/universities')

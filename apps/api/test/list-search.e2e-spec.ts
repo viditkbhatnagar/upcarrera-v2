@@ -194,13 +194,14 @@ describe('List search (e2e)', () => {
       const page = await list('/api/applications', {});
       const counts = (page as unknown as { counts: Record<string, number> }).counts;
       for (const stage of [
-        'New Lead',
-        'Form Pending',
-        'Registration Fee Pending',
-        'Registration Fee Paid',
-        'Admin Verification Pending',
-        'Enrolled',
-        'Rejected',
+        'lead_added',
+        'form_pending',
+        'counsellor_review',
+        'fee_pending',
+        'fee_verification',
+        'sa_verification',
+        'converted',
+        'rejected',
       ]) {
         expect(counts).toHaveProperty(stage);
       }

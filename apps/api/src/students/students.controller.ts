@@ -22,6 +22,8 @@ import { UpdateQualificationsDto } from './dto/update-qualifications.dto';
 import { CreateEnrolmentDto } from './dto/create-enrolment.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
+import type { AccessUser } from '../workflow/record-access.service';
 
 /**
  * Staff-only student records endpoints (protected by the global JwtAuthGuard).
@@ -62,19 +64,30 @@ export class StudentsController {
     return this.students.financeSummary();
   }
 
+  // Shares the student_document table with the application-document route
+  // (PATCH/DELETE /applications/documents/:id). The :id here is the DOCUMENT id,
+  // so the per-row ApplicationAccessGuard cannot be used; the service resolves the
+  // owning application and runs the SAME record-access check (403 out of scope /
+  // 404 missing). The permission slug mirrors the application twin.
   @Patch('documents/:id')
+  @RequirePermission('crm:applications.edit')
   @ResponseMessage('Student document updated')
   updateDocument(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateDocumentDto,
+    @CurrentUser() user: AccessUser,
   ) {
-    return this.students.updateDocument(id, dto);
+    return this.students.updateDocument(id, dto, user);
   }
 
   @Delete('documents/:id')
+  @RequirePermission('crm:applications.edit')
   @ResponseMessage('Student document deleted')
-  deleteDocument(@Param('id', ParseIntPipe) id: number) {
-    return this.students.deleteDocument(id);
+  deleteDocument(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    return this.students.deleteDocument(id, user);
   }
 
   // Literal `enrolments/:id` declared BEFORE the catch-all `:id` so 'enrolments'
@@ -94,6 +107,14 @@ export class StudentsController {
   // consultant fields plus a finance summary (invoice + payment roll-up). The
   // response keeps every original `students` column and `id`, so the additive
   // fields don't break existing consumers.
+  //
+  // ACCEPTED FOLLOW-UP (not fixed in this document-integrity pass): GET /students/:id,
+  // GET /students/:id/timeline and GET /students/:id/qualifications are permission-
+  // gated but carry NO per-record access scope — unlike /students/:id/documents, which
+  // was scoped because it exposes stored file paths. These expose metadata (labels,
+  // names, dates) but NO file paths, so they are the same record-access class yet
+  // outside this fix's document-path scope. Worth a later dedicated pass to scope them
+  // through RecordAccessService like the document routes.
   @Get(':id')
   @ResponseMessage('Student fetched')
   get(@Param('id', ParseIntPipe) id: number) {
@@ -192,10 +213,20 @@ export class StudentsController {
     return this.students.getStudentCourses(id);
   }
 
+  // Returns student_document rows INCLUDING their stored file paths, so it carries
+  // the SAME slug + record-access scoping as the other document reads: the service
+  // resolves the student's linked application and runs assertCanView (or the student
+  // record-access rule when the student has no linked application). Without this, any
+  // student PK leaked every owner's document file paths — the feed that made the
+  // (now subdir-restricted) GET /files/serve hole exploitable.
   @Get(':id/documents')
+  @RequirePermission('crm:applications.view')
   @ResponseMessage('Student documents fetched')
-  documents(@Param('id', ParseIntPipe) id: number) {
-    return this.students.getStudentDocuments(id);
+  documents(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    return this.students.getStudentDocuments(id, user);
   }
 
   // What happened to the student, newest first, from their real records

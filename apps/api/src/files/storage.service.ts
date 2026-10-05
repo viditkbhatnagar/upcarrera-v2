@@ -5,7 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { createReadStream, ReadStream } from 'node:fs';
-import { mkdir, writeFile, stat } from 'node:fs/promises';
+import { mkdir, writeFile, stat, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join, basename, resolve, sep } from 'node:path';
 
@@ -104,6 +104,21 @@ export class StorageService {
   /** Best-effort download filename derived from a stored relative path. */
   basename(relativePath: string): string {
     return basename(relativePath);
+  }
+
+  /**
+   * Best-effort delete of a stored file, used to roll back an upload whose owning
+   * transaction then failed (so a rejected write leaves no orphaned proof on disk).
+   * Never throws: a missing or already-removed file is a no-op.
+   */
+  async delete(relativePath: string): Promise<void> {
+    if (!relativePath) return;
+    try {
+      const absolutePath = await this.resolveAbsolute(relativePath);
+      await unlink(absolutePath);
+    } catch {
+      // Already gone, never written, or outside the root — nothing to roll back.
+    }
   }
 
   // ---- internal guards -----------------------------------------------------

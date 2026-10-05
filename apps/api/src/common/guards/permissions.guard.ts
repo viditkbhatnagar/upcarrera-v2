@@ -7,34 +7,40 @@ import {
 import { Reflector } from '@nestjs/core';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PERMISSION_KEY } from '../decorators/require-permission.decorator';
+import { UserStateService } from '../user-state.service';
 
 /** Legacy super-admin role id (user_role.id === 1, "Super Admin"). */
 const SUPER_ADMIN_ROLE_ID = 1;
 
+/** How long a role's granted slugs are cached before a re-read (role_permissions
+ *  can be edited out of band by the LMS Roles screen). */
+const SLUG_TTL_MS = 5 * 60 * 1000;
+
+interface SlugCacheEntry {
+  slugs: Set<string>;
+  at: number;
+}
+
 /**
- * Controller-layer authorization. Ports application/app/Helpers/permission_helper.php
- * (has_permission + the per-role helpers) into a single clean allow-list guard.
+ * Controller-layer authorization. Ports permission_helper.php into a clean
+ * allow-list: Super Admin (role_id 1) bypasses, every other role must hold the
+ * required slug.
  *
- * The legacy admin helper used inverted logic (`return !in_array($permission, ...)`),
- * which silently granted Super Admin every permission EXCEPT a hand-maintained
- * deny-list, and shipped a `has_permission_sub_admint` typo that meant sub-admin
- * checks never ran. This guard replaces both with:
- *   - a Super Admin (role_id === 1) bypass that allows ALL routes, and
- *   - a positive allow-list for every other role: the required slug must be
- *     present in that role's granted permissions.
- *
- * Granted slugs are cached per role_id in an in-memory Map so we hit the DB at
- * most once per role for the process lifetime (mirrors how the legacy helper
- * loaded the role's permission set per request, minus the per-request cost).
+ * CRITIQUE #13 — it NEVER trusts the 7-day JWT role. The acting role_id and the
+ * account's live status/deleted_at are re-read through UserStateService (5-min
+ * TTL), so a deactivated or role-changed user loses access without re-login. The
+ * granted-slug set is likewise cached with a TTL, because the LMS Roles &
+ * Permissions screen rewrites role_permissions out of band.
  */
 @Injectable()
 export class PermissionsGuard implements CanActivate {
-  /** role_id -> Set<permission slug>. Populated lazily on first check per role. */
-  private static readonly slugCache = new Map<number, Set<string>>();
+  /** role_id -> { slugs, at }. Populated lazily, expired by SLUG_TTL_MS. */
+  private static readonly slugCache = new Map<number, SlugCacheEntry>();
 
   constructor(
     private readonly reflector: Reflector,
     private readonly prisma: PrismaService,
+    private readonly userState: UserStateService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -47,13 +53,23 @@ export class PermissionsGuard implements CanActivate {
     if (!requiredSlug) return true;
 
     const { user } = context.switchToHttp().getRequest();
-    const roleId = Number(user?.roleId ?? user?.role_id);
-
-    if (!user || !Number.isFinite(roleId)) {
+    const userId = Number(user?.userId ?? user?.id);
+    if (!user || !Number.isFinite(userId)) {
       throw new ForbiddenException('You do not have permission to perform this action');
     }
 
-    // Super Admin bypass: allow every route (fixes the legacy inverted deny-list).
+    // Re-read the live account: a deactivated / deleted user is refused even with
+    // a still-valid token, and the FRESH role (not the JWT snapshot) is used below.
+    const state = await this.userState.get(userId);
+    if (this.userState.isInactive(state)) {
+      throw new ForbiddenException('This account is no longer active.');
+    }
+    const roleId = Number(state?.roleId);
+    if (!Number.isFinite(roleId)) {
+      throw new ForbiddenException('You do not have permission to perform this action');
+    }
+
+    // Super Admin bypass.
     if (roleId === SUPER_ADMIN_ROLE_ID) return true;
 
     const slugs = await this.getRoleSlugs(roleId);
@@ -65,13 +81,11 @@ export class PermissionsGuard implements CanActivate {
     return true;
   }
 
-  /** Returns the cached slug set for a role, loading it from the DB on first use. */
+  /** Returns the cached slug set for a role, re-reading it after the TTL. */
   private async getRoleSlugs(roleId: number): Promise<Set<string>> {
     const cached = PermissionsGuard.slugCache.get(roleId);
-    if (cached) return cached;
+    if (cached && Date.now() - cached.at < SLUG_TTL_MS) return cached.slugs;
 
-    // role_permissions JOIN permissions on permission_id, scoped to this role.
-    // Soft-delete aware on both sides (mirrors the reads elsewhere in the app).
     const rows = await this.prisma.role_permissions.findMany({
       where: { role_id: roleId, deleted_at: null },
       select: { permission_id: true },
@@ -94,14 +108,13 @@ export class PermissionsGuard implements CanActivate {
         .filter((slug): slug is string => typeof slug === 'string' && slug.length > 0),
     );
 
-    PermissionsGuard.slugCache.set(roleId, slugs);
+    PermissionsGuard.slugCache.set(roleId, { slugs, at: Date.now() });
     return slugs;
   }
 
   /**
-   * Clears the in-memory slug cache. Call this after mutating role_permissions
-   * (e.g. from the roles-permissions management endpoints) so newly granted or
-   * revoked slugs take effect without a process restart.
+   * Clears the in-memory slug cache. Call after mutating role_permissions so a
+   * grant/revoke takes effect immediately rather than after the TTL.
    */
   static invalidateCache(roleId?: number): void {
     if (roleId === undefined) {

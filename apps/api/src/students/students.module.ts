@@ -5,12 +5,16 @@ import { AcademicStudentsController } from './academic-students.controller';
 import { CandidateStatusesController } from './candidate-statuses.controller';
 import { StudentsService } from './students.service';
 import { StudentProfileService } from './student-profile.service';
+import { WorkflowCoreModule } from '../workflow/workflow-core.module';
 
 /**
  * Students + Applications module.
  * PrismaService is provided by the @Global() PrismaModule, so no import is needed.
+ * WorkflowCoreModule supplies the record-access, audit and stage-engine services
+ * the application routes and the conversion saga now use.
  */
 @Module({
+  imports: [WorkflowCoreModule],
   controllers: [
     StudentsController,
     ApplicationsController,
