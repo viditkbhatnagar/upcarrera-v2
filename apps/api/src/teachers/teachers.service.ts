@@ -23,6 +23,7 @@ import {
   UpdateSalaryRateDto,
 } from './dto/salary-rate.dto';
 
+import { stripUserSecrets, type UserSecretField } from '../common/user-secrets';
 /** Legacy role id for teachers/instructors (login_helper.php). */
 const TEACHER_ROLE_ID = 3;
 const BCRYPT_ROUNDS = 10;
@@ -1069,11 +1070,8 @@ export class TeachersService {
 
   // --- Helpers --------------------------------------------------------------
 
-  /** Never leak password hashes / zoom credentials in API responses. */
-  private stripSecrets<T extends { password?: string | null; zoom_password?: string | null; prev_password?: string | null }>(
-    user: T,
-  ): Omit<T, 'password' | 'zoom_password' | 'prev_password'> {
-    const { password, zoom_password, prev_password, ...rest } = user;
-    return rest;
+  /** Remove every credential column — see common/user-secrets.ts. */
+  private stripSecrets<T extends object>(user: T): Omit<T, UserSecretField> {
+    return stripUserSecrets(user);
   }
 }

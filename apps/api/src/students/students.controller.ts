@@ -108,8 +108,12 @@ export class StudentsController {
 
   @Patch(':id')
   @ResponseMessage('Student updated')
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateStudentDto) {
-    return this.students.updateStudent(id, dto);
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateStudentDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.students.updateStudent(id, dto, userId);
   }
 
   @Delete(':id')
@@ -192,6 +196,14 @@ export class StudentsController {
   @ResponseMessage('Student documents fetched')
   documents(@Param('id', ParseIntPipe) id: number) {
     return this.students.getStudentDocuments(id);
+  }
+
+  // What happened to the student, newest first, from their real records
+  // (application, conversion, payments, invoices, documents, enrolments).
+  @Get(':id/timeline')
+  @ResponseMessage('Student timeline fetched')
+  timeline(@Param('id', ParseIntPipe) id: number) {
+    return this.students.getStudentTimeline(id);
   }
 
   @Get(':id/qualifications')

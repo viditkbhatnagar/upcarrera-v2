@@ -15,6 +15,7 @@ import {
   CalendarCheck2,
   CalendarX2,
   CalendarClock,
+  Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,6 +45,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { downloadCsv, toCsv, type CsvColumn } from "@/components/applications/export-csv";
 
 export const Route = createFileRoute("/universities/intakes")({
   head: () => ({ meta: [{ title: "Intakes — upCarrera" }] }),
@@ -100,8 +102,6 @@ type Intake = {
   year: number;
   startDate: string; // YYYY-MM-DD
   closingDate: string; // YYYY-MM-DD
-  mappedUniversities: number;
-  mappedCourses: number;
   /** Derived for display. */
   status: IntakeStatus;
   /**
@@ -142,6 +142,7 @@ type ApiIntake = {
   start_date: string | null;
   closing_date: string | null;
   status: string | null;
+  /** Always 0 from the API: no intake–university/course mapping exists yet. */
   mapped_universities: number;
   mapped_courses: number;
 };
@@ -221,6 +222,10 @@ function mapApiIntake(r: ApiIntake): Intake {
   const startDate = toDateInput(r.start_date);
   const closingDate = toDateInput(r.closing_date);
   const storedStatus = toStoredStatus(r.status);
+  // A corrupt stored date (0025-08-30) says nothing about the window, so the
+  // status is derived as if it were missing rather than from a year-25 date.
+  const statusStart = isYearInRange(startDate) ? startDate : "";
+  const statusClosing = isYearInRange(closingDate) ? closingDate : "";
   return {
     id: r.id,
     code: intakeCodeFrom(month, year),
@@ -229,9 +234,7 @@ function mapApiIntake(r: ApiIntake): Intake {
     year,
     startDate,
     closingDate,
-    mappedUniversities: r.mapped_universities ?? 0,
-    mappedCourses: r.mapped_courses ?? 0,
-    status: deriveIntakeStatus(startDate, closingDate, storedStatus),
+    status: deriveIntakeStatus(statusStart, statusClosing, storedStatus),
     rawName: r.name ?? null,
     rawStatus: r.status ?? null,
     rawMonth: selectableMonth(r.month),
@@ -356,6 +359,42 @@ function validateIntakeDates(
 }
 
 /**
+ * Edit-dialog date validation: only a date the operator CHANGED is checked
+ * (required, 4-digit year inside the window), and the ordering rule applies
+ * only when both dates are valid. A stored corrupt date (0025-08-30) that is
+ * left alone therefore never blocks saving an unrelated change — the API
+ * applies the same rule.
+ */
+function validateChangedDates(
+  startDate: string,
+  closingDate: string,
+  startChanged: boolean,
+  closingChanged: boolean,
+): string | null {
+  if (startChanged) {
+    if (!startDate) return "Please fill the start date.";
+    if (!isYearInRange(startDate)) {
+      return `Start date must fall between ${MIN_INTAKE_YEAR} and ${MAX_INTAKE_YEAR}.`;
+    }
+  }
+  if (closingChanged) {
+    if (!closingDate) return "Please fill the admission closing date.";
+    if (!isYearInRange(closingDate)) {
+      return `Admission closing date must fall between ${MIN_INTAKE_YEAR} and ${MAX_INTAKE_YEAR}.`;
+    }
+  }
+  if (
+    (startChanged || closingChanged) &&
+    isYearInRange(startDate) &&
+    isYearInRange(closingDate) &&
+    closingDate < startDate
+  ) {
+    return "Admission closing date must be on or after the start date.";
+  }
+  return null;
+}
+
+/**
  * Create-dialog validation: a brand new intake must supply everything, so all
  * of it is checked. Edit deliberately does NOT call this — it validates only
  * the fields the operator touched, because a stored year outside the allowed
@@ -369,11 +408,42 @@ function validateIntakeForm(
   return validateIntakeYear(year) ?? validateIntakeDates(startDate, closingDate);
 }
 
+/** Years no real intake or enrolment date can have — legacy typos (0025, 0226). */
+const IMPLAUSIBLE_BEFORE_YEAR = 1900;
+const IMPLAUSIBLE_AFTER_YEAR = 2100;
+
+/**
+ * A stored date, rendered honestly.
+ *
+ * A legacy typo such as 0025-08-30 is a syntactically valid DATE, and
+ * `new Date()` happily formats it as "30 Aug 25" — a plausible-looking wrong
+ * date. Anything outside 1900–2100 is shown as stored, labelled invalid; a real
+ * date outside the 2020–2035 intake window is shown with that caveat.
+ */
 function formatDate(iso: string) {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!match) return `Invalid date — ${iso}`;
+  const year = Number(match[1]);
+  if (year < IMPLAUSIBLE_BEFORE_YEAR || year > IMPLAUSIBLE_AFTER_YEAR) {
+    return `Invalid date — ${iso}`;
+  }
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return `Invalid date — ${iso}`;
+  const text = d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return isYearInRange(iso)
+    ? text
+    : `${text} (outside ${MIN_INTAKE_YEAR}–${MAX_INTAKE_YEAR})`;
+}
+
+/** True when a stored date is one formatDate flags (so the UI can colour it). */
+function isFlaggedDate(iso: string): boolean {
+  return iso !== "" && !isYearInRange(iso);
 }
 
 function StatusBadge({ status }: { status: IntakeStatus }) {
@@ -437,12 +507,115 @@ function KpiCard({
   );
 }
 
+/* ------------------------------------------------------------------------ */
+/* Intake master (QA IN01)                                                  */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The intake MASTER is the legacy `sessions` table, served by
+ * GET /api/intakes/sessions. It is the list students.session_id and
+ * applications.session_id point at, the list the New Application "Intake"
+ * picker offers, and the list Intake-wise Enrollment rolls up — so this screen
+ * and that one now show the same intakes.
+ *
+ * The `intake` table this screen used to show alone holds schedules (dates and
+ * a status). Nothing references it yet — no student or application carries an
+ * intake.id — so its rows are shown below as "Intake schedules", labelled as
+ * not yet linked, instead of being presented as the intakes themselves.
+ */
+type ApiIntakeSession = {
+  session_id: number;
+  session_title: string | null;
+  created_at: string | null;
+  /** Month/year read from the title by the API. Display only — never written. */
+  period: { month: string | null; year: number | null };
+  applications_count: number;
+  students_count: number;
+  enrolled_count: number;
+  pending_count: number;
+  first_enrollment_date: string | null;
+  last_enrollment_date: string | null;
+  invalid_enrollment_dates: { count: number; samples: string[] };
+};
+
+type IntakeMasterResponse = {
+  items: ApiIntakeSession[];
+  total: number;
+  page: number;
+  limit: number;
+  unassigned: { students_count: number; applications_count: number };
+  date_window: { min: string; max: string };
+};
+
+/** One page holds the whole master (it is a short list of intakes). */
+const MASTER_LIMIT = 500;
+const MASTER_QUERY = { page: 1, limit: MASTER_LIMIT } as const;
+
+/** Same normalisation the API uses for its 409 duplicate check. */
+function normaliseTitle(value: string | null | undefined): string {
+  return (value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** "Jul 2025", "2025", or null when the title names neither. */
+function formatPeriod(p: ApiIntakeSession["period"]): string | null {
+  if (!p.month && !p.year) return null;
+  return [p.month?.slice(0, 3), p.year].filter(Boolean).join(" ");
+}
+
+/**
+ * An enrolment date the API has already vetted as plausible (2000 to five
+ * years ahead). Enrolments are not bound by the 2020–2035 intake window.
+ */
+function formatEnrolmentDay(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return `Invalid date — ${iso}`;
+  return d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function describeInvalidDates(invalid: { count: number; samples: string[] }): string | null {
+  if (invalid.count === 0) return null;
+  const first = invalid.samples[0] ?? "unreadable value";
+  const more = invalid.count - 1;
+  return `Invalid date — ${first}${more > 0 ? ` (+${more} more)` : ""}`;
+}
+
+const MASTER_CSV: CsvColumn<ApiIntakeSession>[] = [
+  { header: "Intake ID", value: (r) => r.session_id },
+  { header: "Intake", value: (r) => r.session_title ?? "" },
+  { header: "Month (from name)", value: (r) => r.period.month ?? "" },
+  { header: "Year (from name)", value: (r) => r.period.year ?? "" },
+  { header: "Applications", value: (r) => r.applications_count },
+  { header: "Students", value: (r) => r.students_count },
+  { header: "Enrolled", value: (r) => r.enrolled_count },
+  { header: "First enrolment", value: (r) => r.first_enrollment_date ?? "" },
+  { header: "Last enrolment", value: (r) => r.last_enrollment_date ?? "" },
+  { header: "Invalid enrolment dates", value: (r) => r.invalid_enrollment_dates.count },
+  {
+    header: "Invalid date examples",
+    value: (r) => r.invalid_enrollment_dates.samples.join(" "),
+  },
+];
+
 function IntakesPage() {
   const qc = useQueryClient();
 
-  // Live data: GET /api/intakes returns { items, total, page, limit }. This
-  // query is the single source of truth — every mutation invalidates it rather
-  // than patching a local copy of the list.
+  // The intake master. Every master mutation invalidates ["intake-master"]
+  // (this list and Intake-wise Enrollment) and the application form's intake
+  // picker, ["catalog", "intakes"].
+  const master = useQuery({
+    queryKey: ["intake-master", "intakes", MASTER_QUERY],
+    queryFn: () => apiGet<IntakeMasterResponse>("/intakes/sessions", MASTER_QUERY),
+  });
+  const masterRows = useMemo(() => master.data?.items ?? [], [master.data]);
+
+  // Intake schedules: GET /api/intakes returns { items, total, page, limit }.
+  // This query is the single source of truth for the schedule table — every
+  // schedule mutation invalidates it rather than patching a local copy.
   const { data, isLoading, isError } = useQuery({
     queryKey: ["intakes"],
     queryFn: () =>
@@ -461,20 +634,24 @@ function IntakesPage() {
   const [viewIntake, setViewIntake] = useState<Intake | null>(null);
   const [editIntake, setEditIntake] = useState<Intake | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Intake | null>(null);
+  /** Add (null) or rename (a row) an intake in the master. */
+  const [titleDialog, setTitleDialog] = useState<
+    { mode: "add" } | { mode: "rename"; row: ApiIntakeSession } | null
+  >(null);
 
   // Delete Intake -> DELETE /intakes/:id.
   const deleteMut = useMutation({
     mutationFn: (id: number) => apiDelete(`/intakes/${id}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["intakes"] });
-      toast.success("Intake deleted");
+      toast.success("Intake schedule deleted");
       setDeleteTarget(null);
     },
     onError: (e) =>
       toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
   });
 
-  // Filters
+  // Filters (schedule table)
   const [query, setQuery] = useState("");
   const [filterMonth, setFilterMonth] = useState<string>("all");
   const [filterYear, setFilterYear] = useState<string>("all");
@@ -484,15 +661,16 @@ function IntakesPage() {
 
   const kpis = useMemo(
     () => ({
-      total: intakes.length,
-      // rawYear, not the display year: a row whose year column is NULL renders
-      // as the current year and would otherwise be counted as a this-year
-      // intake it never was.
-      current: intakes.filter((i) => i.rawYear === currentYear).length,
-      open: intakes.filter((i) => i.status === "Open").length,
-      closed: intakes.filter((i) => i.status === "Closed").length,
+      total: master.data?.total ?? 0,
+      // Read from the title ("July 2026 Intake"); a title that names no year
+      // is not counted as this year's.
+      current: masterRows.filter((i) => i.period.year === currentYear).length,
+      students: masterRows.reduce((sum, i) => sum + i.students_count, 0),
+      schedules: intakes.length,
+      openSchedules: intakes.filter((i) => i.status === "Open").length,
+      closedSchedules: intakes.filter((i) => i.status === "Closed").length,
     }),
-    [intakes, currentYear],
+    [master.data, masterRows, intakes, currentYear],
   );
 
   const filtered = useMemo(() => {
@@ -510,7 +688,16 @@ function IntakesPage() {
     });
   }, [intakes, query, filterMonth, filterYear, filterStatus]);
 
-  const handleExport = () => toast.success("Export started");
+  const handleExport = () => {
+    if (masterRows.length === 0) {
+      toast.error("Nothing to export — the intake list is empty.");
+      return;
+    }
+    downloadCsv(
+      `intakes-${new Date().toISOString().slice(0, 10)}.csv`,
+      toCsv(masterRows, MASTER_CSV),
+    );
+  };
   const handleResetFilters = () => {
     setQuery("");
     setFilterMonth("all");
@@ -525,16 +712,21 @@ function IntakesPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Intakes</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Create and manage reusable admission intakes.
+            The intakes applications and students are filed under.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" className="gap-2" onClick={handleExport}>
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={handleExport}
+            disabled={master.isLoading || master.isError}
+          >
             <Download className="h-4 w-4" />
             Export
           </Button>
           <Button
-            onClick={() => setCreateOpen(true)}
+            onClick={() => setTitleDialog({ mode: "add" })}
             className="gap-2 bg-accent text-accent-foreground hover:bg-accent-hover"
           >
             <Plus className="h-4 w-4" />
@@ -558,29 +750,52 @@ function IntakesPage() {
           tone="bg-sky-50 text-sky-600"
         />
         <KpiCard
-          title="Open Intakes"
-          value={kpis.open}
-          icon={CalendarCheck2}
+          title="Students in Intakes"
+          value={kpis.students}
+          icon={Users}
           tone="bg-emerald-50 text-emerald-600"
         />
         <KpiCard
-          title="Closed Intakes"
-          value={kpis.closed}
-          icon={CalendarX2}
+          title="Intake Schedules"
+          value={kpis.schedules}
+          icon={CalendarCheck2}
           tone="bg-amber-50 text-amber-600"
         />
       </div>
 
-      {/* Filters + Table */}
+      <MasterIntakeSection
+        response={master.data}
+        isLoading={master.isLoading}
+        isError={master.isError}
+        onRename={(row) => setTitleDialog({ mode: "rename", row })}
+      />
+
+      {/* Intake schedules (the `intake` table) */}
       <div className="rounded-2xl border bg-card shadow-sm">
         <div className="flex flex-col gap-3 border-b p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-foreground">Intake Schedules</h2>
+              <p className="mt-0.5 max-w-2xl text-xs text-muted-foreground">
+                Start and closing dates recorded for intakes. These records are stored
+                separately and are not yet linked to the intakes above, so applications
+                and students are not counted against them.
+                {kpis.schedules > 0 &&
+                  ` ${kpis.openSchedules} open, ${kpis.closedSchedules} closed.`}
+              </p>
+            </div>
+            <Button variant="outline" className="gap-2" onClick={() => setCreateOpen(true)}>
+              <Plus className="h-4 w-4" />
+              Add Schedule
+            </Button>
+          </div>
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative w-full sm:max-w-xs">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search intake"
+                placeholder="Search schedule"
                 className="pl-9"
               />
             </div>
@@ -656,7 +871,7 @@ function IntakesPage() {
                   <TableCell colSpan={9} className="py-12 text-center">
                     <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Loading intakes…
+                      Loading intake schedules…
                     </div>
                   </TableCell>
                 </TableRow>
@@ -665,7 +880,7 @@ function IntakesPage() {
                   <TableCell colSpan={9} className="py-12 text-center">
                     <div className="flex items-center justify-center gap-2 text-sm text-red-500">
                       <AlertTriangle className="h-4 w-4" />
-                      Failed to load intakes. Please try again.
+                      Failed to load intake schedules. Please try again.
                     </div>
                   </TableCell>
                 </TableRow>
@@ -675,7 +890,9 @@ function IntakesPage() {
                     colSpan={9}
                     className="py-10 text-center text-sm text-muted-foreground"
                   >
-                    No intakes found.
+                    {intakes.length === 0
+                      ? "No intake schedules recorded yet."
+                      : "No intake schedules match the filters."}
                   </TableCell>
                 </TableRow>
               ) : (
@@ -683,24 +900,33 @@ function IntakesPage() {
                   <TableRow key={i.id} className="hover:bg-muted/40">
                     <TableCell className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{idx + 1}</TableCell>
                     <TableCell className="px-4 py-3">
-                      <button className="font-mono text-xs font-medium text-primary hover:underline">
+                      <button
+                        className="font-mono text-xs font-medium text-primary hover:underline"
+                        onClick={() => setViewIntake(i)}
+                      >
                         {i.code}
                       </button>
                     </TableCell>
                     <TableCell className="py-3 text-sm font-medium text-foreground">
                       {i.name}
                     </TableCell>
-                    <TableCell className="py-3 text-sm">{formatDate(i.startDate)}</TableCell>
-                    <TableCell className="py-3 text-sm">{formatDate(i.closingDate)}</TableCell>
-                    <TableCell className="py-3">
-                      <button className="text-sm font-medium text-primary hover:underline">
-                        {i.mappedUniversities} Universities
-                      </button>
+                    <TableCell
+                      className={`py-3 text-sm ${isFlaggedDate(i.startDate) ? "font-medium text-amber-700" : ""}`}
+                    >
+                      {formatDate(i.startDate)}
                     </TableCell>
-                    <TableCell className="py-3">
-                      <button className="text-sm font-medium text-primary hover:underline">
-                        {i.mappedCourses} Courses
-                      </button>
+                    <TableCell
+                      className={`py-3 text-sm ${isFlaggedDate(i.closingDate) ? "font-medium text-amber-700" : ""}`}
+                    >
+                      {formatDate(i.closingDate)}
+                    </TableCell>
+                    {/* No intake–university/course mapping exists yet; the API
+                        reports 0 for every row, which is not a real count. */}
+                    <TableCell className="py-3 text-sm text-muted-foreground" title="Intake–university mapping is not available yet">
+                      —
+                    </TableCell>
+                    <TableCell className="py-3 text-sm text-muted-foreground" title="Intake–course mapping is not available yet">
+                      —
                     </TableCell>
                     <TableCell className="py-3">
                       <StatusBadge status={i.status} />
@@ -732,6 +958,15 @@ function IntakesPage() {
         </div>
       </div>
 
+      {titleDialog && (
+        <IntakeTitleDialog
+          key={titleDialog.mode === "rename" ? titleDialog.row.session_id : "add"}
+          target={titleDialog.mode === "rename" ? titleDialog.row : null}
+          existing={masterRows}
+          onClose={() => setTitleDialog(null)}
+        />
+      )}
+
       <CreateIntakeDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
@@ -758,10 +993,10 @@ function IntakesPage() {
       >
         <DialogContent className="sm:max-w-[440px]">
           <DialogHeader>
-            <DialogTitle>Delete intake</DialogTitle>
+            <DialogTitle>Delete intake schedule</DialogTitle>
             <DialogDescription>
               {deleteTarget
-                ? `This will remove ${deleteTarget.name}. This action cannot be undone.`
+                ? `This will remove the schedule ${deleteTarget.name}. This action cannot be undone.`
                 : ""}
             </DialogDescription>
           </DialogHeader>
@@ -784,6 +1019,321 @@ function IntakesPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function MasterIntakeSection({
+  response,
+  isLoading,
+  isError,
+  onRename,
+}: {
+  response: IntakeMasterResponse | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  onRename: (row: ApiIntakeSession) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const rows = useMemo(() => response?.items ?? [], [response]);
+  const visible = useMemo(() => {
+    const q = normaliseTitle(search);
+    return q ? rows.filter((r) => normaliseTitle(r.session_title).includes(q)) : rows;
+  }, [rows, search]);
+  const unassigned = response?.unassigned;
+  const truncated = response ? response.total > rows.length : false;
+
+  return (
+    <div className="rounded-2xl border bg-card shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b p-4">
+        <div>
+          <h2 className="text-base font-semibold text-foreground">Intake List</h2>
+          <p className="mt-0.5 max-w-2xl text-xs text-muted-foreground">
+            The intakes offered on new applications and used by Intake-wise Enrollment.
+            Enrolment dates come from the students filed under each intake.
+          </p>
+        </div>
+        <div className="relative w-full sm:max-w-xs">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search intake"
+            className="pl-9"
+          />
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader className="bg-muted/40">
+            <TableRow>
+              <TableHead className="px-4 w-16">Sl No</TableHead>
+              <TableHead>Intake</TableHead>
+              <TableHead>Period</TableHead>
+              <TableHead className="text-right">Applications</TableHead>
+              <TableHead className="text-right">Students</TableHead>
+              <TableHead className="text-right">Enrolled</TableHead>
+              <TableHead>Enrolments</TableHead>
+              <TableHead className="text-right pr-4">Action</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={8} className="py-12 text-center">
+                  <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading intakes…
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : isError ? (
+              <TableRow>
+                <TableCell colSpan={8} className="py-12 text-center">
+                  <div className="flex items-center justify-center gap-2 text-sm text-red-500">
+                    <AlertTriangle className="h-4 w-4" />
+                    Failed to load intakes. Please try again.
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : visible.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
+                  {rows.length === 0 ? "No intakes yet. Use Add Intake to create one." : "No intakes match the search."}
+                </TableCell>
+              </TableRow>
+            ) : (
+              visible.map((r, idx) => {
+                const title = r.session_title?.trim();
+                const period = formatPeriod(r.period);
+                const invalid = describeInvalidDates(r.invalid_enrollment_dates);
+                return (
+                  <TableRow key={r.session_id} className="hover:bg-muted/40">
+                    <TableCell className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{idx + 1}</TableCell>
+                    <TableCell className="py-3">
+                      <div className={`text-sm font-medium ${title ? "text-foreground" : "italic text-muted-foreground"}`}>
+                        {title || "Untitled intake"}
+                      </div>
+                      <div className="font-mono text-[11px] text-muted-foreground">#{r.session_id}</div>
+                    </TableCell>
+                    <TableCell className="py-3 text-sm">
+                      {period ?? <span className="text-muted-foreground">—</span>}
+                    </TableCell>
+                    <TableCell className="py-3 text-right text-sm tabular-nums">{r.applications_count}</TableCell>
+                    <TableCell className="py-3 text-right text-sm font-semibold tabular-nums">{r.students_count}</TableCell>
+                    <TableCell className="py-3 text-right text-sm tabular-nums">{r.enrolled_count}</TableCell>
+                    <TableCell className="py-3 text-sm">
+                      {r.first_enrollment_date ? (
+                        <span>
+                          {formatEnrolmentDay(r.first_enrollment_date)}
+                          {r.last_enrollment_date && r.last_enrollment_date !== r.first_enrollment_date
+                            ? ` – ${formatEnrolmentDay(r.last_enrollment_date)}`
+                            : ""}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">
+                          {r.students_count > 0 ? "No valid date" : "—"}
+                        </span>
+                      )}
+                      {invalid && (
+                        <div className="flex items-center gap-1 text-[11px] font-medium text-amber-700">
+                          <AlertTriangle className="h-3 w-3" /> {invalid}
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell className="py-3 pr-4 text-right">
+                      <Button variant="ghost" size="icon" className="h-8 w-8" title="Rename" onClick={() => onRename(r)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
+      {(truncated || (unassigned && (unassigned.students_count > 0 || unassigned.applications_count > 0))) && (
+        <div className="space-y-1 border-t px-4 py-3 text-xs text-muted-foreground">
+          {truncated && response && (
+            <p>Showing the first {rows.length} of {response.total} intakes.</p>
+          )}
+          {unassigned && (unassigned.students_count > 0 || unassigned.applications_count > 0) && (
+            <p>
+              {unassigned.students_count} student{unassigned.students_count === 1 ? "" : "s"} and{" "}
+              {unassigned.applications_count} application{unassigned.applications_count === 1 ? "" : "s"}{" "}
+              have no intake recorded (or point at one that no longer exists).
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Add an intake to the master (POST /intakes/sessions) or rename one
+ * (PATCH /intakes/sessions/:id). A rename keeps the id, so every student and
+ * application filed under the intake follows it. The rename form seeds from
+ * the RAW stored title — never from the "Untitled intake" placeholder — and
+ * sends nothing when the title is unchanged.
+ */
+function IntakeTitleDialog({
+  target,
+  existing,
+  onClose,
+}: {
+  target: ApiIntakeSession | null;
+  existing: ApiIntakeSession[];
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [seed] = useState(() => target?.session_title ?? "");
+  const [title, setTitle] = useState(seed);
+  const [month, setMonth] = useState<string>(UNSET_MONTH);
+  const [year, setYear] = useState<string>(UNSET_YEAR);
+
+  const cleaned = title.trim().replace(/\s+/g, " ");
+  const clash = existing.find(
+    (r) =>
+      r.session_id !== target?.session_id &&
+      normaliseTitle(r.session_title) === normaliseTitle(cleaned),
+  );
+  const unchanged = target !== null && cleaned === seed.trim().replace(/\s+/g, " ");
+  const error = !cleaned
+    ? "Intake name is required."
+    : cleaned.length > 260
+      ? "Intake name must be 260 characters or fewer."
+      : clash
+        ? `An intake named “${clash.session_title}” already exists (#${clash.session_id}).`
+        : null;
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["intake-master"] });
+    qc.invalidateQueries({ queryKey: ["catalog", "intakes"] });
+  };
+
+  const saveMut = useMutation({
+    mutationFn: (body: { session_title: string }) =>
+      target
+        ? apiPatch(`/intakes/sessions/${target.session_id}`, body)
+        : apiPost("/intakes/sessions", body),
+    onSuccess: () => {
+      invalidate();
+      toast.success(target ? "Intake renamed" : "Intake created");
+      onClose();
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
+
+  const fillFromPeriod = (m: string, y: string) => {
+    const name = deriveIntakeName(m, y);
+    if (name) setTitle(name);
+  };
+
+  const handleSave = () => {
+    if (error) {
+      toast.error(error);
+      return;
+    }
+    if (unchanged) {
+      toast.info("No changes to save");
+      onClose();
+      return;
+    }
+    saveMut.mutate({ session_title: cleaned });
+  };
+
+  const handleClose = () => {
+    if (saveMut.isPending) return;
+    onClose();
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && handleClose()}>
+      <DialogContent className="sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>{target ? "Rename Intake" : "Add Intake"}</DialogTitle>
+          <DialogDescription>
+            {target
+              ? `Intake #${target.session_id}. Its ${target.students_count} student(s) and ${target.applications_count} application(s) stay filed under it.`
+              : "New intakes appear in the Intake picker on new applications straight away."}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {!target && (
+            <>
+              <div className="space-y-2">
+                <Label>Month</Label>
+                <Select
+                  value={month}
+                  onValueChange={(m) => {
+                    setMonth(m);
+                    fillFromPeriod(m, year);
+                  }}
+                >
+                  <SelectTrigger><SelectValue placeholder="Month" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={UNSET_MONTH}>—</SelectItem>
+                    {MONTHS.map((m) => (
+                      <SelectItem key={m} value={m}>{m}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Year</Label>
+                <Select
+                  value={year}
+                  onValueChange={(y) => {
+                    setYear(y);
+                    fillFromPeriod(month, y);
+                  }}
+                >
+                  <SelectTrigger><SelectValue placeholder="Year" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={UNSET_YEAR}>—</SelectItem>
+                    {YEARS.map((y) => (
+                      <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          )}
+          <div className="space-y-2 sm:col-span-2">
+            <Label htmlFor="intake-title">Intake Name</Label>
+            <Input
+              id="intake-title"
+              value={title}
+              maxLength={260}
+              placeholder="e.g. July 2026 Intake"
+              onChange={(e) => setTitle(e.target.value)}
+            />
+            {!target && (
+              <p className="text-xs text-muted-foreground">
+                Picking a month and year fills in a standard name; you can edit it.
+              </p>
+            )}
+            {title !== "" && error && <p className="text-xs text-destructive">{error}</p>}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={handleClose} disabled={saveMut.isPending}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSave}
+            disabled={!!error || saveMut.isPending}
+            className="bg-accent text-accent-foreground hover:bg-accent-hover"
+          >
+            {saveMut.isPending ? "Saving…" : target ? "Save Name" : "Create Intake"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -829,7 +1379,7 @@ function CreateIntakeDialog({
     mutationFn: (body: IntakeWriteBody) => apiPost("/intakes", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["intakes"] });
-      toast.success("Intake created");
+      toast.success("Intake schedule created");
       reset();
       onClose();
     },
@@ -867,9 +1417,10 @@ function CreateIntakeDialog({
     <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
       <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
-          <DialogTitle>Add Intake</DialogTitle>
+          <DialogTitle>Add Intake Schedule</DialogTitle>
           <DialogDescription>
-            Create a reusable admission intake. Name, code and status are auto-generated.
+            Record the dates of an admission intake. Name, code and status are auto-generated.
+            To make an intake selectable on applications, use Add Intake.
           </DialogDescription>
         </DialogHeader>
 
@@ -969,7 +1520,7 @@ function CreateIntakeDialog({
             disabled={!!validationError || codeTaken || createMut.isPending}
             className="bg-accent text-accent-foreground hover:bg-accent-hover"
           >
-            {createMut.isPending ? "Creating…" : "Create Intake"}
+            {createMut.isPending ? "Creating…" : "Create Schedule"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -982,8 +1533,8 @@ function ViewIntakeDialog({ intake, onClose }: { intake: Intake | null; onClose:
     <Dialog open={!!intake} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
-          <DialogTitle>Intake Details</DialogTitle>
-          <DialogDescription>Read-only view of the intake.</DialogDescription>
+          <DialogTitle>Intake Schedule Details</DialogTitle>
+          <DialogDescription>Read-only view of the intake schedule.</DialogDescription>
         </DialogHeader>
         {intake && (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 text-sm">
@@ -1013,19 +1564,23 @@ function ViewIntakeDialog({ intake, onClose }: { intake: Intake | null; onClose:
             </div>
             <div>
               <p className="text-muted-foreground">Start Date</p>
-              <p className="font-medium">{formatDate(intake.startDate)}</p>
+              <p className={`font-medium ${isFlaggedDate(intake.startDate) ? "text-amber-700" : ""}`}>
+                {formatDate(intake.startDate)}
+              </p>
             </div>
             <div>
               <p className="text-muted-foreground">Closing Date</p>
-              <p className="font-medium">{formatDate(intake.closingDate)}</p>
+              <p className={`font-medium ${isFlaggedDate(intake.closingDate) ? "text-amber-700" : ""}`}>
+                {formatDate(intake.closingDate)}
+              </p>
             </div>
             <div>
               <p className="text-muted-foreground">Mapped Universities</p>
-              <p className="font-medium">{intake.mappedUniversities}</p>
+              <p className="text-muted-foreground">Not available yet</p>
             </div>
             <div>
               <p className="text-muted-foreground">Mapped Courses</p>
-              <p className="font-medium">{intake.mappedCourses}</p>
+              <p className="text-muted-foreground">Not available yet</p>
             </div>
             <div>
               <p className="text-muted-foreground">Status</p>
@@ -1115,7 +1670,7 @@ function EditIntakeDialog({
       apiPatch(`/intakes/${id}`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["intakes"] });
-      toast.success("Intake updated");
+      toast.success("Intake schedule updated");
       onClose();
     },
     onError: (e) =>
@@ -1200,16 +1755,27 @@ function EditIntakeDialog({
    * not being written, so they have nothing to prove.
    */
   const yearError = yearChanged ? validateIntakeYear(year) : null;
-  const datesChanged =
-    startDate !== seed.startDate || closingDate !== seed.closingDate;
-  const dateError = datesChanged
-    ? validateIntakeDates(startDate, closingDate)
-    : null;
+  const startChanged = startDate !== seed.startDate;
+  const closingChanged = closingDate !== seed.closingDate;
+  const dateError = validateChangedDates(
+    startDate,
+    closingDate,
+    startChanged,
+    closingChanged,
+  );
   const validationError = yearError ?? dateError;
 
+  // Stored dates that are corrupt (0025-08-30) are shown, flagged, and left
+  // alone unless the operator replaces them; they never feed the status.
+  const seedStartFlagged = isFlaggedDate(seed.startDate);
+  const seedClosingFlagged = isFlaggedDate(seed.closingDate);
   const derivedStatus = dateError
     ? null
-    : deriveIntakeStatus(startDate, closingDate, toStoredStatus(statusValue));
+    : deriveIntakeStatus(
+        isYearInRange(startDate) ? startDate : "",
+        isYearInRange(closingDate) ? closingDate : "",
+        toStoredStatus(statusValue),
+      );
 
   const handleSave = () => {
     if (validationError) {
@@ -1253,7 +1819,7 @@ function EditIntakeDialog({
     <Dialog open onOpenChange={(o) => !o && handleClose()}>
       <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
-          <DialogTitle>Edit Intake</DialogTitle>
+          <DialogTitle>Edit Intake Schedule</DialogTitle>
           <DialogDescription>
             Update intake details. Only the fields you change are saved.
           </DialogDescription>
@@ -1327,6 +1893,11 @@ function EditIntakeDialog({
               max={MAX_INTAKE_DATE}
               onChange={(e) => setStartDate(e.target.value)}
             />
+            {seedStartFlagged && !startChanged && (
+              <p className="text-xs text-amber-700">
+                The stored date {seed.startDate} is invalid. It is kept as is unless you pick a new date.
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -1338,6 +1909,11 @@ function EditIntakeDialog({
               max={MAX_INTAKE_DATE}
               onChange={(e) => setClosingDate(e.target.value)}
             />
+            {seedClosingFlagged && !closingChanged && (
+              <p className="text-xs text-amber-700">
+                The stored date {seed.closingDate} is invalid. It is kept as is unless you pick a new date.
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">

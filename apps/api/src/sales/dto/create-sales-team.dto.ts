@@ -5,8 +5,10 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
 } from 'class-validator';
+import { LEADER_ID_MESSAGE, LEADER_ID_PATTERN } from './sales-team-ids';
 
 /**
  * Port of Sales::add. `members` arrives as an array of user ids and is stored
@@ -20,9 +22,13 @@ export class CreateSalesTeamDto {
   @MaxLength(160)
   name!: string;
 
+  // A users.id as a digit string (the column is a VarChar(10) id). Rejects a
+  // display name such as "Priya Sharma", which is what the old picker sent
+  // (QA T01).
   @IsOptional()
   @IsString()
   @MaxLength(10)
+  @Matches(LEADER_ID_PATTERN, { message: LEADER_ID_MESSAGE })
   leader?: string;
 
   // Stored as a JSON string of user ids in the members LongText column.

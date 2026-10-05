@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AcademicsService } from './academics.service';
+import { IntakeMasterService } from './intake-master.service';
 import {
   CoursesController,
   UniversitiesController,
@@ -35,6 +36,6 @@ import {
     DocumentTypesController,
     GroupCoursesController,
   ],
-  providers: [AcademicsService],
+  providers: [AcademicsService, IntakeMasterService],
 })
 export class AcademicsModule {}

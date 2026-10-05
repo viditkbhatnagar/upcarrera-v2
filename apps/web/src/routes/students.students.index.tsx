@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { apiGet } from "@/lib/api";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
@@ -8,11 +9,11 @@ import {
   Search,
   Filter,
   RefreshCcw,
-  Bookmark,
   Eye,
   Pencil,
   Phone,
   PhoneCall,
+  PhoneOff,
   Loader2,
   MessageCircle,
   X,
@@ -25,6 +26,10 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStartCall, type CallHealth } from "@/components/calls/calls-ui";
+import { StudentEditDialog } from "@/components/students/student-edit-dialog";
+import { whatsappLink } from "@/components/students/student-contact";
+import { downloadCsv, toCsv } from "@/components/applications/export-csv";
+import { STUDENT_EXPORT_COLUMNS, fetchAllStudents } from "@/components/students/student-export";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -64,14 +69,18 @@ interface ApiStudentRow {
   consultant_id: number | string | null;
   enrollment_date: string | null;
   created_at: string | null;
+  whatsapp_no: string | null;
   // Decorated display fields (joined server-side).
   name: string | null;
   email: string | null;
   phone: string | null;
+  dial_code: number | null;
   profile_picture: string | null;
   consultant_name: string | null;
   course_title: string | null;
   university_title: string | null;
+  specialisation_title: string | null;
+  session_title: string | null;
 }
 
 interface StatusCounts {
@@ -102,6 +111,8 @@ const STATUS_TO_CODE: Record<StudentStatus, string> = {
 // A decorated row, normalised for rendering (real values, blank-safe).
 interface StudentRow {
   rowId: string;
+  /** students.id — what /students/:id takes. Never the display id. */
+  numericId: number;
   displayId: string;
   name: string;
   email: string;
@@ -112,6 +123,8 @@ interface StudentRow {
   enrollmentDate: string;
   coordinator: string;
   status: StudentStatus;
+  /** https://wa.me/<number>, or null when no usable number is on file. */
+  whatsappUrl: string | null;
 }
 
 const EMPTY = "—";
@@ -151,6 +164,7 @@ function mapApiRow(r: ApiStudentRow): StudentRow {
       : `STU-${r.student_id ?? r.id}`;
   return {
     rowId: String(r.id),
+    numericId: Number(r.id),
     displayId,
     name: asText(r.name),
     email: asText(r.email),
@@ -161,6 +175,7 @@ function mapApiRow(r: ApiStudentRow): StudentRow {
     enrollmentDate: formatDate(r.enrollment_date ?? r.created_at),
     coordinator: asText(r.consultant_name),
     status: toStudentStatus(r.admission_status_label),
+    whatsappUrl: whatsappLink(r.whatsapp_no, r.phone, r.dial_code),
   };
 }
 
@@ -185,6 +200,12 @@ function StudentsPage() {
     setPage(1);
   }, [debouncedSearch]);
 
+  // The server-side filters, shared by the list query and the CSV export.
+  const serverFilters = {
+    admission_status: statusFilter === "All" ? undefined : STATUS_TO_CODE[statusFilter],
+    ...(debouncedSearch ? { search: debouncedSearch } : {}),
+  };
+
   const { data, isLoading, isError, error, isFetching } = useQuery({
     queryKey: [
       "students",
@@ -195,11 +216,37 @@ function StudentsPage() {
       apiGet<StudentsListResponse>("/students", {
         page,
         limit: PAGE_SIZE,
-        admission_status: statusFilter === "All" ? undefined : STATUS_TO_CODE[statusFilter],
-        ...(debouncedSearch ? { search: debouncedSearch } : {}),
+        ...serverFilters,
       }),
     placeholderData: (prev) => prev,
   });
+
+  const [editing, setEditing] = useState<StudentRow | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const { rows, total } = await fetchAllStudents<StudentsListResponse>(serverFilters);
+      if (rows.length === 0) {
+        toast.info("No students match the current filters.");
+        return;
+      }
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadCsv(`students-${stamp}.csv`, toCsv(rows, STUDENT_EXPORT_COLUMNS));
+      if (total > rows.length) {
+        toast.warning(
+          `Exported the first ${rows.length.toLocaleString()} of ${total.toLocaleString()} students. Narrow the filters to export the rest.`,
+        );
+      } else {
+        toast.success(`Exported ${rows.length.toLocaleString()} students.`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "The export failed. Please try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const apiTotal = data?.total ?? 0;
   const allRows = useMemo(() => (data?.items ?? []).map(mapApiRow), [data]);
@@ -213,18 +260,11 @@ function StudentsPage() {
   const callsOn = callHealth?.configured ?? false;
   const { callingPhone, start } = useStartCall();
 
-  // Client-side text refinement of the current page over the real joined values.
-  const pageRows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const idQ = stuId.trim().toLowerCase();
-    const phoneQ = phone.trim();
-    return allRows.filter((s) => {
-      if (q && !`${s.name} ${s.email}`.toLowerCase().includes(q)) return false;
-      if (idQ && !s.displayId.toLowerCase().includes(idQ)) return false;
-      if (phoneQ && !s.phone.includes(phoneQ)) return false;
-      return true;
-    });
-  }, [allRows, search, stuId, phone]);
+  // No client-side refinement of the page: the server search already matched
+  // these rows, and re-filtering them here hid real matches — a STU-<id> search
+  // on a student whose displayed id is the enrollment id, or a phone typed with
+  // spaces — while the header still showed the server total.
+  const pageRows = allRows;
 
   const totalPages = Math.max(1, Math.ceil(apiTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -274,9 +314,14 @@ function StudentsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-semibold text-foreground transition hover:bg-muted">
-            <Download className="h-4 w-4" />
-            Export
+          <button
+            onClick={() => void exportCsv()}
+            disabled={exporting || isLoading}
+            title="Download every student matching the current filters as CSV"
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-semibold text-foreground transition hover:bg-muted disabled:opacity-60"
+          >
+            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {exporting ? "Exporting…" : "Export CSV"}
           </button>
         </div>
       </div>
@@ -348,10 +393,6 @@ function StudentsPage() {
             >
               <RefreshCcw className="h-3.5 w-3.5" />
               Reset filters
-            </button>
-            <button className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted">
-              <Bookmark className="h-3.5 w-3.5" />
-              Save view
             </button>
           </div>
         </div>
@@ -468,11 +509,12 @@ function StudentsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
-                        {callsOn && s.phone ? (
+                        {s.phone && callsOn ? (
                           <button
                             onClick={() => start(s.phone || null)}
                             disabled={callingPhone === s.phone}
                             title={`Call ${s.phone}`}
+                            aria-label={`Call ${s.name}`}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-emerald-600 disabled:opacity-60"
                           >
                             {callingPhone === s.phone ? (
@@ -481,6 +523,16 @@ function StudentsPage() {
                               <PhoneCall className="h-4 w-4" />
                             )}
                           </button>
+                        ) : s.phone ? (
+                          // Calling is not configured on this server: say so rather
+                          // than render a button that does nothing.
+                          <span
+                            title="Click-to-call isn't set up on this server"
+                            aria-label="Click-to-call isn't set up"
+                            className="inline-flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-lg text-muted-foreground/40"
+                          >
+                            <PhoneOff className="h-4 w-4" />
+                          </span>
                         ) : null}
                         <Link
                           to="/students/students/$id"
@@ -490,9 +542,19 @@ function StudentsPage() {
                         >
                           <Eye className="h-4 w-4" />
                         </Link>
-                        <IconBtn icon={Pencil} label="Edit" />
-                        <IconBtn icon={Phone} label="Call" />
-                        <IconBtn icon={MessageCircle} label="WhatsApp" />
+                        <IconBtn icon={Pencil} label="Edit" onClick={() => setEditing(s)} />
+                        {s.whatsappUrl && (
+                          <a
+                            href={s.whatsappUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Chat on WhatsApp"
+                            aria-label={`Chat with ${s.name} on WhatsApp`}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-emerald-600"
+                          >
+                            <MessageCircle className="h-4 w-4" />
+                          </a>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -536,6 +598,12 @@ function StudentsPage() {
           </div>
         </div>
       </div>
+
+      <StudentEditDialog
+        studentId={editing?.numericId ?? null}
+        displayId={editing?.displayId ?? null}
+        onClose={() => setEditing(null)}
+      />
     </div>
   );
 }
@@ -673,12 +741,16 @@ function IconBtn({
 }: {
   icon: typeof Eye;
   label: string;
-  onClick?: () => void;
+  // Required: a handler-less action button renders as a working control and
+  // does nothing (QA ST04). Make that a compile error.
+  onClick: () => void;
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       title={label}
+      aria-label={label}
       className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-foreground"
     >
       <Icon className="h-4 w-4" />

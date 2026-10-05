@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateConsultantDto } from './dto/create-consultant.dto';
 import { UpdateConsultantDto } from './dto/update-consultant.dto';
@@ -17,6 +18,27 @@ import {
 import { ListAdmissionsDto } from './dto/list-admissions.dto';
 import { ListTargetsDto } from './dto/list-targets.dto';
 import { CreateTargetDto, UpdateTargetDto } from './dto/create-target.dto';
+import {
+  INDIA_DIAL_CODE,
+  isIndianNational,
+  storedPhoneVariants,
+} from './consultant-phone';
+
+import {
+  stripUserSecrets,
+  USER_SECRET_FIELDS,
+  type UserSecretField,
+} from '../common/user-secrets';
+/** Re-exported for existing callers; the list itself lives in common/user-secrets.ts. */
+export { USER_SECRET_FIELDS };
+/**
+ * users columns that hold a credential and must never leave the API:
+ *   password / prev_password  bcrypt hashes (current and previous);
+ *   otp                       the live one-time login code;
+ *   zoom_password             the counsellor's Zoom account password.
+ * No screen reads any of them. zoom_id, zoom_email and meeting_link are
+ * identifiers that are shared with students by design, so they stay.
+ */
 
 /** Legacy role id for consultants (Consultant.php hard-codes role_id = 6). */
 const CONSULTANT_ROLE_ID = 6;
@@ -29,6 +51,200 @@ const DEFAULT_LIMIT = 20;
 /** Target types (Consultant_target::index). */
 const TARGET_TYPE_POINTS = 1; // sum of specialisation points
 const TARGET_TYPE_COUNT = 2; // admission count
+
+/** Rows the profile's Applications table shows; the counts cover every row. */
+const PROFILE_APPLICATION_ROWS = 100;
+/** Targets returned on the profile — the most recent windows first. */
+const PROFILE_TARGET_ROWS = 24;
+
+/**
+ * students.admission_status code -> label. Mirrors ADMISSION_STATUS_LABELS in
+ * students.service.ts (module-private there) so the profile's buckets read the
+ * same as the Students screen.
+ */
+const ADMISSION_STATUS_LABELS: Record<number, string> = {
+  0: 'Pending',
+  1: 'In Progress',
+  2: 'Enrolled',
+  3: 'Passed Out',
+  4: 'Dropout',
+  5: 'Cancelled',
+};
+const ADMISSION_STATUS_ORDER = [
+  'Pending',
+  'In Progress',
+  'Enrolled',
+  'Passed Out',
+  'Dropout',
+  'Cancelled',
+  'Unknown',
+] as const;
+
+function admissionStatusLabel(code: number | null | undefined): string {
+  if (code == null) return 'Unknown';
+  return ADMISSION_STATUS_LABELS[code] ?? 'Unknown';
+}
+
+/** Application lifecycle label — same rule as students.service.ts. */
+function applicationStatusLabel(a: {
+  is_converted: number | null;
+  is_archived: boolean;
+  status: boolean | null;
+}): string {
+  if (a.is_converted === 1) return 'Converted';
+  if (a.is_archived) return 'Archived';
+  if (a.status === false) return 'Inactive';
+  return 'Active';
+}
+
+/** Midnight today (UTC) — target windows are @db.Date columns. */
+function startOfToday(): Date {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+/** The window contains `day` (open ends count as unbounded). */
+function targetWindowContains(
+  t: { from_date: Date | null; to_date: Date | null },
+  day: Date,
+): boolean {
+  return (!t.from_date || t.from_date <= day) && (!t.to_date || t.to_date >= day);
+}
+
+/**
+ * Strict YYYY-MM-DD -> UTC midnight Date for the @db.Date columns. `new Date()`
+ * silently rolls impossible days forward (2025-02-30 -> 2025-03-02), which
+ * would store a window nobody asked for, so the parts must round-trip.
+ */
+function parseTargetDate(value: string, field: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (m) {
+    const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    const date = new Date(Date.UTC(y, mo - 1, d));
+    if (
+      date.getUTCFullYear() === y &&
+      date.getUTCMonth() === mo - 1 &&
+      date.getUTCDate() === d
+    ) {
+      return date;
+    }
+  }
+  throw new BadRequestException(`${field} is not a valid calendar date (YYYY-MM-DD).`);
+}
+
+function assertWindowOrder(from: Date, to: Date): void {
+  if (to < from) {
+    throw new BadRequestException('to_date must be on or after from_date.');
+  }
+}
+
+type TargetForPerformance = {
+  type: number | null;
+  value: number | null;
+  consultant_id: number | null;
+  from_date: Date | null;
+  to_date: Date | null;
+};
+type ActiveTargetSummary = {
+  consultant_target_id: number;
+  consultant_id: number | null;
+  type: number | null;
+  value: number | null;
+  from_date: Date | null;
+  to_date: Date | null;
+  achieved: number;
+  performance: string;
+};
+type StudentForPerformance = {
+  consultant_id: number;
+  course_id: number | null;
+  enrollment_date: Date | null;
+};
+
+/**
+ * The student enrolled inside the target's window. Same semantics as the old
+ * per-target Prisma filter: no window at all matches every student; any bound
+ * excludes a NULL enrollment_date (SQL comparison with NULL is never true).
+ */
+function enrolledWithin(enrolled: Date | null, t: TargetForPerformance): boolean {
+  if (!t.from_date && !t.to_date) return true;
+  if (!enrolled) return false;
+  if (t.from_date && enrolled < t.from_date) return false;
+  if (t.to_date && enrolled > t.to_date) return false;
+  return true;
+}
+
+/**
+ * One enrollment_date filter covering every target's window (min from_date to
+ * max to_date). A bound is dropped when any target leaves that end open, and
+ * the filter is dropped entirely when any target has no window at all, since
+ * that target counts students with no enrollment_date too.
+ */
+function enrollmentWindowUnion(
+  targets: readonly TargetForPerformance[],
+): Prisma.studentsWhereInput {
+  if (targets.length === 0 || targets.some((t) => !t.from_date && !t.to_date)) return {};
+  const froms = targets.map((t) => t.from_date);
+  const tos = targets.map((t) => t.to_date);
+  // reduce, not Math.min(...spread): the Targets screen can pass thousands.
+  const lower = froms.every((d): d is Date => d != null)
+    ? froms.reduce((a, b) => (b < a ? b : a))
+    : undefined;
+  const upper = tos.every((d): d is Date => d != null)
+    ? tos.reduce((a, b) => (b > a ? b : a))
+    : undefined;
+  if (!lower && !upper) return { enrollment_date: { not: null } };
+  return {
+    enrollment_date: { ...(lower ? { gte: lower } : {}), ...(upper ? { lte: upper } : {}) },
+  };
+}
+
+/**
+ * Status counts, distinct counsellors and window months across a whole target
+ * list (no extra queries). Status uses the same UTC "today" as is_active:
+ * Upcoming = starts after today, Ended = ended before today, else Active.
+ */
+function summariseTargets(
+  targets: readonly { consultant_id: number | null; from_date: Date | null; to_date: Date | null }[],
+  today: Date,
+) {
+  let active = 0;
+  let upcoming = 0;
+  let ended = 0;
+  const consultantIds = new Set<number>();
+  const months = new Set<string>();
+  for (const t of targets) {
+    if (t.from_date && t.from_date > today) upcoming += 1;
+    else if (t.to_date && t.to_date < today) ended += 1;
+    else active += 1;
+    if (t.consultant_id != null) consultantIds.add(t.consultant_id);
+    const anchorDate = t.from_date ?? t.to_date;
+    if (anchorDate) months.add(anchorDate.toISOString().slice(0, 7));
+  }
+  return {
+    active,
+    upcoming,
+    ended,
+    consultant_ids: [...consultantIds].sort((x, y) => x - y),
+    months: [...months].sort().reverse(),
+  };
+}
+
+/** Trim a group code; blank or null means "no code" (stored as NULL). */
+function normaliseGroupCode(code: string | null | undefined): string | null {
+  const trimmed = code?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function isoDate(d: Date | null): string {
+  return d ? d.toISOString().slice(0, 10) : 'open';
+}
+
+function targetTypeLabel(type: number): string {
+  if (type === TARGET_TYPE_POINTS) return 'points';
+  if (type === TARGET_TYPE_COUNT) return 'admissions';
+  return `type ${type}`;
+}
 
 /**
  * Port of CI4 App\Controllers\App\{Consultant, Consultant_target}.
@@ -59,12 +275,14 @@ export class ConsultantsService {
     };
   }
 
-  /** Never leak password hashes in API responses. */
-  private stripSecrets<
-    T extends { password?: string | null; prev_password?: string | null },
-  >(user: T): Omit<T, 'password' | 'prev_password'> {
-    const { password, prev_password, ...rest } = user;
-    return rest;
+  /**
+   * Never leak credentials in API responses. Every users row this module
+   * returns passes through here, so the deny-list is the single place a new
+   * credential column has to be added. See USER_SECRET_FIELDS.
+   */
+  /** Remove every credential column — see common/user-secrets.ts. */
+  private stripSecrets<T extends object>(user: T): Omit<T, UserSecretField> {
+    return stripUserSecrets(user);
   }
 
   // ===========================================================================
@@ -100,12 +318,58 @@ export class ConsultantsService {
       this.prisma.users.count({ where }),
     ]);
 
+    const [decorated, activeTargets] = await Promise.all([
+      this.decorateHierarchy(items.map((u) => this.stripSecrets(u))),
+      this.activeTargetsByConsultant(items.map((u) => u.id)),
+    ]);
+
     return {
-      items: await this.decorateHierarchy(items.map((u) => this.stripSecrets(u))),
+      // active_targets: the targets whose window contains today, with
+      // achieved/performance (additive; [] when the counsellor has none).
+      items: decorated.map((u) => ({ ...u, active_targets: activeTargets.get(u.id) ?? [] })),
       total,
       page: pg.page,
       limit: pg.limit,
     };
+  }
+
+  /**
+   * Active targets (window contains today) for a page of counsellors, with
+   * achieved and performance — three queries total for the whole page (the
+   * targets, then targetPerformanceBatch's two). Feeds the list's Active
+   * Target column, which used to render a hard-coded 0/0 for everyone.
+   */
+  private async activeTargetsByConsultant(consultantIds: number[]) {
+    const byConsultant = new Map<number, ActiveTargetSummary[]>();
+    if (consultantIds.length === 0) return byConsultant;
+
+    const today = startOfToday();
+    const targets = await this.prisma.consultant_target.findMany({
+      where: {
+        consultant_id: { in: consultantIds },
+        deleted_at: null,
+        AND: [
+          { OR: [{ from_date: null }, { from_date: { lte: today } }] },
+          { OR: [{ to_date: null }, { to_date: { gte: today } }] },
+        ],
+      },
+      orderBy: [{ type: 'asc' }, { from_date: 'desc' }, { consultant_target_id: 'desc' }],
+      select: {
+        consultant_target_id: true,
+        consultant_id: true,
+        type: true,
+        value: true,
+        from_date: true,
+        to_date: true,
+      },
+    });
+    const performance = await this.targetPerformanceBatch(targets);
+
+    targets.forEach((t, i) => {
+      const cid = t.consultant_id as number;
+      byConsultant.set(cid, [...(byConsultant.get(cid) ?? []), { ...t, ...performance[i] }]);
+    });
+    return byConsultant;
   }
 
   /**
@@ -276,21 +540,24 @@ export class ConsultantsService {
 
   /** POST /consultants/groups */
   async createGroup(dto: CreateCounsellorGroupDto, actorUserId: number) {
-    await this.assertGroupCodeFree(dto.code);
+    const code = normaliseGroupCode(dto.code);
+    await this.assertGroupCodeFree(code);
     if (dto.manager_id !== undefined) await this.assertUserExists(dto.manager_id);
 
     const now = new Date();
-    return this.prisma.counsellor_group.create({
-      data: {
-        code: dto.code ?? null,
-        name: dto.name,
-        manager_id: dto.manager_id ?? null,
-        status: dto.status ?? 1,
-        created_by: actorUserId,
-        created_at: now,
-        updated_at: now,
-      },
-    });
+    return this.withGroupCodeGuard(() =>
+      this.prisma.counsellor_group.create({
+        data: {
+          code,
+          name: dto.name,
+          manager_id: dto.manager_id ?? null,
+          status: dto.status ?? 1,
+          created_by: actorUserId,
+          created_at: now,
+          updated_at: now,
+        },
+      }),
+    );
   }
 
   /** PATCH /consultants/groups/:id */
@@ -300,24 +567,28 @@ export class ConsultantsService {
     });
     if (!existing) throw new NotFoundException('Counsellor group not found!');
 
-    if (dto.code !== undefined && dto.code !== existing.code) {
-      await this.assertGroupCodeFree(dto.code);
+    // "" or null clears the code; anything else must be free (409 otherwise).
+    const code = dto.code !== undefined ? normaliseGroupCode(dto.code) : undefined;
+    if (code !== undefined && code !== existing.code) {
+      await this.assertGroupCodeFree(code, id);
     }
     if (dto.manager_id !== undefined && dto.manager_id !== null) {
       await this.assertUserExists(dto.manager_id);
     }
 
-    return this.prisma.counsellor_group.update({
-      where: { id },
-      data: {
-        ...(dto.code !== undefined ? { code: dto.code } : {}),
-        ...(dto.name !== undefined ? { name: dto.name } : {}),
-        ...(dto.manager_id !== undefined ? { manager_id: dto.manager_id } : {}),
-        ...(dto.status !== undefined ? { status: dto.status } : {}),
-        updated_by: actorUserId,
-        updated_at: new Date(),
-      },
-    });
+    return this.withGroupCodeGuard(() =>
+      this.prisma.counsellor_group.update({
+        where: { id },
+        data: {
+          ...(code !== undefined ? { code } : {}),
+          ...(dto.name !== undefined ? { name: dto.name } : {}),
+          ...(dto.manager_id !== undefined ? { manager_id: dto.manager_id } : {}),
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          updated_by: actorUserId,
+          updated_at: new Date(),
+        },
+      }),
+    );
   }
 
   /** DELETE /consultants/groups/:id — soft delete, and orphan its teams. */
@@ -344,13 +615,41 @@ export class ConsultantsService {
     return { id };
   }
 
-  /** Group codes are the operator-facing identifier, so they must be unique. */
-  private async assertGroupCodeFree(code: string | null | undefined) {
+  /**
+   * Group codes are the operator-facing identifier, so they must be unique.
+   *
+   * uq_counsellor_group_code is a plain UNIQUE index, so it also covers
+   * soft-deleted groups (removeGroup keeps the code for the audit trail). The
+   * check therefore ignores deleted_at, like assertEmployeeCodeFree: a code held
+   * by a deleted group would otherwise pass here and fail on the index as a 500.
+   */
+  private async assertGroupCodeFree(code: string | null, exceptGroupId?: number) {
     if (!code) return;
     const clash = await this.prisma.counsellor_group.findFirst({
-      where: { code, deleted_at: null },
+      where: {
+        code,
+        ...(exceptGroupId !== undefined ? { id: { not: exceptGroupId } } : {}),
+      },
+      select: { id: true, deleted_at: true },
     });
-    if (clash) throw new ConflictException('A group with this code already exists');
+    if (!clash) return;
+    throw new ConflictException(
+      clash.deleted_at
+        ? `Group code ${code} belongs to a deleted group and cannot be reused`
+        : `A group with code ${code} already exists`,
+    );
+  }
+
+  /** Turn a lost race on uq_counsellor_group_code into the same 409. */
+  private async withGroupCodeGuard<T>(write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException('A group with this code already exists');
+      }
+      throw e;
+    }
   }
 
   private async assertUserExists(userId: number) {
@@ -358,6 +657,44 @@ export class ConsultantsService {
       where: { id: userId, deleted_at: null },
     });
     if (!user) throw new NotFoundException('User not found!');
+  }
+
+  /**
+   * users.employee_code carries a UNIQUE index (uq_users_employee_code) that
+   * also covers soft-deleted rows, so the check deliberately ignores deleted_at:
+   * a code held by a deleted user would still make the write fail.
+   */
+  private async assertEmployeeCodeFree(code: string | null, exceptUserId?: number) {
+    if (!code) return;
+    const holder = await this.prisma.users.findFirst({
+      where: {
+        employee_code: code,
+        ...(exceptUserId !== undefined ? { id: { not: exceptUserId } } : {}),
+      },
+      select: { id: true, name: true, deleted_at: true },
+    });
+    if (!holder) return;
+    throw new ConflictException(
+      holder.deleted_at
+        ? `Employee code ${code} belongs to a deleted user and cannot be reused`
+        : `Employee code ${code} is already assigned to ${holder.name ?? `user #${holder.id}`}`,
+    );
+  }
+
+  /** Turn a lost race on uq_users_employee_code into the same 409. */
+  private async withEmployeeCodeGuard<T>(write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002' &&
+        JSON.stringify(e.meta ?? {}).includes('employee_code')
+      ) {
+        throw new ConflictException('This employee code is already assigned to another user');
+      }
+      throw e;
+    }
   }
 
 
@@ -394,8 +731,12 @@ export class ConsultantsService {
 
     const students = await this.attachStudentUsers(studentProfiles);
 
+    // Team / Team Leader / Group / Manager, so the profile header is not "—".
+    const [decorated] = await this.decorateHierarchy([this.stripSecrets(consultant)]);
+
     return {
-      ...this.stripSecrets(consultant),
+      ...decorated,
+      reports_to_name: await this.userName(consultant.reports_to),
       country: country?.country ?? null,
       students,
       total_students: students.length,
@@ -409,17 +750,26 @@ export class ConsultantsService {
    * wired into this module (it is optional per the migration brief).
    */
   async create(dto: CreateConsultantDto, actorUserId: number) {
-    // Duplicate guard (legacy checked code+phone and email separately).
-    const dupPhone =
-      dto.phone !== undefined
-        ? await this.prisma.users.count({
-            where: {
-              code: dto.code ?? undefined,
-              phone: dto.phone,
-              deleted_at: null,
-            },
-          })
-        : 0;
+    // The DTO has already normalised the phone (QA C08). An Indian national
+    // number with no dial code gets 91, matching every clean legacy row.
+    const phone = dto.phone ? dto.phone : undefined;
+    const code =
+      dto.code ?? (phone && isIndianNational(phone) ? INDIA_DIAL_CODE : undefined);
+    const employeeCode = dto.employee_code ? dto.employee_code : null;
+
+    // Duplicate guard (legacy checked code+phone and email separately). The
+    // phone is matched in every shape the legacy forms stored it in, so posting
+    // "8714689444" is caught by an existing "87146 89444". The dial code only
+    // narrows the match for a non-Indian number.
+    const dupPhone = phone
+      ? await this.prisma.users.count({
+          where: {
+            phone: { in: storedPhoneVariants(phone) },
+            ...(code !== undefined && code !== INDIA_DIAL_CODE ? { code } : {}),
+            deleted_at: null,
+          },
+        })
+      : 0;
     const dupEmail =
       dto.email !== undefined && dto.email !== ''
         ? await this.prisma.users.count({
@@ -430,17 +780,20 @@ export class ConsultantsService {
     if (dupPhone > 0 || dupEmail > 0) {
       throw new ConflictException('User already exists!');
     }
+    await this.assertEmployeeCodeFree(employeeCode);
 
     const now = new Date();
     const hashed = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
 
-    const consultant = await this.prisma.users.create({
+    const consultant = await this.withEmployeeCodeGuard(() =>
+      this.prisma.users.create({
       data: {
         name: dto.name,
         username: dto.username,
         password: hashed,
-        code: dto.code ?? null,
-        phone: dto.phone ?? null,
+        code: code ?? null,
+        phone: phone ?? null,
+        employee_code: employeeCode,
         email: dto.email ?? null,
         gender: dto.gender ?? null,
         dob: dto.dob ? new Date(dto.dob) : null,
@@ -459,7 +812,8 @@ export class ConsultantsService {
         created_at: now,
         updated_at: now,
       },
-    });
+      }),
+    );
 
     // Keep the consultant_universities join table in sync with the JSON column.
     await this.syncConsultantUniversities(
@@ -491,7 +845,6 @@ export class ConsultantsService {
       'name',
       'username',
       'code',
-      'phone',
       'email',
       'gender',
       'country_id',
@@ -509,6 +862,22 @@ export class ConsultantsService {
     if (dto.dob !== undefined) data.dob = dto.dob ? new Date(dto.dob) : null;
     if (dto.doj !== undefined) data.doj = dto.doj ? new Date(dto.doj) : null;
 
+    // Phone arrives normalised from the DTO (QA C08). An empty string clears it.
+    // A new Indian number with no dial code posted gets 91, like on create.
+    if (dto.phone !== undefined) {
+      data.phone = dto.phone === '' ? null : dto.phone;
+      if (dto.code === undefined && dto.phone && isIndianNational(dto.phone)) {
+        data.code = INDIA_DIAL_CODE;
+      }
+    }
+
+    // Employee code: "" clears it; anything else must be free (409 otherwise).
+    if (dto.employee_code !== undefined) {
+      const employeeCode = dto.employee_code === '' ? null : dto.employee_code;
+      await this.assertEmployeeCodeFree(employeeCode, id);
+      data.employee_code = employeeCode;
+    }
+
     if (dto.assigned_universities !== undefined) {
       data.assigned_universities = this.encodeUniversities(
         dto.assigned_universities,
@@ -519,10 +888,9 @@ export class ConsultantsService {
       data.password = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
     }
 
-    const consultant = await this.prisma.users.update({
-      where: { id },
-      data,
-    });
+    const consultant = await this.withEmployeeCodeGuard(() =>
+      this.prisma.users.update({ where: { id }, data }),
+    );
 
     if (dto.assigned_universities !== undefined) {
       await this.syncConsultantUniversities(
@@ -673,35 +1041,215 @@ export class ConsultantsService {
   /**
    * GET /consultants/:id/performance — one consultant's detail with their
    * students and aggregate fee revenue (port of Consultant::view_performance).
+   *
+   * Extended for the profile screen (QA C07), which used to download the 100
+   * newest applications and students SYSTEM-WIDE and count the ones that
+   * belonged to this counsellor in the browser — so every KPI was computed over
+   * a truncated slice (844 applications and 1,500+ students exist). Everything
+   * the profile shows is now computed here over the complete set:
+   *   - students       every one of the counsellor's students (as before), each
+   *                    with course/university titles and a status label;
+   *   - student_counts the students bucketed by admission status;
+   *   - application_counts / total_applications  ONE groupBy over all of the
+   *                    counsellor's applications;
+   *   - applications   the most recent ones, for the table (capped, see below);
+   *   - targets        the counsellor's targets with achieved/performance and
+   *                    an `is_active` flag (window contains today);
+   *   - the Group -> Team -> Counsellor chain and reports_to_name.
+   * Every added field is additive; the original response keys are unchanged.
    */
   async performanceOne(id: number) {
     const consultant = await this.getConsultantOrThrow(id);
 
-    const studentProfiles = await this.prisma.students.findMany({
-      where: { consultant_id: id, deleted_at: null },
-      orderBy: { id: 'desc' },
-    });
+    // An application belongs to a counsellor through pipeline_user, falling back
+    // to created_by when unassigned — the same rule GET /applications uses to
+    // fill its derived consultant_id.
+    const applicationWhere: Prisma.applicationsWhereInput = {
+      deleted_at: null,
+      OR: [{ pipeline_user: id }, { pipeline_user: null, created_by: id }],
+    };
+
+    const [studentProfiles, applicationGroups, recentApplications, targets] =
+      await Promise.all([
+        this.prisma.students.findMany({
+          where: { consultant_id: id, deleted_at: null },
+          orderBy: { id: 'desc' },
+        }),
+        this.prisma.applications.groupBy({
+          by: ['is_converted', 'is_archived', 'status'],
+          where: applicationWhere,
+          _count: { _all: true },
+        }),
+        this.prisma.applications.findMany({
+          where: applicationWhere,
+          orderBy: { application_id: 'desc' },
+          take: PROFILE_APPLICATION_ROWS,
+          select: {
+            application_id: true,
+            custom_application_id: true,
+            name: true,
+            course_id: true,
+            enrollment_date: true,
+            created_at: true,
+            is_converted: true,
+            is_archived: true,
+            status: true,
+          },
+        }),
+        this.profileTargets(id),
+      ]);
 
     const studentUserIds = studentProfiles.map((s) => s.student_id);
-    const feeByStudent = await this.feeRevenueByStudent(studentUserIds);
+    const [feeByStudent, studentsWithUsers, courseTitles] = await Promise.all([
+      this.feeRevenueByStudent(studentUserIds),
+      this.attachStudentUsers(studentProfiles),
+      this.courseTitles([
+        ...studentProfiles.map((s) => s.course_id),
+        ...recentApplications.map((a) => a.course_id),
+      ]),
+    ]);
 
-    const students = (await this.attachStudentUsers(studentProfiles)).map(
-      (s) => ({
-        ...s,
-        total_fee_revenue: feeByStudent.get(s.student_id) ?? 0,
-      }),
-    );
+    const students = studentsWithUsers.map((s) => ({
+      ...s,
+      total_fee_revenue: feeByStudent.get(s.student_id) ?? 0,
+      admission_status_label: admissionStatusLabel(s.admission_status),
+      ...courseTitles.titlesFor(s.course_id),
+    }));
 
     const totalFeeRevenue = students.reduce(
       (sum, s) => sum + s.total_fee_revenue,
       0,
     );
 
+    const studentCounts = Object.fromEntries(
+      ADMISSION_STATUS_ORDER.map((label) => [label, 0]),
+    ) as Record<(typeof ADMISSION_STATUS_ORDER)[number], number>;
+    for (const s of students) {
+      const label = s.admission_status_label as keyof typeof studentCounts;
+      studentCounts[label] = (studentCounts[label] ?? 0) + 1;
+    }
+
+    const applicationCounts = { total: 0, open: 0, converted: 0, closed: 0 };
+    for (const g of applicationGroups) {
+      const n = g._count._all;
+      applicationCounts.total += n;
+      if (g.is_converted === 1) applicationCounts.converted += n;
+      else if (g.is_archived || g.status === false) applicationCounts.closed += n;
+      else applicationCounts.open += n;
+    }
+
+    const applications = recentApplications.map((a) => ({
+      ...a,
+      applicant_name: a.name ?? null,
+      status_label: applicationStatusLabel(a),
+      ...courseTitles.titlesFor(a.course_id),
+    }));
+
+    // Achieved for every target in two queries total (targetPerformanceBatch).
+    const today = startOfToday();
+    const performance = await this.targetPerformanceBatch(targets);
+    const targetRows = targets.map((t, i) => ({
+      ...t,
+      ...performance[i],
+      is_active: targetWindowContains(t, today),
+    }));
+
+    const [decorated] = await this.decorateHierarchy([this.stripSecrets(consultant)]);
+
     return {
-      ...this.stripSecrets(consultant),
+      ...decorated,
+      reports_to_name: await this.userName(consultant.reports_to),
       students,
       total_students: students.length,
       total_fee_revenue: totalFeeRevenue,
+      student_counts: studentCounts,
+      total_applications: applicationCounts.total,
+      application_counts: applicationCounts,
+      applications,
+      applications_truncated: applicationCounts.total > applications.length,
+      targets: targetRows,
+    };
+  }
+
+  /**
+   * The profile's targets: the PROFILE_TARGET_ROWS most recent windows, plus
+   * every window that contains today. Without the second query a counsellor
+   * with a year planned ahead (24+ future targets) had the current one cut off,
+   * and the profile said "No target" while one was active. Newest window first.
+   */
+  private async profileTargets(consultantId: number) {
+    const today = startOfToday();
+    const [recent, active] = await Promise.all([
+      this.prisma.consultant_target.findMany({
+        where: { consultant_id: consultantId, deleted_at: null },
+        orderBy: [{ from_date: 'desc' }, { consultant_target_id: 'desc' }],
+        take: PROFILE_TARGET_ROWS,
+      }),
+      this.prisma.consultant_target.findMany({
+        where: {
+          consultant_id: consultantId,
+          deleted_at: null,
+          AND: [
+            { OR: [{ from_date: null }, { from_date: { lte: today } }] },
+            { OR: [{ to_date: null }, { to_date: { gte: today } }] },
+          ],
+        },
+      }),
+    ]);
+    const seen = new Set(recent.map((t) => t.consultant_target_id));
+    return [...recent, ...active.filter((t) => !seen.has(t.consultant_target_id))].sort(
+      (a, b) =>
+        (b.from_date?.getTime() ?? 0) - (a.from_date?.getTime() ?? 0) ||
+        b.consultant_target_id - a.consultant_target_id,
+    );
+  }
+
+  /** Name of one user, or null when unset/missing. */
+  private async userName(userId: number | null | undefined): Promise<string | null> {
+    if (!userId) return null;
+    const user = await this.prisma.users.findFirst({
+      where: { id: userId, deleted_at: null },
+      select: { name: true },
+    });
+    return user?.name ?? null;
+  }
+
+  /**
+   * Course + university titles for a set of course ids, two bulk queries total.
+   * Returns a lookup so callers can spread `{course_title, university_id,
+   * university_title}` onto any row carrying a course_id.
+   */
+  private async courseTitles(courseIds: (number | null)[]) {
+    const ids = [...new Set(courseIds.filter((c): c is number => c != null))];
+    const courses = ids.length
+      ? await this.prisma.course.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, title: true, university_id: true },
+        })
+      : [];
+    const universityIds = [
+      ...new Set(courses.map((c) => c.university_id).filter((u): u is number => u != null)),
+    ];
+    const universities = universityIds.length
+      ? await this.prisma.university.findMany({
+          where: { id: { in: universityIds } },
+          select: { id: true, title: true },
+        })
+      : [];
+    const courseById = new Map(courses.map((c) => [c.id, c]));
+    const universityTitle = new Map(universities.map((u) => [u.id, u.title ?? null]));
+
+    return {
+      titlesFor(courseId: number | null) {
+        const course = courseId != null ? courseById.get(courseId) : undefined;
+        const universityId = course?.university_id ?? null;
+        return {
+          course_title: course?.title ?? null,
+          university_id: universityId,
+          university_title:
+            universityId != null ? (universityTitle.get(universityId) ?? null) : null,
+        };
+      },
     };
   }
 
@@ -835,6 +1383,13 @@ export class ConsultantsService {
    *     consultant's students enrolled within [from_date, to_date].
    *   - type 2 (count): achieved = COUNT of those students.
    *   performance = round(achieved / value * 100, 2) + '%'.
+   *
+   * Ordered by the target window, newest first (from_date, then to_date, then
+   * id as a stable tie-break). It used to be ordered by consultant_target_id,
+   * i.e. insertion order, which read as a shuffled list of months (QA TG02).
+   * Each row also carries consultant_employee_code (so the screen can show the
+   * counsellor's display id instead of the bare users.id) and is_active (the
+   * window contains today — the same rule the counsellor profile uses).
    */
   async findTargets(query: ListTargetsDto) {
     const pg = this.normalizePagination(query.page, query.limit);
@@ -848,7 +1403,11 @@ export class ConsultantsService {
 
     const allTargets = await this.prisma.consultant_target.findMany({
       where,
-      orderBy: { consultant_target_id: 'desc' },
+      orderBy: [
+        { from_date: 'desc' },
+        { to_date: 'desc' },
+        { consultant_target_id: 'desc' },
+      ],
     });
 
     // Resolve consultants and optionally apply the name/phone/email search.
@@ -871,11 +1430,12 @@ export class ConsultantsService {
                       { name: { contains: query.search } },
                       { phone: { contains: query.search } },
                       { email: { contains: query.search } },
+                      { employee_code: { contains: query.search } },
                     ],
                   }
                 : {}),
             },
-            select: { id: true, name: true },
+            select: { id: true, name: true, employee_code: true },
           })
         : [];
 
@@ -888,23 +1448,32 @@ export class ConsultantsService {
         )
       : allTargets;
 
-    const computed = await Promise.all(
-      filtered.map(async (target) => {
-        const performance = await this.computeTargetPerformance(target);
-        return {
-          ...target,
-          consultant_name:
-            target.consultant_id != null
-              ? (consultantById.get(target.consultant_id)?.name ?? null)
-              : null,
-          ...performance,
-        };
-      }),
-    );
+    // Order does not depend on performance, so only the requested page is
+    // computed, and in two queries total rather than one or two per target.
+    const today = startOfToday();
+    const page = filtered.slice(pg.skip, pg.skip + pg.limit);
+    const performance = await this.targetPerformanceBatch(page);
+    const items = page.map((target, i) => {
+      const consultant =
+        target.consultant_id != null ? consultantById.get(target.consultant_id) : undefined;
+      return {
+        ...target,
+        consultant_name: consultant?.name ?? null,
+        consultant_employee_code: consultant?.employee_code ?? null,
+        is_active: targetWindowContains(target, today),
+        ...performance[i],
+      };
+    });
 
-    const items = computed.slice(pg.skip, pg.skip + pg.limit);
-
-    return { items, total: computed.length, page: pg.page, limit: pg.limit };
+    return {
+      items,
+      total: filtered.length,
+      page: pg.page,
+      limit: pg.limit,
+      // Over EVERY matching target, not just this page, so the screen's KPI
+      // cards and month filter stay right when the list is longer than a page.
+      summary: summariseTargets(filtered, today),
+    };
   }
 
   /** GET /consultant-targets/:id — one target with its computed performance. */
@@ -920,15 +1489,17 @@ export class ConsultantsService {
       target.consultant_id != null
         ? await this.prisma.users.findFirst({
             where: { id: target.consultant_id, deleted_at: null },
-            select: { id: true, name: true },
+            select: { id: true, name: true, employee_code: true },
           })
         : null;
 
-    const performance = await this.computeTargetPerformance(target);
+    const [performance] = await this.targetPerformanceBatch([target]);
 
     return {
       ...target,
       consultant_name: consultant?.name ?? null,
+      consultant_employee_code: consultant?.employee_code ?? null,
+      is_active: targetWindowContains(target, startOfToday()),
       ...performance,
     };
   }
@@ -937,32 +1508,30 @@ export class ConsultantsService {
    * POST /consultant-targets — create a target after the legacy date-range
    * conflict guard (no overlapping target for the same consultant + type).
    * Port of Consultant_target::add.
+   *
+   * Also rejects what the legacy port let through: impossible calendar dates
+   * (JS rolls 2025-02-30 over to 2 March), a window that ends before it starts,
+   * and a consultant_id that is not a live counsellor (the target would be
+   * orphaned and show as a nameless row).
    */
   async createTarget(dto: CreateTargetDto, actorUserId: number) {
-    const fromDate = new Date(dto.from_date);
-    const toDate = new Date(dto.to_date);
+    const fromDate = parseTargetDate(dto.from_date, 'from_date');
+    const toDate = parseTargetDate(dto.to_date, 'to_date');
+    assertWindowOrder(fromDate, toDate);
 
-    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
-      throw new BadRequestException('Invalid from_date / to_date.');
-    }
-
-    // Overlap test: an existing target conflicts when its window intersects
-    // [from, to] — i.e. existing.from_date <= to AND existing.to_date >= from.
-    const conflict = await this.prisma.consultant_target.findFirst({
+    const consultant = await this.prisma.users.findFirst({
       where: {
+        id: dto.consultant_id,
+        role_id: CONSULTANT_ROLE_ID,
         deleted_at: null,
-        consultant_id: dto.consultant_id,
-        type: dto.type,
-        from_date: { lte: toDate },
-        to_date: { gte: fromDate },
       },
+      select: { id: true },
     });
-
-    if (conflict) {
-      throw new ConflictException(
-        'Date range conflicts with an existing record for this consultant and type.',
-      );
+    if (!consultant) {
+      throw new NotFoundException('Consultant not found!');
     }
+
+    await this.assertNoTargetOverlap(dto.consultant_id, dto.type, fromDate, toDate);
 
     const now = new Date();
     return this.prisma.consultant_target.create({
@@ -980,7 +1549,14 @@ export class ConsultantsService {
     });
   }
 
-  /** PATCH /consultant-targets/:id — partial update (port of Consultant_target::edit). */
+  /**
+   * PATCH /consultant-targets/:id — partial update (port of Consultant_target::edit).
+   *
+   * Only the fields sent are written. When the type or window changes, the
+   * same overlap guard as create runs against the merged values (excluding
+   * this row), so an edit cannot produce two clashing targets the create path
+   * would have refused.
+   */
   async updateTarget(id: number, dto: UpdateTargetDto, actorUserId: number) {
     const existing = await this.prisma.consultant_target.findFirst({
       where: { consultant_target_id: id, deleted_at: null },
@@ -989,19 +1565,76 @@ export class ConsultantsService {
       throw new NotFoundException('Consultant target not found!');
     }
 
+    const fromDate =
+      dto.from_date !== undefined
+        ? parseTargetDate(dto.from_date, 'from_date')
+        : existing.from_date;
+    const toDate =
+      dto.to_date !== undefined
+        ? parseTargetDate(dto.to_date, 'to_date')
+        : existing.to_date;
+    if (fromDate && toDate) assertWindowOrder(fromDate, toDate);
+
+    const type = dto.type ?? existing.type;
+    const windowChanged =
+      dto.type !== undefined || dto.from_date !== undefined || dto.to_date !== undefined;
+    if (
+      windowChanged &&
+      existing.consultant_id != null &&
+      type != null &&
+      fromDate &&
+      toDate
+    ) {
+      await this.assertNoTargetOverlap(existing.consultant_id, type, fromDate, toDate, id);
+    }
+
     const data: Record<string, unknown> = {
       updated_by: actorUserId,
       updated_at: new Date(),
     };
     if (dto.type !== undefined) data.type = dto.type;
     if (dto.value !== undefined) data.value = dto.value;
-    if (dto.from_date !== undefined) data.from_date = new Date(dto.from_date);
-    if (dto.to_date !== undefined) data.to_date = new Date(dto.to_date);
+    if (dto.from_date !== undefined) data.from_date = fromDate;
+    if (dto.to_date !== undefined) data.to_date = toDate;
 
     return this.prisma.consultant_target.update({
       where: { consultant_target_id: id },
       data,
     });
+  }
+
+  /**
+   * The legacy conflict guard: an existing target clashes when it is for the
+   * same consultant and type and its window intersects [from, to] — i.e.
+   * existing.from_date <= to AND existing.to_date >= from.
+   */
+  private async assertNoTargetOverlap(
+    consultantId: number,
+    type: number,
+    from: Date,
+    to: Date,
+    excludeId?: number,
+  ) {
+    const conflict = await this.prisma.consultant_target.findFirst({
+      where: {
+        deleted_at: null,
+        consultant_id: consultantId,
+        type,
+        from_date: { lte: to },
+        to_date: { gte: from },
+        ...(excludeId !== undefined
+          ? { consultant_target_id: { not: excludeId } }
+          : {}),
+      },
+      select: { consultant_target_id: true, from_date: true, to_date: true },
+    });
+
+    if (conflict) {
+      const span = `${isoDate(conflict.from_date)} to ${isoDate(conflict.to_date)}`;
+      throw new ConflictException(
+        `Date range conflicts with an existing ${targetTypeLabel(type)} target for this consultant (${span}).`,
+      );
+    }
   }
 
   /** DELETE /consultant-targets/:id — soft delete. */
@@ -1089,82 +1722,90 @@ export class ConsultantsService {
   }
 
   /**
-   * Compute a target's achieved value and performance %. Mirrors
-   * Consultant_target::index: type 1 sums specialisation points for the
-   * consultant's students enrolled in the window; type 2 counts them.
+   * Achieved value and performance % for many targets in at most TWO queries,
+   * whatever the target count. Mirrors Consultant_target::index:
+   *   - type 1 (points): SUM(specialisations.point) over the course of every
+   *     student the consultant enrolled within [from_date, to_date];
+   *   - type 2 (count): COUNT of those students.
+   * An open end of the window is unbounded, and a target with no window at all
+   * counts every student (including ones with no enrollment_date), exactly as
+   * the per-target query did.
+   *
+   * This used to run one students query (plus a specialisations query for
+   * points) PER target — about 2,000 queries for the Targets screen's
+   * limit=1000. Now: one students query across every consultant involved and
+   * the union of their windows, one specialisations query for the courses
+   * found, then bucketing in memory. Results are returned in input order.
    */
-  private async computeTargetPerformance(target: {
-    type: number | null;
-    value: number | null;
-    consultant_id: number | null;
-    from_date: Date | null;
-    to_date: Date | null;
-  }) {
-    const value = target.value ?? 0;
+  private async targetPerformanceBatch(targets: readonly TargetForPerformance[]) {
+    const owned = targets.filter((t) => t.consultant_id != null);
+    const consultantIds = [...new Set(owned.map((t) => t.consultant_id as number))];
 
-    if (target.consultant_id == null) {
-      return { achieved: 0, performance: '0%' };
-    }
+    const studentsByConsultant = new Map<number, StudentForPerformance[]>();
+    const pointByCourse = new Map<number, number>();
 
-    const dateFilter = {
-      ...(target.from_date ? { gte: target.from_date } : {}),
-      ...(target.to_date ? { lte: target.to_date } : {}),
-    };
+    if (consultantIds.length > 0) {
+      const students = await this.prisma.students.findMany({
+        where: {
+          consultant_id: { in: consultantIds },
+          deleted_at: null,
+          ...enrollmentWindowUnion(owned),
+        },
+        select: { consultant_id: true, course_id: true, enrollment_date: true },
+      });
+      for (const s of students) {
+        studentsByConsultant.set(s.consultant_id, [
+          ...(studentsByConsultant.get(s.consultant_id) ?? []),
+          s,
+        ]);
+      }
 
-    const students = await this.prisma.students.findMany({
-      where: {
-        consultant_id: target.consultant_id,
-        deleted_at: null,
-        ...(target.from_date || target.to_date
-          ? { enrollment_date: dateFilter }
-          : {}),
-      },
-      select: { course_id: true },
-    });
-
-    let achieved = 0;
-
-    if (target.type === TARGET_TYPE_POINTS) {
-      // Sum specialisations.point for each student's course (legacy joined
-      // specialisations.course_id = students.course_id and summed `point`).
-      const courseIds = [
-        ...new Set(
-          students
-            .map((s) => s.course_id)
-            .filter((cid): cid is number => cid != null),
-        ),
-      ];
+      const needsPoints = owned.some((t) => t.type === TARGET_TYPE_POINTS);
+      const courseIds = needsPoints
+        ? [
+            ...new Set(
+              students.map((s) => s.course_id).filter((c): c is number => c != null),
+            ),
+          ]
+        : [];
       if (courseIds.length > 0) {
         const specs = await this.prisma.specialisations.findMany({
           where: { course_id: { in: courseIds }, deleted_at: null },
           select: { course_id: true, point: true },
         });
         // point is a Text column; sum the numeric value per course.
-        const pointByCourse = new Map<number, number>();
         for (const spec of specs) {
           if (spec.course_id == null) continue;
           const n = Number(spec.point);
-          const add = Number.isNaN(n) ? 0 : n;
           pointByCourse.set(
             spec.course_id,
-            (pointByCourse.get(spec.course_id) ?? 0) + add,
+            (pointByCourse.get(spec.course_id) ?? 0) + (Number.isNaN(n) ? 0 : n),
           );
         }
-        for (const s of students) {
-          if (s.course_id != null) {
-            achieved += pointByCourse.get(s.course_id) ?? 0;
-          }
-        }
       }
-    } else if (target.type === TARGET_TYPE_COUNT) {
-      achieved = students.length;
     }
 
-    const pct = value > 0 ? (achieved / value) * 100 : 0;
-    return {
-      achieved,
-      performance: `${Math.round(pct * 100) / 100}%`,
-    };
+    return targets.map((target) => {
+      const value = target.value ?? 0;
+      if (target.consultant_id == null) return { achieved: 0, performance: '0%' };
+
+      const inWindow = (studentsByConsultant.get(target.consultant_id) ?? []).filter(
+        (s) => enrolledWithin(s.enrollment_date, target),
+      );
+
+      let achieved = 0;
+      if (target.type === TARGET_TYPE_POINTS) {
+        achieved = inWindow.reduce(
+          (sum, s) => sum + (s.course_id != null ? (pointByCourse.get(s.course_id) ?? 0) : 0),
+          0,
+        );
+      } else if (target.type === TARGET_TYPE_COUNT) {
+        achieved = inWindow.length;
+      }
+
+      const pct = value > 0 ? (achieved / value) * 100 : 0;
+      return { achieved, performance: `${Math.round(pct * 100) / 100}%` };
+    });
   }
 
   /** Sync the consultant_universities join table to the given id list. */

@@ -4,8 +4,10 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
 } from 'class-validator';
+import { LEADER_ID_MESSAGE, LEADER_ID_PATTERN } from './sales-team-ids';
 
 /**
  * Port of Sales::edit — partial update. Field set mirrors CreateSalesTeamDto
@@ -18,10 +20,13 @@ export class UpdateSalesTeamDto {
   @MaxLength(160)
   name?: string;
 
+  // A users.id as a digit string (the column is a VarChar(10) id). Rejects a
+  // display name such as "Priya Sharma" (QA T01). `null` clears the leader.
   @IsOptional()
   @IsString()
   @MaxLength(10)
-  leader?: string;
+  @Matches(LEADER_ID_PATTERN, { message: LEADER_ID_MESSAGE })
+  leader?: string | null;
 
   @IsOptional()
   @IsArray()

@@ -1,14 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError, apiGet, apiPost, apiUpload } from "@/lib/api";
+import { ApiError, apiGet, apiPatch, apiPost, apiUpload } from "@/lib/api";
 import {
   Download,
   Plus,
   Search,
   Filter,
   RefreshCcw,
-  Bookmark,
   Eye,
   Pencil,
   Phone,
@@ -25,6 +24,8 @@ import {
   Upload,
   Loader2,
   AlertTriangle,
+  MoreHorizontal,
+  ArrowRightLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -36,7 +37,6 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -45,11 +45,30 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   STATUS_DOT,
   STATUS_STYLES,
   type Counsellor,
   type CounsellorStatus,
 } from "@/lib/counsellors-data";
+import { useStartCall, type CallHealth } from "@/components/calls/calls-ui";
+import { formatPhone, isAcceptablePhoneInput, phoneE164, whatsappHref } from "@/components/counsellors/phone";
+import { downloadCsv, toCsv, type CsvColumn } from "@/components/counsellors/export-csv";
+import {
+  EditCounsellorDialog,
+  Field,
+  TeamReportsToFields,
+  TransferTeamDialog,
+  defaultReportsTo,
+  useConsultantsList,
+  useHierarchyOptions,
+  type ConsultantRaw,
+} from "@/components/counsellors/counsellor-dialogs";
 
 export const Route = createFileRoute("/counsellors/counsellors")({
   head: () => ({ meta: [{ title: "Counsellors — upCarrera" }] }),
@@ -63,34 +82,51 @@ type StatusFilter = CounsellorStatus | "All";
 const EMPTY = "—";
 
 /** A consultant is a `users` row (role_id = 6). Only the fields the screen
- *  reads are typed here; the rest of the row is ignored. */
-interface ApiConsultant {
-  id: number;
-  name?: string | null;
-  email?: string | null;
-  phone?: string | null;
-  code?: number | null;
+ *  reads are typed here; the rest of the row is ignored. The raw editable
+ *  columns (name, phone, code, employee_code, team_id, reports_to …) come from
+ *  ConsultantRaw, which is what the Edit / Transfer dialogs seed from. */
+interface ApiConsultant extends ConsultantRaw {
   region?: string | null;
-  gender?: string | null;
-  dob?: string | null;
-  doj?: string | null;
-  highest_qualification?: string | null;
-  status?: number | null;
-  /** Hand-entered employee id (migration 001). Null for legacy rows. */
-  employee_code?: string | null;
   /** Group -> Team -> Counsellor, resolved server-side by decorateHierarchy. */
-  team_id?: number | null;
-  team_name?: string | null;
   team_leader_name?: string | null;
   group_name?: string | null;
   manager_name?: string | null;
+  /** Targets whose window contains today, with achieved (GET /consultants). */
+  active_targets?: ApiActiveTarget[];
 }
 
-interface ConsultantsResponse {
-  items: ApiConsultant[];
-  total: number;
-  page: number;
-  limit: number;
+/** One active target as GET /consultants summarises it. type 1 = points, 2 = admissions. */
+interface ApiActiveTarget {
+  consultant_target_id: number;
+  type: number | null;
+  value: number | null;
+  achieved: number;
+}
+
+interface ActiveTargetView {
+  id: number;
+  unit: string;
+  achieved: number;
+  value: number;
+  /** 0-100, for the bar only; the label shows the real achieved/value. */
+  pct: number;
+}
+
+function targetUnit(type: number | null): string {
+  if (type === 1) return "pts";
+  if (type === 2) return "adm";
+  return "";
+}
+
+function toActiveTargetView(t: ApiActiveTarget): ActiveTargetView {
+  const value = t.value ?? 0;
+  return {
+    id: t.consultant_target_id,
+    unit: targetUnit(t.type),
+    achieved: t.achieved,
+    value,
+    pct: value > 0 ? Math.min(100, Math.round((t.achieved / value) * 100)) : 0,
+  };
 }
 
 /** GET /consultants/groups — counsellors grouped by their users.region value. */
@@ -143,7 +179,17 @@ function serialNo(page: number, pageSize: number, index: number): number {
  * so routing on the display string would open the wrong person — the same class
  * of bug as the original UC-91 defect.
  */
-type CounsellorRow = Counsellor & { id: number };
+type CounsellorRow = Omit<Counsellor, "activeTarget" | "achieved"> & {
+  id: number;
+  /** Real active targets from the server; empty means the counsellor has none. */
+  activeTargets: ActiveTargetView[];
+  /** The untouched server row. Edit/Transfer seed from this, never from the
+   *  display strings above ("—", "+91 98765 43210", "UC-12"). */
+  raw: ApiConsultant;
+  /** +E.164 when the stored phone can be read confidently, else null. */
+  dialPhone: string | null;
+  whatsapp: string | null;
+};
 
 function mapApiConsultant(c: ApiConsultant): CounsellorRow {
   const gender =
@@ -155,10 +201,16 @@ function mapApiConsultant(c: ApiConsultant): CounsellorRow {
     // employee_code added by migration 001; fall back to the users.id, which is
     // at least unique, for rows that have not been given one yet.
     id: c.id,
+    raw: c,
     empId: c.employee_code?.trim() || `UC-${c.id}`,
     name: c.name && c.name.trim() !== "" ? c.name : EMPTY,
     email: asText(c.email),
-    phone: asText(c.phone),
+    // Display only (QA C08): "87146 89444" / "09072238556" read as
+    // "+91 87146 89444"; anything that cannot be read confidently is shown as
+    // stored rather than guessed at.
+    phone: formatPhone(c.phone, c.code, EMPTY),
+    dialPhone: phoneE164(c.phone, c.code),
+    whatsapp: whatsappHref(c.phone, c.code),
     // Resolved server-side through users.team_id -> sales_team -> counsellor_group
     // (migration 001). These were hardcoded blank, and team/group both showed the
     // free-text users.region, so all four columns read "—" for every counsellor
@@ -167,9 +219,9 @@ function mapApiConsultant(c: ApiConsultant): CounsellorRow {
     teamLeader: asText(c.team_leader_name),
     group: asText(c.group_name),
     manager: asText(c.manager_name),
-    // No target/achieved source in the schema.
-    activeTarget: 0,
-    achieved: 0,
+    // Was hard-coded 0/0 for everyone. Now the server's active-target summary
+    // (window contains today); an empty list renders "No target".
+    activeTargets: (c.active_targets ?? []).map(toActiveTargetView),
     status: mapStatus(c.status),
     joiningDate: asDate(c.doj),
     designation: asText(c.highest_qualification),
@@ -190,17 +242,25 @@ function CounsellorsPage() {
   const [to, setTo] = useState("");
   const [page, setPage] = useState(1);
   const [openAdd, setOpenAdd] = useState(false);
+  const [editing, setEditing] = useState<ConsultantRaw | null>(null);
+  const [transferring, setTransferring] = useState<ConsultantRaw | null>(null);
   const PAGE_SIZE = 10;
 
   // Live consultants (users where role_id = 6). The list endpoint paginates
   // server-side, so we pull a large page in one shot and let the existing
   // text/id/team/group/status/date filters + paging refine client-side over the
   // real decorated values — identical to how the mock array was consumed.
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["consultants", "list"],
-    queryFn: () =>
-      apiGet<ConsultantsResponse>("/consultants", { limit: 1000 }),
+  const { data, isLoading, isError } = useConsultantsList();
+
+  // Click-to-call, exactly as Student Management does it: only live when the
+  // calling integration reports itself configured.
+  const { data: callHealth } = useQuery({
+    queryKey: ["calls", "health"],
+    queryFn: () => apiGet<CallHealth>("/calls/health"),
+    staleTime: 5 * 60 * 1000,
   });
+  const callsOn = callHealth?.configured ?? false;
+  const { callingPhone, start: startCall } = useStartCall();
 
   // Group options come from the server's own grouping of counsellors (derived
   // from users.region), so the dropdown can only ever offer values that exist.
@@ -214,7 +274,7 @@ function CounsellorsPage() {
 
 
   const allCounsellors = useMemo<CounsellorRow[]>(
-    () => (data?.items ?? []).map(mapApiConsultant),
+    () => ((data?.items ?? []) as ApiConsultant[]).map(mapApiConsultant),
     [data],
   );
 
@@ -290,6 +350,17 @@ function CounsellorsPage() {
     return { active, inactive };
   }, [allCounsellors]);
 
+  // Export the rows the operator is looking at: every filter applied, all
+  // pages, in the on-screen order (QA C03).
+  const exportCsv = () => {
+    if (sorted.length === 0) {
+      toast.error("No counsellors match the current filters — nothing to export.");
+      return;
+    }
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`counsellors-${stamp}.csv`, toCsv(sorted, EXPORT_COLUMNS));
+  };
+
   const resetFilters = () => {
     setStatusFilter("All");
     setSearch("");
@@ -319,7 +390,12 @@ function CounsellorsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-semibold text-foreground transition hover:bg-muted">
+          <button
+            onClick={exportCsv}
+            disabled={isLoading || isError}
+            title={`Download the ${pluralize(sorted.length, "filtered counsellor")} as CSV`}
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          >
             <Download className="h-4 w-4" />
             Export
           </button>
@@ -522,14 +598,15 @@ function CounsellorsPage() {
                   <th className="px-4 py-2.5 font-semibold">Joining Date</th>
                   <th className="px-4 py-2.5 font-semibold">Active Target</th>
                   <th className="px-4 py-2.5 font-semibold">Status</th>
-                  <th className="px-4 py-2.5 text-right font-semibold">Action</th>
+                  {/* Pinned to the right edge (QA C09): at laptop widths the table
+                      scrolls horizontally, and the actions used to sit off-screen. */}
+                  <th className="sticky right-0 z-10 bg-[color-mix(in_oklab,var(--muted)_60%,var(--surface))] px-4 py-2.5 text-right font-semibold shadow-[-8px_0_8px_-8px_rgb(0_0_0/0.18)]">
+                    Action
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {pageRows.map((c, i) => {
-                  const pct = c.activeTarget > 0
-                    ? Math.min(100, Math.round((c.achieved / c.activeTarget) * 100))
-                    : 0;
                   return (
                     <tr
                       key={c.id}
@@ -563,23 +640,7 @@ function CounsellorsPage() {
                         {formatDate(c.joiningDate)}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex w-32 flex-col gap-1">
-                          <div className="flex items-baseline justify-between text-[11px]">
-                            <span className="font-semibold text-foreground">
-                              {c.achieved}/{c.activeTarget}
-                            </span>
-                            <span className="text-muted-foreground">{pct}%</span>
-                          </div>
-                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                            <div
-                              className={cn(
-                                "h-full rounded-full",
-                                pct >= 80 ? "bg-emerald-500" : pct >= 50 ? "bg-amber-500" : "bg-rose-500",
-                              )}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        </div>
+                        <ActiveTargetCell targets={c.activeTargets} />
                       </td>
                       <td className="px-4 py-3">
                         <span
@@ -592,19 +653,65 @@ function CounsellorsPage() {
                           {c.status}
                         </span>
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-1">
+                      <td className="sticky right-0 bg-surface px-4 py-3 shadow-[-8px_0_8px_-8px_rgb(0_0_0/0.18)] group-hover:bg-[color-mix(in_oklab,var(--muted)_40%,var(--surface))]">
+                        <div className="flex items-center justify-end gap-1 whitespace-nowrap">
                           <Link
                             to="/counsellors/profile/$empId"
                             params={{ empId: String(c.id) }}
-                            title="View"
+                            title="View profile"
+                            aria-label={`View ${c.name}`}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-foreground"
                           >
                             <Eye className="h-4 w-4" />
                           </Link>
-                          <IconBtn icon={Pencil} label="Edit" />
-                          <IconBtn icon={Phone} label="Call" />
-                          <IconBtn icon={MessageCircle} label="WhatsApp" />
+                          <IconBtn
+                            icon={callingPhone === c.dialPhone && c.dialPhone ? Loader2 : Phone}
+                            spin={callingPhone === c.dialPhone && !!c.dialPhone}
+                            label={
+                              !c.dialPhone
+                                ? "No valid phone number on file"
+                                : callsOn
+                                  ? `Call ${c.phone}`
+                                  : "Calling is not configured"
+                            }
+                            disabled={!c.dialPhone || !callsOn || callingPhone === c.dialPhone}
+                            onClick={() => void startCall(c.dialPhone)}
+                          />
+                          {c.whatsapp ? (
+                            <a
+                              href={c.whatsapp}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={`WhatsApp ${c.phone}`}
+                              aria-label={`WhatsApp ${c.name}`}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-emerald-600"
+                            >
+                              <MessageCircle className="h-4 w-4" />
+                            </a>
+                          ) : (
+                            <IconBtn icon={MessageCircle} label="No valid mobile number on file" disabled />
+                          )}
+                          {/* Less-used actions live in the overflow menu so the
+                              column stays narrow enough to read (QA C09). */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                title="More actions"
+                                aria-label={`More actions for ${c.name}`}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-foreground data-[state=open]:border-border data-[state=open]:bg-background"
+                              >
+                                <MoreHorizontal className="h-4 w-4" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44">
+                              <DropdownMenuItem onSelect={() => setEditing(c.raw)}>
+                                <Pencil className="mr-2 h-4 w-4" /> Edit
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => setTransferring(c.raw)}>
+                                <ArrowRightLeft className="mr-2 h-4 w-4" /> Transfer Team
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </td>
                     </tr>
@@ -620,7 +727,7 @@ function CounsellorsPage() {
           <div>
             Showing{" "}
             <span className="font-semibold text-foreground">
-              {(currentPage - 1) * PAGE_SIZE + 1}
+              {filtered.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}
             </span>{" "}
             –{" "}
             <span className="font-semibold text-foreground">
@@ -651,6 +758,16 @@ function CounsellorsPage() {
       </div>
 
       <AddCounsellorDialog open={openAdd} onOpenChange={setOpenAdd} />
+      <EditCounsellorDialog
+        open={editing != null}
+        onOpenChange={(v) => !v && setEditing(null)}
+        consultant={editing}
+      />
+      <TransferTeamDialog
+        open={transferring != null}
+        onOpenChange={(v) => !v && setTransferring(null)}
+        consultant={transferring}
+      />
     </div>
   );
 }
@@ -758,24 +875,94 @@ function FilterSelect({
   );
 }
 
-function IconBtn({ icon: Icon, label }: { icon: typeof Eye; label: string }) {
+function IconBtn({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+  spin,
+}: {
+  icon: typeof Eye;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  spin?: boolean;
+}) {
   return (
     <button
+      type="button"
       title={label}
-      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-foreground"
+      aria-label={label}
+      onClick={onClick}
+      disabled={disabled}
+      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-transparent disabled:hover:bg-transparent"
     >
-      <Icon className="h-4 w-4" />
+      <Icon className={cn("h-4 w-4", spin && "animate-spin")} />
     </button>
+  );
+}
+
+/** CSV columns — display values, the same ones the table shows. */
+const EXPORT_COLUMNS: CsvColumn<CounsellorRow>[] = [
+  { header: "Employee ID", value: (c) => c.empId },
+  { header: "Name", value: (c) => c.name },
+  { header: "Email", value: (c) => (c.email === EMPTY ? "" : c.email) },
+  { header: "Phone", value: (c) => (c.phone === EMPTY ? "" : c.phone) },
+  { header: "Team", value: (c) => (c.team === EMPTY ? "" : c.team) },
+  { header: "Team Leader", value: (c) => (c.teamLeader === EMPTY ? "" : c.teamLeader) },
+  { header: "Group", value: (c) => (c.group === EMPTY ? "" : c.group) },
+  { header: "Manager", value: (c) => (c.manager === EMPTY ? "" : c.manager) },
+  { header: "Joining Date", value: (c) => c.joiningDate },
+  { header: "Active Target", value: (c) => activeTargetText(c.activeTargets) },
+  { header: "Status", value: (c) => c.status },
+];
+
+function activeTargetText(targets: ActiveTargetView[]): string {
+  return targets.map((t) => `${t.achieved}/${t.value} ${t.unit}`.trim()).join("; ");
+}
+
+/** Active Target column: one bar per active target, or an honest "No target". */
+function ActiveTargetCell({ targets }: { targets: ActiveTargetView[] }) {
+  if (targets.length === 0) {
+    return <span className="text-xs text-muted-foreground">No target</span>;
+  }
+  return (
+    <div className="flex w-32 flex-col gap-1.5">
+      {targets.map((t) => (
+        <div key={t.id} className="flex flex-col gap-1">
+          <div className="flex items-baseline justify-between text-[11px]">
+            <span className="font-semibold tabular-nums text-foreground">
+              {t.achieved}/{t.value}
+              {t.unit && <span className="ml-1 font-normal text-muted-foreground">{t.unit}</span>}
+            </span>
+            <span className="tabular-nums text-muted-foreground">{t.pct}%</span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                "h-full rounded-full",
+                t.pct >= 80 ? "bg-emerald-500" : t.pct >= 50 ? "bg-amber-500" : "bg-rose-500",
+              )}
+              style={{ width: `${t.pct}%` }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
 /* ---------------- Add Counsellor ---------------- */
 
-/** The writable half of CreateConsultantDto.
+/** The writable half of CreateConsultantDto, plus the team placement that is
+ *  saved straight after through PATCH /consultants/:id/team (QA C06).
+ *
+ *  - Employee Code — optional, users.employee_code (unique; a clash is a 409).
+ *    Left blank, the list shows `UC-<users.id>`.
+ *  - Team + Reports To — spec 2.1: a counsellor belongs to exactly one team and
+ *    reports to someone. Required whenever at least one team exists.
  *
  *  Deliberately absent:
- *  - Employee ID — server-assigned (`UC-${users.id}`); there is no employee-code
- *    column to post one to.
  *  - Designation — the old dropdown was fed by the mock DESIGNATIONS array and
  *    has no column. `highest_qualification` is the real column the list renders
  *    in that slot, so that is what we collect.
@@ -792,6 +979,9 @@ interface CounsellorForm {
   highest_qualification: string;
   status: "Active" | "Inactive";
   profile_picture: string;
+  employee_code: string;
+  team_id: string;
+  reports_to: string;
 }
 
 const EMPTY_FORM: CounsellorForm = {
@@ -806,7 +996,12 @@ const EMPTY_FORM: CounsellorForm = {
   highest_qualification: "",
   status: "Active",
   profile_picture: "",
+  employee_code: "",
+  team_id: "",
+  reports_to: "",
 };
+
+const EMPLOYEE_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9\-_/]*$/;
 
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_PHOTO_BYTES = 2 * 1024 * 1024;
@@ -820,6 +1015,9 @@ function AddCounsellorDialog({
 }) {
   const qc = useQueryClient();
   const [form, setForm] = useState<CounsellorForm>(EMPTY_FORM);
+  const { teams, people, isLoading: optionsLoading } = useHierarchyOptions();
+  const teamById = useMemo(() => new Map(teams.map((t) => [String(t.id), t])), [teams]);
+  const hasTeams = teams.length > 0;
   const [photoName, setPhotoName] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -853,14 +1051,55 @@ function AddCounsellorDialog({
       toast.error(e instanceof ApiError ? e.message : "Couldn’t upload the photo"),
   });
 
-  // Add Counsellor -> POST /consultants. The service forces role_id = 6,
-  // bcrypt-hashes the password and throws 409 "User already exists!" on a
-  // duplicate phone or email — surfaced below rather than swallowed.
+  /** Picking a team proposes its leader (or group manager) as Reports To,
+   *  unless the operator already chose someone else. */
+  const changeTeam = (next: string) => {
+    setForm((prev) => {
+      const previousDefault = defaultReportsTo(teamById.get(prev.team_id));
+      const keepManual =
+        prev.reports_to !== "" && prev.reports_to !== String(previousDefault ?? "");
+      const proposed = defaultReportsTo(teamById.get(next));
+      return {
+        ...prev,
+        team_id: next,
+        reports_to: keepManual ? prev.reports_to : proposed ? String(proposed) : "",
+      };
+    });
+  };
+
+  // Add Counsellor -> POST /consultants, then PATCH /consultants/:id/team. The
+  // service forces role_id = 6, bcrypt-hashes the password, normalises the
+  // phone, and answers 409 on a duplicate phone/email or employee code — all
+  // surfaced rather than swallowed. The two calls are not atomic, so a failed
+  // team assignment is reported as exactly that: the counsellor exists, the
+  // placement did not save.
   const createMut = useMutation({
-    mutationFn: (body: Record<string, unknown>) => apiPost("/consultants", body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["consultants", "list"] });
-      toast.success("Counsellor created");
+    mutationFn: async (input: {
+      body: Record<string, unknown>;
+      placement: { team_id: number; reports_to: number | null } | null;
+    }) => {
+      const created = await apiPost<{ id: number }>("/consultants", input.body);
+      if (!input.placement) return { created, placementError: null as string | null };
+      try {
+        await apiPatch(`/consultants/${created.id}/team`, input.placement);
+        return { created, placementError: null as string | null };
+      } catch (e) {
+        return {
+          created,
+          placementError: e instanceof ApiError ? e.message : "Unknown error",
+        };
+      }
+    },
+    onSuccess: ({ placementError }) => {
+      qc.invalidateQueries({ queryKey: ["consultants"] });
+      qc.invalidateQueries({ queryKey: ["sales-teams"] });
+      if (placementError) {
+        toast.error(
+          `Counsellor created, but the team assignment did not save (${placementError}). Use Transfer Team to place them.`,
+        );
+      } else {
+        toast.success("Counsellor created");
+      }
       close(false);
     },
     onError: (e) =>
@@ -869,11 +1108,26 @@ function AddCounsellorDialog({
 
   const name = form.name.trim();
   const username = form.username.trim();
+  const employeeCode = form.employee_code.trim();
   const isPending = createMut.isPending || photoMut.isPending;
+  const phoneError = !isAcceptablePhoneInput(form.phone)
+    ? "Enter a 10-digit Indian mobile (e.g. 98765 43210) or an international number starting with +."
+    : null;
+  const employeeCodeError =
+    employeeCode !== "" && !EMPLOYEE_CODE_PATTERN.test(employeeCode)
+      ? "Letters, digits, - _ / only, no spaces."
+      : null;
+  // Spec 2.1 — team and reports-to are required, but only once a team exists to
+  // pick; otherwise the first counsellor could never be created.
+  const placementMissing = hasTeams && (form.team_id === "" || form.reports_to === "");
   const canSubmit =
     name !== "" &&
     username !== "" &&
     form.password.length >= MIN_PASSWORD_LENGTH &&
+    !phoneError &&
+    !employeeCodeError &&
+    !placementMissing &&
+    !optionsLoading &&
     !isPending;
 
   const submit = () => {
@@ -881,9 +1135,18 @@ function AddCounsellorDialog({
     // Send only what CreateConsultantDto accepts; blank optionals are omitted
     // rather than posted as empty strings.
     createMut.mutate({
+      placement:
+        form.team_id !== ""
+          ? {
+              team_id: Number(form.team_id),
+              reports_to: form.reports_to !== "" ? Number(form.reports_to) : null,
+            }
+          : null,
+      body: {
       name,
       username,
       password: form.password,
+      ...(employeeCode ? { employee_code: employeeCode } : {}),
       ...(form.email.trim() ? { email: form.email.trim() } : {}),
       ...(form.phone.trim() ? { phone: form.phone.trim() } : {}),
       ...(form.gender ? { gender: form.gender } : {}),
@@ -894,6 +1157,7 @@ function AddCounsellorDialog({
         : {}),
       ...(form.profile_picture ? { profile_picture: form.profile_picture } : {}),
       status: form.status === "Active" ? 1 : 0,
+      },
     });
   };
 
@@ -965,6 +1229,13 @@ function AddCounsellorDialog({
                 onChange={(e) => set("name", e.target.value)}
               />
             </Field>
+            <Field label="Employee Code" error={employeeCodeError}>
+              <Input
+                placeholder="e.g. UC-1024 (optional)"
+                value={form.employee_code}
+                onChange={(e) => set("employee_code", e.target.value)}
+              />
+            </Field>
             <Field label="Email">
               <Input
                 type="email"
@@ -992,9 +1263,9 @@ function AddCounsellorDialog({
               />
             </Field>
 
-            <Field label="Phone Number">
+            <Field label="Phone Number" error={phoneError}>
               <Input
-                placeholder="9xxxxxxxxx"
+                placeholder="98765 43210"
                 value={form.phone}
                 onChange={(e) => set("phone", e.target.value)}
               />
@@ -1050,8 +1321,30 @@ function AddCounsellorDialog({
             </Field>
           </div>
 
+          <div className="grid grid-cols-1 gap-4 rounded-xl border border-border bg-muted/30 p-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <div className="text-sm font-semibold text-foreground">Team placement</div>
+              <div className="text-xs text-muted-foreground">
+                {hasTeams
+                  ? "A counsellor belongs to exactly one team and reports to its leader or manager."
+                  : optionsLoading
+                    ? "Loading teams…"
+                    : "No teams exist yet. Create the counsellor now and place them with Transfer Team once a team exists."}
+              </div>
+            </div>
+            <TeamReportsToFields
+              teams={teams}
+              people={people}
+              teamId={form.team_id}
+              reportsTo={form.reports_to}
+              onTeamChange={changeTeam}
+              onReportsToChange={(v) => set("reports_to", v)}
+              disabled={isPending}
+            />
+          </div>
+
           <p className="text-xs text-muted-foreground">
-            The employee ID is assigned by the server when the counsellor is saved.
+            Leave Employee Code blank to show the system id (UC-&lt;number&gt;).
           </p>
         </div>
 
@@ -1080,29 +1373,5 @@ function AddCounsellorDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Field({
-  label,
-  required,
-  children,
-}: {
-  label: string;
-  required?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <Label className="text-xs font-semibold text-foreground">
-        {label}
-        {required && (
-          <span aria-hidden className="ml-0.5 text-rose-500">
-            *
-          </span>
-        )}
-      </Label>
-      {children}
-    </div>
   );
 }

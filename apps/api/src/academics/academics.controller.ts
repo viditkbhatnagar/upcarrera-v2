@@ -10,6 +10,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { AcademicsService } from './academics.service';
+import { IntakeMasterService } from './intake-master.service';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { ListQueryDto } from './dto/list-query.dto';
 import { CreateCourseDto } from './dto/create-course.dto';
@@ -39,6 +40,9 @@ import { CreateVisaTypeDto } from './dto/create-visa-type.dto';
 import { UpdateVisaTypeDto } from './dto/update-visa-type.dto';
 import { CreateIntakeDto } from './dto/create-intake.dto';
 import { UpdateIntakeDto } from './dto/update-intake.dto';
+import { IntakeSessionsQueryDto } from './dto/intake-sessions-query.dto';
+import { CreateIntakeSessionDto } from './dto/create-intake-session.dto';
+import { UpdateIntakeSessionDto } from './dto/update-intake-session.dto';
 import { CreateGroupCourseDto } from './dto/create-group-course.dto';
 import { UpdateGroupCourseDto } from './dto/update-group-course.dto';
 
@@ -85,7 +89,7 @@ export class CoursesController {
   @Get(':id')
   @ResponseMessage('Course')
   get(@Param('id', ParseIntPipe) id: number) {
-    return this.academics.getCourse(id);
+    return this.academics.getCourseDetail(id);
   }
 
   @Post()
@@ -392,9 +396,41 @@ export class VisaTypesController {
 }
 
 // intake -> /intakes (admission cycles; full CRUD)
+//
+// /intakes/sessions is the intake MASTER (the legacy `sessions` table that
+// students.session_id and applications.session_id reference) — see
+// IntakeMasterService. The bare /intakes CRUD is the separate, not-yet-linked
+// `intake` schedule table.
+//
+// ROUTE ORDER: the literal `sessions` routes are declared before `:id` so the
+// segment can never be read as an intake id.
 @Controller('intakes')
 export class IntakesController {
-  constructor(private readonly academics: AcademicsService) {}
+  constructor(
+    private readonly academics: AcademicsService,
+    private readonly intakeMaster: IntakeMasterService,
+  ) {}
+
+  @Get('sessions')
+  @ResponseMessage('Intake master')
+  listSessions(@Query() query: IntakeSessionsQueryDto) {
+    return this.intakeMaster.list(query);
+  }
+
+  @Post('sessions')
+  @ResponseMessage('Intake Added Successfully!')
+  createSession(@Body() dto: CreateIntakeSessionDto) {
+    return this.intakeMaster.create(dto);
+  }
+
+  @Patch('sessions/:id')
+  @ResponseMessage('Intake Renamed Successfully!')
+  renameSession(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateIntakeSessionDto,
+  ) {
+    return this.intakeMaster.rename(id, dto);
+  }
 
   @Get()
   @ResponseMessage('Intakes')

@@ -7,18 +7,13 @@ import {
   Phone,
   Building2,
   BookOpen,
-  Layers,
   User as UserIcon,
   Wallet,
   MessageCircle,
-  HeadphonesIcon,
   FolderOpen,
   School,
   Activity,
   GraduationCap,
-  CreditCard,
-  Receipt,
-  CheckCircle2,
   RefreshCcw,
   AlertTriangle,
   Inbox,
@@ -27,6 +22,20 @@ import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StudentCallPanel } from "@/components/calls/student-call-panel";
+import type {
+  ApiLinkedApplication,
+  ApiStudentDetail,
+} from "@/components/students/profile-types";
+import {
+  InfoRow,
+  SectionCard,
+  dash,
+  formatDate,
+  formatINR,
+} from "@/components/students/profile-ui";
+import { FinanceTab } from "@/components/students/profile-finance";
+import { DocumentsTab } from "@/components/students/profile-documents";
+import { TimelineTab } from "@/components/students/profile-timeline";
 
 export const Route = createFileRoute("/students/students/$id")({
   head: ({ params }) => ({
@@ -36,94 +45,20 @@ export const Route = createFileRoute("/students/students/$id")({
 });
 
 /* ------------------------------------------------------------------ *
- * API shape — GET /api/students/:id (apiGet unwraps the envelope).
+ * GET /api/students/:id (apiGet unwraps the envelope).
  *
- * The endpoint keys on the numeric `students` PK (ParseIntPipe) and returns
- * the raw students row decorated with users/course/university joins plus a
- * rolled-up `finance` block. The list screen links this route with a *display*
- * id (enrollment_id or `STU-<student_id>`), so we extract the numeric portion
- * of the route param to resolve the PK the API expects. The fetched row echoes
- * its own real `id`, and every visible value below comes from this response.
+ * The endpoint keys on the numeric `students` PK (ParseIntPipe) and returns the
+ * raw students row decorated server-side with every name the page shows —
+ * university, course, specialisation, session, counsellor — plus the finance
+ * block and the application the student came from. Raw ids are never rendered
+ * (QA ST01); Documents and Timeline load from their own endpoints when opened.
  * ------------------------------------------------------------------ */
-interface ApiInvoice {
-  id: number;
-  university_id: number | null;
-  semester_id: number | null;
-  student_id: number | null;
-  course_id: number | null;
-  payment_status: string | null;
-  total_amount: number | null;
-  discount_amount: number | null;
-  payable_amount: number | null;
-  date: string | null;
-  due_date: string | null;
-  remarks: string | null;
-  paid_amount_total: number;
-  outstanding_amount: number;
-}
 
-interface ApiPayment {
-  id: number;
-  user_id: number | null;
-  invoice_id: number | null;
-  payment_type: string | null;
-  paid_amount: number | null;
-  payment_date: string | null;
-  reference_no: string | null;
-  remark: string | null;
-}
-
-interface ApiFinance {
-  total: number;
-  paid: number;
-  outstanding: number;
-  invoice_count: number;
-  payment_count: number;
-  invoices: ApiInvoice[];
-  payments: ApiPayment[];
-}
-
-interface ApiStudentDetail {
-  id: number;
-  student_id: number;
-  enrollment_id: string | null;
-  application_id: string | null;
-  enrollment_date: string | null;
-  admission_status: number | null;
-  course_id: number | null;
-  specialisation_id: number | null;
-  session_id: number | null;
-  source: string | null;
-  consultant_id: number | null;
-  created_at: string | null;
-  // decorated joins
-  name: string | null;
-  email: string | null;
-  phone: string | null;
-  profile_picture: string | null;
-  consultant_name: string | null;
-  course_title: string | null;
-  university_id: number | null;
-  university_title: string | null;
-  admission_status_label: string | null;
-  finance: ApiFinance | null;
-}
-
-/* ---------------- formatting helpers ---------------- */
-
-const formatINR = (n: number | null | undefined) =>
-  "₹" + Number(n ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
-
-function formatDate(value: string | null | undefined): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-function dash(value: string | null | undefined): string {
-  return value != null && String(value).trim() !== "" ? String(value) : "—";
-}
+const LINK_BASIS_HINT: Record<ApiLinkedApplication["link_basis"], string> = {
+  application_id: "",
+  records: "Linked through the student's documents or qualifications",
+  contact: "Matched by the student's email or mobile",
+};
 
 function initials(name: string | null | undefined, fallback: string): string {
   const source = name && name.trim() !== "" ? name : fallback;
@@ -314,11 +249,7 @@ function StudentDetailContent({ student }: { student: ApiStudentDetail }) {
           <FinanceTab finance={finance} />
         </TabsContent>
         <TabsContent value="documents">
-          <EmptyTab
-            icon={FolderOpen}
-            title="No documents available"
-            description="Student documents are not exposed by this endpoint yet."
-          />
+          <DocumentsTab studentId={student.id} />
         </TabsContent>
         <TabsContent value="university">
           <UniversityTab student={student} />
@@ -327,11 +258,7 @@ function StudentDetailContent({ student }: { student: ApiStudentDetail }) {
           <StudentCallPanel phone={student.phone} name={student.name} />
         </TabsContent>
         <TabsContent value="timeline">
-          <EmptyTab
-            icon={Activity}
-            title="No timeline activity"
-            description="Activity events are not exposed by this endpoint yet."
-          />
+          <TimelineTab studentId={student.id} />
         </TabsContent>
       </Tabs>
     </>
@@ -340,11 +267,27 @@ function StudentDetailContent({ student }: { student: ApiStudentDetail }) {
 
 /* ---------------- tabs ---------------- */
 
+/** Application ID / Enrollment ID: the student's own value, else the linked application's. */
+function admissionIds(student: ApiStudentDetail) {
+  const app = student.application;
+  const ownAppId = student.application_id?.trim() ? student.application_id : null;
+  const ownEnrId = student.enrollment_id?.trim() ? student.enrollment_id : null;
+  return {
+    applicationId: ownAppId ?? app?.display_id ?? null,
+    applicationHint:
+      !ownAppId && app ? "From the linked application" : app ? LINK_BASIS_HINT[app.link_basis] : "",
+    enrollmentId: ownEnrId ?? app?.enrollment_id ?? null,
+    enrollmentHint: !ownEnrId && app?.enrollment_id ? "From the linked application" : "",
+  };
+}
+
 function OverviewTab({ student }: { student: ApiStudentDetail }) {
   const finance = student.finance;
   const total = finance?.total ?? 0;
   const paid = finance?.paid ?? 0;
   const collection = total > 0 ? Math.round((paid / total) * 100) : 0;
+  const ids = admissionIds(student);
+  const app = student.application;
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -352,17 +295,41 @@ function OverviewTab({ student }: { student: ApiStudentDetail }) {
         <InfoRow label="Full Name" value={dash(student.name)} />
         <InfoRow label="Email" value={dash(student.email)} />
         <InfoRow label="Phone" value={dash(student.phone)} />
+        <InfoRow label="WhatsApp" value={dash(student.whatsapp_no)} />
         <InfoRow
           label="Enrollment ID"
-          value={<span className="font-mono">{dash(student.enrollment_id)}</span>}
+          value={<span className="font-mono">{dash(ids.enrollmentId)}</span>}
+          hint={ids.enrollmentHint || undefined}
         />
       </SectionCard>
 
       <SectionCard title="Admission Information" icon={GraduationCap}>
         <InfoRow
           label="Application ID"
-          value={<span className="font-mono">{dash(student.application_id)}</span>}
+          value={<span className="font-mono">{dash(ids.applicationId)}</span>}
+          hint={ids.applicationHint || undefined}
         />
+        {app && (
+          <>
+            <InfoRow
+              label="Application created"
+              value={formatDate(app.created_at)}
+              hint={app.created_by_name ? `by ${app.created_by_name}` : undefined}
+            />
+            <InfoRow
+              label="Converted to student"
+              value={app.is_converted ? formatDate(app.converted_at) : "Not converted"}
+              hint={app.converted_by_name ? `by ${app.converted_by_name}` : undefined}
+            />
+          </>
+        )}
+        {!app && !ids.applicationId && (
+          <InfoRow
+            label="Application"
+            value="None linked"
+            hint="No application in the records points at this student"
+          />
+        )}
         <InfoRow label="Enrollment Date" value={formatDate(student.enrollment_date)} />
         <InfoRow label="Source" value={dash(student.source)} />
         <InfoRow label="Counsellor" value={dash(student.consultant_name)} />
@@ -371,14 +338,8 @@ function OverviewTab({ student }: { student: ApiStudentDetail }) {
       <SectionCard title="University Information" icon={Building2}>
         <InfoRow label="University" value={dash(student.university_title)} />
         <InfoRow label="Course" value={dash(student.course_title)} />
-        <InfoRow
-          label="Specialisation"
-          value={student.specialisation_id != null ? `#${student.specialisation_id}` : "—"}
-        />
-        <InfoRow
-          label="Session"
-          value={student.session_id != null ? `#${student.session_id}` : "—"}
-        />
+        <InfoRow label="Specialisation" value={dash(student.specialisation_title)} />
+        <InfoRow label="Session" value={dash(student.session_title)} />
       </SectionCard>
 
       <SectionCard title="Current Status" icon={Activity}>
@@ -402,165 +363,28 @@ function OverviewTab({ student }: { student: ApiStudentDetail }) {
           }
         />
         <InfoRow label="Fee Collection" value={total > 0 ? `${collection}%` : "—"} />
+        <InfoRow label="Paid" value={formatINR(finance?.paid)} />
         <InfoRow label="Outstanding" value={formatINR(finance?.outstanding)} />
-        <InfoRow label="Invoices" value={String(finance?.invoice_count ?? 0)} />
+        <InfoRow label="Fee installments" value={String(finance?.installment_count ?? 0)} />
       </SectionCard>
     </div>
-  );
-}
-
-function FinanceTab({ finance }: { finance: ApiFinance | null }) {
-  if (!finance || (finance.invoice_count === 0 && finance.payment_count === 0)) {
-    return (
-      <div className="space-y-4">
-        <FinanceStats finance={finance} />
-        <EmptyTab
-          icon={Wallet}
-          title="No finance records"
-          description="This student has no invoices or payments on file yet."
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <FinanceStats finance={finance} />
-
-      <SectionCard title="Invoices" icon={CreditCard}>
-        {finance.invoices.length === 0 ? (
-          <EmptyInline label="No invoices issued." />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-xs uppercase text-muted-foreground">
-                  <th className="py-2 font-semibold">Invoice</th>
-                  <th className="py-2 font-semibold">Date</th>
-                  <th className="py-2 font-semibold">Due</th>
-                  <th className="py-2 font-semibold">Payable</th>
-                  <th className="py-2 font-semibold">Paid</th>
-                  <th className="py-2 font-semibold">Outstanding</th>
-                  <th className="py-2 font-semibold">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {finance.invoices.map((inv) => (
-                  <tr key={inv.id} className="border-b border-border/60 last:border-0">
-                    <td className="py-2.5 font-mono text-xs">#{inv.id}</td>
-                    <td className="py-2.5">{formatDate(inv.date)}</td>
-                    <td className="py-2.5">{formatDate(inv.due_date)}</td>
-                    <td className="py-2.5 font-semibold">{formatINR(inv.payable_amount)}</td>
-                    <td className="py-2.5 text-emerald-600">{formatINR(inv.paid_amount_total)}</td>
-                    <td className="py-2.5 text-orange-600">{formatINR(inv.outstanding_amount)}</td>
-                    <td className="py-2.5">
-                      <InvoiceStatusBadge
-                        status={inv.payment_status}
-                        outstanding={inv.outstanding_amount}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </SectionCard>
-
-      <SectionCard title="Payment History" icon={Receipt}>
-        {finance.payments.length === 0 ? (
-          <EmptyInline label="No payments recorded." />
-        ) : (
-          <div className="space-y-2">
-            {finance.payments.map((p) => (
-              <div
-                key={p.id}
-                className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2.5"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
-                    <CheckCircle2 className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <div className="text-sm font-semibold text-foreground">
-                      {formatINR(p.paid_amount)}{" "}
-                      {p.payment_type && (
-                        <span className="text-xs font-normal text-muted-foreground">
-                          via {p.payment_type}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {formatDate(p.payment_date)}
-                      {p.reference_no ? ` · Ref ${p.reference_no}` : ""}
-                      {p.invoice_id != null ? ` · Invoice #${p.invoice_id}` : ""}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </SectionCard>
-    </div>
-  );
-}
-
-function FinanceStats({ finance }: { finance: ApiFinance | null }) {
-  const total = finance?.total ?? 0;
-  const paid = finance?.paid ?? 0;
-  const outstanding = finance?.outstanding ?? 0;
-  const collection = total > 0 ? Math.round((paid / total) * 100) : 0;
-  return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-      <FinStat label="Total Fee" value={formatINR(total)} tone="text-foreground" />
-      <FinStat label="Paid" value={formatINR(paid)} tone="text-emerald-600" />
-      <FinStat label="Outstanding" value={formatINR(outstanding)} tone="text-orange-600" />
-      <FinStat label="Invoices" value={String(finance?.invoice_count ?? 0)} tone="text-foreground" />
-      <FinStat label="Collection" value={total > 0 ? `${collection}%` : "—"} tone="text-primary" />
-    </div>
-  );
-}
-
-function InvoiceStatusBadge({
-  status,
-  outstanding,
-}: {
-  status: string | null;
-  outstanding: number;
-}) {
-  const label = status && status.trim() !== "" ? status : outstanding <= 0 ? "paid" : "pending";
-  const isPaid = label.toLowerCase() === "paid" || outstanding <= 0;
-  return (
-    <span
-      className={cn(
-        "inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold capitalize ring-1 ring-inset",
-        isPaid
-          ? "bg-emerald-100 text-emerald-700 ring-emerald-200"
-          : "bg-orange-100 text-orange-700 ring-orange-200",
-      )}
-    >
-      {label}
-    </span>
   );
 }
 
 function UniversityTab({ student }: { student: ApiStudentDetail }) {
+  const ids = admissionIds(student);
   return (
     <SectionCard title="University Information" icon={School}>
       <InfoRow label="University" value={dash(student.university_title)} />
-      <InfoRow
-        label="University ID"
-        value={student.university_id != null ? `#${student.university_id}` : "—"}
-      />
       <InfoRow label="Course" value={dash(student.course_title)} />
-      <InfoRow
-        label="Course ID"
-        value={student.course_id != null ? `#${student.course_id}` : "—"}
-      />
+      <InfoRow label="Specialisation" value={dash(student.specialisation_title)} />
+      <InfoRow label="Session" value={dash(student.session_title)} />
+      <InfoRow label="Mode" value={dash(student.mode)} />
+      <InfoRow label="ABC ID" value={<span className="font-mono">{dash(student.abc_id)}</span>} />
       <InfoRow
         label="Enrollment ID"
-        value={<span className="font-mono">{dash(student.enrollment_id)}</span>}
+        value={<span className="font-mono">{dash(ids.enrollmentId)}</span>}
+        hint={ids.enrollmentHint || undefined}
       />
     </SectionCard>
   );
@@ -678,80 +502,6 @@ function Pill({ icon: Icon, label }: { icon: typeof Mail; label: string }) {
     <div className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1 text-xs text-foreground">
       <Icon className="h-3.5 w-3.5 text-muted-foreground" />
       {label}
-    </div>
-  );
-}
-
-function SectionCard({
-  title,
-  icon: Icon,
-  children,
-  action,
-}: {
-  title: string;
-  icon: typeof UserIcon;
-  children: React.ReactNode;
-  action?: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-5 shadow-card">
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <Icon className="h-4 w-4 text-primary" />
-          {title}
-        </div>
-        {action}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-start justify-between gap-3 border-b border-border/60 py-2 last:border-0">
-      <div className="text-xs font-medium text-muted-foreground">{label}</div>
-      <div className="text-right text-sm font-medium text-foreground">{value}</div>
-    </div>
-  );
-}
-
-function FinStat({ label, value, tone }: { label: string; value: string; tone: string }) {
-  return (
-    <div className="rounded-xl border border-border bg-surface p-3 shadow-card">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div className={cn("mt-1 text-lg font-bold tracking-tight", tone)}>{value}</div>
-    </div>
-  );
-}
-
-function EmptyTab({
-  icon: Icon,
-  title,
-  description,
-}: {
-  icon: typeof FolderOpen;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-surface px-6 py-16 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-        <Icon className="h-6 w-6" />
-      </div>
-      <div className="text-sm font-semibold text-foreground">{title}</div>
-      <p className="max-w-sm text-xs text-muted-foreground">{description}</p>
-    </div>
-  );
-}
-
-function EmptyInline({ label }: { label: string }) {
-  return (
-    <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-background px-4 py-8 text-center">
-      <HeadphonesIcon className="h-4 w-4 text-muted-foreground/50" />
-      <span className="text-xs text-muted-foreground">{label}</span>
     </div>
   );
 }

@@ -74,14 +74,20 @@ type RawUniversity = {
 };
 
 type UniRow = {
+  /**
+   * Display-only code (`UNI-028`) derived from the id — the same format the
+   * list page shows. There is no code column, so this never reaches the API;
+   * every request uses the route's numeric id.
+   */
   code: string;
   name: string;
   type: "Type 1 – Student Pays University" | "Type 2 – Student Pays upCarrera";
   category: string;
+  /** "<state>, <country name>" — never the free-text address. */
   location: string;
+  /** Country NAME(s) resolved from `country_id` via GET /countries. */
   country: string;
   state: string;
-  city: string;
   address: string;
   website: string;
   email: string;
@@ -114,7 +120,9 @@ const CATEGORY_STYLE: Record<string, string> = {
 
 export const Route = createFileRoute("/universities/universities_/$code")({
   head: ({ params }) => ({
-    meta: [{ title: `${params.code} — Universities — upCarrera` }],
+    meta: [
+      { title: `${displayUniversityCode(params.code)} — Universities — upCarrera` },
+    ],
   }),
   component: UniversityProfilePage,
 });
@@ -222,24 +230,51 @@ function mapStatus(status: number | string | null): UniRow["status"] {
   return "Active";
 }
 
-function mapApiUniversity(u: ApiUniversity): UniRow {
+/** Same display format as the list page: `UNI-<id padded to 3>`. */
+function displayUniversityCode(id: number | string): string {
+  return `UNI-${String(id).padStart(3, "0")}`;
+}
+
+/** Where the GET /countries lookup is, so Country never shows a raw id early. */
+type CountryLookupStatus = "pending" | "error" | "success";
+
+function mapApiUniversity(
+  u: ApiUniversity,
+  countryNames: Map<string, string>,
+  countryLookup: CountryLookupStatus,
+): UniRow {
   const name = (u.title ?? "").trim() || `University #${u.id}`;
   const intakesCount = u.intakes
     ? u.intakes.split(",").filter((x) => x.trim() !== "").length
     : 0;
-  const city = (u.address ?? "").trim();
   const state = (u.state ?? "").trim();
+  // `country_id` is an id (or id list), resolved to names for display. There
+  // is no City column — the city lives inside the free-text `address`, which is
+  // shown in full in its own Address row rather than passed off as a "City".
+  //
+  // "Country ID n" is only honest once the lookup has answered: while it is in
+  // flight the Country row reads "Loading…" (and the header shows the state
+  // alone); if it failed, the raw id is shown with that caveat.
+  const described = describeCountryIds(u.country_id ?? "", countryNames);
+  const country =
+    described === ""
+      ? ""
+      : countryLookup === "pending"
+        ? "Loading…"
+        : countryLookup === "error" && described.includes("Country ID ")
+          ? `${described} (country names unavailable)`
+          : described;
+  const locationCountry = countryLookup === "pending" ? "" : described;
   const location =
-    [city, state].filter((x) => x !== "").join(", ") || "—";
+    [state, locationCountry].filter((x) => x !== "").join(", ") || "—";
   return {
-    code: String(u.id),
+    code: displayUniversityCode(u.id),
     name,
     type: mapType(),
     category: mapCategory(u.category),
     location,
-    country: (u.country_id ?? "").trim() || "—",
+    country: country || "—",
     state: state || "—",
-    city: city || "—",
     address: (u.address ?? "").trim() || "—",
     website: (u.website ?? "").trim() || "—",
     email: (u.email ?? "").trim() || "—",
@@ -403,21 +438,27 @@ function UniversityProfilePage() {
       ),
   });
 
+  // GET /countries resolves the stored `country_id` to a name.
+  const { data: countriesData, status: countryLookup } = useCountries();
+  const countryNames = useMemo(
+    () => countryNameMap(countriesData?.items),
+    [countriesData],
+  );
+
   // Derived view-model from the live row; placeholder keeps hooks unconditional
   // while the request is in flight (real loading/error UI is rendered below).
   const profile: UniRow = useMemo(
     () =>
       apiUni
-        ? mapApiUniversity(apiUni)
+        ? mapApiUniversity(apiUni, countryNames, countryLookup)
         : {
-            code: String(code),
+            code: displayUniversityCode(code),
             name: "",
             type: "Type 1 – Student Pays University",
             category: "Private University",
             location: "—",
             country: "—",
             state: "—",
-            city: "—",
             address: "—",
             website: "—",
             email: "—",
@@ -439,7 +480,7 @@ function UniversityProfilePage() {
               status: null,
             },
           },
-    [apiUni, code],
+    [apiUni, code, countryNames, countryLookup],
   );
 
   const taggedCourses = useMemo<CourseRow[]>(
@@ -674,7 +715,6 @@ function UniversityProfilePage() {
       category: profile.category,
       country: profile.country,
       state: profile.state,
-      city: profile.city,
       website: profile.website,
       email: profile.email,
       phone: profile.phone,
@@ -899,7 +939,9 @@ function UniversityProfilePage() {
               <Field label="University Category" value={basicInfo.category} />
               <Field label="Country" value={basicInfo.country} />
               <Field label="State" value={basicInfo.state} />
-              <Field label="City" value={basicInfo.city} />
+              {/* No City row: there is no city column. It used to render the
+                  ENTIRE address under a "City" label; the address (city
+                  included) is shown in full in the Address row below. */}
               <Field
                 label="Website"
                 value={
@@ -928,7 +970,7 @@ function UniversityProfilePage() {
                 }
               />
               <Field
-                label="Address"
+                label="Address (including city)"
                 value={basicInfo.address}
                 className="sm:col-span-2"
               />
@@ -2167,7 +2209,7 @@ function toUniversityPayload(form: UniversityForm) {
     country_id: form.country.trim(),
     state: form.state.trim(),
     // `address` is written from the Address field alone. It used to fall back
-    // to the City field, but `UniRow.city` is itself DERIVED from `address`,
+    // to the City field, but the old `UniRow.city` was itself DERIVED from `address`,
     // so that path wrote a column back from its own display derivative.
     address: form.address.trim(),
     status: statusToColumn(form.status),
@@ -2179,7 +2221,7 @@ type UniversityPayload = ReturnType<typeof toUniversityPayload>;
 /**
  * Seed the Edit form from the RAW server row — never from the display row.
  *
- * `UniRow.name`/`.category`/`.status`/`.country`/`.city`/`.address` are all
+ * `UniRow.name`/`.category`/`.status`/`.country`/`.address` are all
  * coercions (`University #28`, "Private University", "Active", "—"). Seeding
  * from them and PATCHing back is exactly what rewrites master data, so none of
  * them are read here.
@@ -2253,7 +2295,13 @@ function validateUniversityForm(form: UniversityForm): Record<string, string> {
   const next: Record<string, string> = {};
   if (!form.name.trim()) next.name = "University name is required";
   if (!form.category.trim()) next.category = "University category is required";
+  // The picker only ever yields numeric ids; this guards the raw-id fallback
+  // input (shown when GET /countries fails or is empty) against a typed
+  // country NAME. Edit validates touched fields only, so a legacy stored value
+  // never blocks an unrelated save.
   if (!form.country.trim()) next.country = "Country is required";
+  else if (!COUNTRY_ID_RE.test(form.country.trim()))
+    next.country = "Enter a numeric country ID (e.g. 99), or several separated by commas";
   if (!form.state.trim()) next.state = "State is required";
   if (form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))
     next.email = "Invalid email address";
@@ -2569,41 +2617,29 @@ function EditUniversityDialog({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-4">
             <SectionTitle>Location</SectionTitle>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="profile-edit-uni-country">
-                Country <span className="text-accent">*</span>
-              </Label>
-              <Input
-                id="profile-edit-uni-country"
-                placeholder="India"
-                value={form.country}
-                onChange={(e) => update("country", e.target.value)}
-                className={cn(errors.country && "border-red-400 focus-visible:ring-red-300")}
-              />
-              {errors.country && (
-                <p className="text-xs text-red-500">{errors.country}</p>
-              )}
-            </div>
+            <CountryField
+              id="profile-edit-uni-country"
+              value={form.country}
+              storedValue={seeded.country}
+              error={errors.country}
+              disabled={Boolean(saving)}
+              onChange={(v) => update("country", v)}
+            />
 
-            <div className="space-y-1.5">
-              <Label htmlFor="profile-edit-uni-state">
-                State <span className="text-accent">*</span>
-              </Label>
-              <Input
-                id="profile-edit-uni-state"
-                placeholder="Uttar Pradesh"
-                value={form.state}
-                onChange={(e) => update("state", e.target.value)}
-                className={cn(errors.state && "border-red-400 focus-visible:ring-red-300")}
-              />
-              {errors.state && <p className="text-xs text-red-500">{errors.state}</p>}
-            </div>
+            <StateField
+              id="profile-edit-uni-state"
+              value={form.state}
+              countryId={form.country}
+              error={errors.state}
+              disabled={Boolean(saving)}
+              onChange={(v) => update("state", v)}
+            />
 
             <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="profile-edit-uni-address">Full Address</Label>
+              <Label htmlFor="profile-edit-uni-address">Address (including city)</Label>
               <Textarea
                 id="profile-edit-uni-address"
-                placeholder="Enter complete postal address, including city"
+                placeholder="e.g. Sector 125, Noida, Uttar Pradesh 201313"
                 rows={3}
                 value={form.address}
                 onChange={(e) => update("address", e.target.value)}
@@ -2612,7 +2648,8 @@ function EditUniversityDialog({
                   has no City column, the profile's City row is derived FROM
                   `address`, and the old save wrote `address` back from it. */}
               <p className="text-xs text-muted-foreground">
-                The schema has no separate City column — include the city here.
+                There is no separate City field — a university record stores
+                its city as part of this address, so include it here.
               </p>
             </div>
           </div>
@@ -2632,6 +2669,248 @@ function EditUniversityDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/* ---------------- Country / State lookups ----------------
+ *
+ * Mirrors the same block in universities.universities.tsx.
+ *
+ * `university.country_id` is a Text column holding `countries.country_id`
+ * (India is 99) — and, per the legacy DTO, possibly a comma-separated list of
+ * them. It is never a country name, so it is rendered through GET /countries
+ * and edited with a picker valued by id. `states.country` is a VarChar holding
+ * the country NAME, so state suggestions are filtered by name, not id.
+ */
+
+interface ApiCountry {
+  country_id: number;
+  country: string;
+}
+
+interface ApiState {
+  id: number;
+  country: string;
+  state_name: string;
+}
+
+/** Both lookup endpoints default to 20 rows; these are small reference tables. */
+const LOOKUP_LIMIT = 1000;
+const LOOKUP_STALE_MS = 5 * 60_000;
+
+function useCountries() {
+  return useQuery({
+    queryKey: ["countries", { page: 1, limit: LOOKUP_LIMIT }],
+    queryFn: () =>
+      apiGet<{ items: ApiCountry[]; total: number }>("/countries", {
+        page: 1,
+        limit: LOOKUP_LIMIT,
+      }),
+    staleTime: LOOKUP_STALE_MS,
+  });
+}
+
+/** id (as the string stored in `country_id`) -> country name. */
+function countryNameMap(countries: ApiCountry[] | undefined): Map<string, string> {
+  return new Map((countries ?? []).map((c) => [String(c.country_id), c.country]));
+}
+
+/** A `country_id` value the picker / API can accept: one id or an id list. */
+const COUNTRY_ID_RE = /^\d+(\s*,\s*\d+)*$/;
+
+/**
+ * Human label for a stored `country_id`, which may be a comma-separated list.
+ * Only an all-digit token is labelled "Country ID n"; an earlier free-text UI
+ * let some rows store a country NAME here, and that is shown verbatim rather
+ * than as the nonsensical "Country ID India".
+ */
+function describeCountryIds(raw: string, names: Map<string, string>): string {
+  return raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .map((id) => names.get(id) ?? (/^\d+$/.test(id) ? `Country ID ${id}` : id))
+    .join(", ");
+}
+
+/**
+ * Country NAME for state suggestions: a listed id resolves through the lookup;
+ * a single non-numeric stored value (a legacy name) is used as the name itself.
+ */
+function countryNameFor(
+  countryId: string,
+  names: Map<string, string>,
+): string | undefined {
+  const token = countryId.trim();
+  if (!token) return undefined;
+  const resolved = names.get(token);
+  if (resolved) return resolved;
+  return /^\d+$/.test(token) || token.includes(",") ? undefined : token;
+}
+
+/**
+ * Country picker, valued by `countries.country_id`.
+ *
+ * Seeded with the verbatim stored `country_id`; `toUniversityPayload` trims it
+ * and `diffUniversityPayload` only sends it when it differs from the seed, so
+ * opening Edit and saving never rewrites the column. A stored value that is not
+ * exactly one listed id (padded, a comma-separated list, an id with no
+ * countries row) is offered as its own option so the trigger shows it. If the
+ * lookup is unavailable it degrades to the raw id input.
+ */
+function CountryField({
+  id,
+  value,
+  storedValue,
+  error,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  storedValue: string;
+  error?: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const { data, isLoading, isError } = useCountries();
+  const countries = data?.items ?? [];
+  const names = countryNameMap(countries);
+  const storedIsExtra = storedValue.trim() !== "" && !names.has(storedValue);
+  const lookupUnavailable = !isLoading && (isError || countries.length === 0);
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>
+        Country <span className="text-accent">*</span>
+      </Label>
+      {lookupUnavailable ? (
+        <>
+          <Input
+            id={id}
+            placeholder="Country ID, e.g. 99"
+            disabled={disabled}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className={cn(error && "border-red-400 focus-visible:ring-red-300")}
+          />
+          <p className="text-xs text-muted-foreground">
+            {isError
+              ? "The country list could not be loaded"
+              : "No countries are set up yet"}{" "}
+            — enter the country ID directly.
+          </p>
+        </>
+      ) : (
+        <Select
+          value={value}
+          disabled={disabled || isLoading}
+          onValueChange={onChange}
+        >
+          <SelectTrigger
+            id={id}
+            className={cn(error && "border-red-400 focus:ring-red-300")}
+          >
+            {/* While loading, a seeded id has no SelectItem yet to render, so
+                the trigger would be blank rather than showing the placeholder. */}
+            {isLoading ? (
+              <span className="text-muted-foreground">Loading countries…</span>
+            ) : (
+              <SelectValue placeholder="Select country" />
+            )}
+          </SelectTrigger>
+          <SelectContent>
+            {countries.map((c) => (
+              <SelectItem key={c.country_id} value={String(c.country_id)}>
+                {c.country}
+              </SelectItem>
+            ))}
+            {storedIsExtra && (
+              <SelectItem value={storedValue}>
+                {describeCountryIds(storedValue, names)} (stored value)
+              </SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+      )}
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {!lookupUnavailable && storedIsExtra && value === storedValue && (
+        <p className="text-xs text-muted-foreground">
+          This is the value currently stored for this university (
+          <span className="font-mono">{storedValue.trim()}</span>). It is kept
+          as-is unless you pick a different country.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * State: free text (the column is a plain VarChar and many countries have no
+ * rows in `states`), with suggestions from GET /states for the chosen country.
+ */
+function StateField({
+  id,
+  value,
+  countryId,
+  error,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  countryId: string;
+  error?: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const { data: countries } = useCountries();
+  // states.country holds the NAME; a multi-id or unknown id has none.
+  const countryName = countryNameFor(countryId, countryNameMap(countries?.items));
+  const { data: states } = useQuery({
+    queryKey: ["states", { country: countryName, limit: LOOKUP_LIMIT }],
+    queryFn: () =>
+      apiGet<{ items: ApiState[]; total: number }>("/states", {
+        country: countryName,
+        page: 1,
+        limit: LOOKUP_LIMIT,
+      }),
+    enabled: Boolean(countryName),
+    staleTime: LOOKUP_STALE_MS,
+  });
+  const suggestions = countryName ? (states?.items ?? []) : [];
+  const listId = `${id}-options`;
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>
+        State <span className="text-accent">*</span>
+      </Label>
+      <Input
+        id={id}
+        placeholder="e.g. Uttar Pradesh"
+        maxLength={255}
+        disabled={disabled}
+        value={value}
+        list={suggestions.length > 0 ? listId : undefined}
+        autoComplete="off"
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(error && "border-red-400 focus-visible:ring-red-300")}
+      />
+      {suggestions.length > 0 && (
+        <datalist id={listId}>
+          {suggestions.map((st) => (
+            <option key={st.id} value={st.state_name} />
+          ))}
+        </datalist>
+      )}
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {!error && suggestions.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Type to pick from the states on file for {countryName}, or enter one.
+        </p>
+      )}
+    </div>
   );
 }
 

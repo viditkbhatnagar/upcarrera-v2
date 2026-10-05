@@ -70,7 +70,10 @@ type UniRow = {
   name: string;
   category: string;
   location: string;
-  /** Raw `country_id` text from the API (the legacy column is free-form). */
+  /**
+   * Trimmed `country_id` — a `countries.country_id` (e.g. "99"), NOT a name.
+   * Not rendered as-is anywhere; the form resolves it through GET /countries.
+   */
   country: string;
   state: string;
   address: string;
@@ -198,8 +201,8 @@ function mapApiUniversity(u: ApiUniversity): UniRow {
     name,
     category: deriveCategory(u.category),
     location: deriveLocation(u.state, u.address),
-    // `country_id` is a free-form Text column in the legacy schema; there is no
-    // separate `city` column at all (city lives inside `address`).
+    // `country_id` holds a countries.country_id (Text, possibly a list); there
+    // is no separate `city` column at all (city lives inside `address`).
     country: u.country_id?.trim() || "—",
     state,
     address: u.address?.trim() ?? "",
@@ -325,7 +328,13 @@ function validateUniversityForm(form: UniversityForm): Record<string, string> {
     errors.name = `University name must be ${FIELD_MAX.name} characters or fewer`;
 
   if (!form.category) errors.category = "University category is required";
+  // The picker only ever yields numeric ids; this guards the raw-id fallback
+  // input (shown when GET /countries fails or is empty) against a typed
+  // country NAME. Edit validates touched fields only, so a legacy stored value
+  // never blocks an unrelated save.
   if (!form.country.trim()) errors.country = "Country is required";
+  else if (!COUNTRY_ID_RE.test(form.country.trim()))
+    errors.country = "Enter a numeric country ID (e.g. 99), or several separated by commas";
 
   if (!form.state.trim()) errors.state = "State is required";
   else if (form.state.trim().length > FIELD_MAX.state)
@@ -451,14 +460,93 @@ function diffUniversityPayload(
  * A stored value that is not one of the known options has to be offered as an
  * extra option, otherwise the Select renders blank and the first save snaps it
  * to a default the operator never chose.
+ *
+ * The comparison and the returned option are EXACT, not trimmed: the Select is
+ * seeded with the verbatim stored value, so a padded `"Private University "`
+ * only renders in the trigger if a SelectItem carries that same padded value.
+ * Trimming it here produced an item (`"Private University"`) the seeded value
+ * did not match, and the trigger fell back to its placeholder.
  */
 function extraSelectOptions(
   value: string,
   known: readonly string[],
 ): string[] {
-  const v = value.trim();
-  if (!v || known.includes(v)) return [];
-  return [v];
+  if (!value.trim() || known.includes(value)) return [];
+  return [value];
+}
+
+/* ---------------- Country / State lookups ----------------
+ *
+ * `university.country_id` is a Text column holding `countries.country_id`
+ * (India is 99) — and, per the legacy DTO, possibly a comma-separated list of
+ * them. It is never a country name, so it is rendered through GET /countries
+ * and edited with a picker valued by id. `states.country` is a VarChar holding
+ * the country NAME, so the state suggestions are filtered by name, not id.
+ */
+
+interface ApiCountry {
+  country_id: number;
+  country: string;
+}
+
+interface ApiState {
+  id: number;
+  country: string;
+  state_name: string;
+}
+
+/** Both lookup endpoints default to 20 rows; these are small reference tables. */
+const LOOKUP_LIMIT = 1000;
+const LOOKUP_STALE_MS = 5 * 60_000;
+
+function useCountries() {
+  return useQuery({
+    queryKey: ["countries", { page: 1, limit: LOOKUP_LIMIT }],
+    queryFn: () =>
+      apiGet<{ items: ApiCountry[]; total: number }>("/countries", {
+        page: 1,
+        limit: LOOKUP_LIMIT,
+      }),
+    staleTime: LOOKUP_STALE_MS,
+  });
+}
+
+/** id (as the string stored in `country_id`) -> country name. */
+function countryNameMap(countries: ApiCountry[] | undefined): Map<string, string> {
+  return new Map((countries ?? []).map((c) => [String(c.country_id), c.country]));
+}
+
+/** A `country_id` value the picker / API can accept: one id or an id list. */
+const COUNTRY_ID_RE = /^\d+(\s*,\s*\d+)*$/;
+
+/**
+ * Human label for a stored `country_id`, which may be a comma-separated list.
+ * Only an all-digit token is labelled "Country ID n"; an earlier free-text UI
+ * let some rows store a country NAME here, and that is shown verbatim rather
+ * than as the nonsensical "Country ID India".
+ */
+function describeCountryIds(raw: string, names: Map<string, string>): string {
+  return raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .map((id) => names.get(id) ?? (/^\d+$/.test(id) ? `Country ID ${id}` : id))
+    .join(", ");
+}
+
+/**
+ * Country NAME for state suggestions: a listed id resolves through the lookup;
+ * a single non-numeric stored value (a legacy name) is used as the name itself.
+ */
+function countryNameFor(
+  countryId: string,
+  names: Map<string, string>,
+): string | undefined {
+  const token = countryId.trim();
+  if (!token) return undefined;
+  const resolved = names.get(token);
+  if (resolved) return resolved;
+  return /^\d+$/.test(token) || token.includes(",") ? undefined : token;
 }
 
 function UniversitiesPage() {
@@ -865,6 +953,7 @@ function UniversityFormFields({
   update,
   extraCategories = [],
   extraStatuses = [],
+  storedCountry = "",
   showStoredHints = false,
 }: {
   idPrefix: string;
@@ -883,6 +972,13 @@ function UniversityFormFields({
    */
   extraCategories?: string[];
   extraStatuses?: string[];
+  /**
+   * Edit only: the verbatim `country_id` the row was opened with. If it is not
+   * exactly one id from GET /countries (a padded value, a comma-separated list,
+   * an id with no countries row) it is offered as its own option, so the
+   * picker shows what is stored instead of a blank.
+   */
+  storedCountry?: string;
   /**
    * Edit only: show "nothing is stored for this column" hints. On Add an empty
    * Select just means the user has not picked yet, which needs no commentary.
@@ -1057,58 +1153,206 @@ function UniversityFormFields({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-4">
         <SectionTitle>Location</SectionTitle>
 
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-country`}>
-            Country <span className="text-accent">*</span>
-          </Label>
-          <Input
-            id={`${idPrefix}-country`}
-            placeholder="India"
-            disabled={disabled}
-            value={form.country}
-            onChange={(e) => update("country", e.target.value)}
-            className={cn(errors.country && "border-red-400 focus-visible:ring-red-300")}
-          />
-          {errors.country && (
-            <p className="text-xs text-red-500">{errors.country}</p>
-          )}
-          {/* Free text, not a Select: `university.country_id` is a free-form
-              Text column, and GET /api/countries returns 0 rows on the seeded
-              DB — a dropdown here would have had nothing in it. */}
-        </div>
+        <CountryField
+          id={`${idPrefix}-country`}
+          value={form.country}
+          storedValue={storedCountry}
+          error={errors.country}
+          disabled={disabled}
+          onChange={(v) => update("country", v)}
+        />
 
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-state`}>
-            State <span className="text-accent">*</span>
-          </Label>
-          <Input
-            id={`${idPrefix}-state`}
-            placeholder="Uttar Pradesh"
-            maxLength={FIELD_MAX.state}
-            disabled={disabled}
-            value={form.state}
-            onChange={(e) => update("state", e.target.value)}
-            className={cn(errors.state && "border-red-400 focus-visible:ring-red-300")}
-          />
-          {errors.state && <p className="text-xs text-red-500">{errors.state}</p>}
-        </div>
+        <StateField
+          id={`${idPrefix}-state`}
+          value={form.state}
+          countryId={form.country}
+          error={errors.state}
+          disabled={disabled}
+          onChange={(v) => update("state", v)}
+        />
 
         <div className="space-y-1.5 sm:col-span-2">
-          <Label htmlFor={`${idPrefix}-address`}>Full Address</Label>
+          <Label htmlFor={`${idPrefix}-address`}>Address (including city)</Label>
           <Textarea
             id={`${idPrefix}-address`}
-            placeholder="Enter complete postal address, including city"
+            placeholder="e.g. Sector 125, Noida, Uttar Pradesh 201313"
             rows={3}
             disabled={disabled}
             value={form.address}
             onChange={(e) => update("address", e.target.value)}
           />
           <p className="text-xs text-muted-foreground">
-            The schema has no separate City column — include the city here.
+            There is no separate City field — a university record stores its
+            city as part of this address, so include it here.
           </p>
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * Country picker, valued by `countries.country_id`.
+ *
+ * Seeded with the verbatim stored `country_id`; `toUniversityPayload` trims it
+ * and `diffUniversityPayload` only sends it when it differs from the seed, so
+ * opening Edit and saving never rewrites the column. If the lookup is
+ * unavailable (request failed, or the countries table is empty) it degrades to
+ * the raw id input rather than a dropdown with nothing in it.
+ */
+function CountryField({
+  id,
+  value,
+  storedValue,
+  error,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  storedValue: string;
+  error?: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const { data, isLoading, isError } = useCountries();
+  const countries = data?.items ?? [];
+  const names = countryNameMap(countries);
+  const storedIsExtra = storedValue.trim() !== "" && !names.has(storedValue);
+  const lookupUnavailable = !isLoading && (isError || countries.length === 0);
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>
+        Country <span className="text-accent">*</span>
+      </Label>
+      {lookupUnavailable ? (
+        <>
+          <Input
+            id={id}
+            placeholder="Country ID, e.g. 99"
+            disabled={disabled}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className={cn(error && "border-red-400 focus-visible:ring-red-300")}
+          />
+          <p className="text-xs text-muted-foreground">
+            {isError
+              ? "The country list could not be loaded"
+              : "No countries are set up yet"}{" "}
+            — enter the country ID directly.
+          </p>
+        </>
+      ) : (
+        <Select
+          value={value}
+          disabled={disabled || isLoading}
+          onValueChange={onChange}
+        >
+          <SelectTrigger
+            id={id}
+            className={cn(error && "border-red-400 focus:ring-red-300")}
+          >
+            {/* While loading, a seeded id has no SelectItem yet to render, so
+                the trigger would be blank rather than showing the placeholder. */}
+            {isLoading ? (
+              <span className="text-muted-foreground">Loading countries…</span>
+            ) : (
+              <SelectValue placeholder="Select country" />
+            )}
+          </SelectTrigger>
+          <SelectContent>
+            {countries.map((c) => (
+              <SelectItem key={c.country_id} value={String(c.country_id)}>
+                {c.country}
+              </SelectItem>
+            ))}
+            {storedIsExtra && (
+              <SelectItem value={storedValue}>
+                {describeCountryIds(storedValue, names)} (stored value)
+              </SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+      )}
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {!lookupUnavailable && storedIsExtra && value === storedValue && (
+        <p className="text-xs text-muted-foreground">
+          This is the value currently stored for this university (
+          <span className="font-mono">{storedValue.trim()}</span>). It is kept
+          as-is unless you pick a different country.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * State: free text (the column is a plain VarChar and many countries have no
+ * rows in `states`), with suggestions from GET /states for the chosen country.
+ */
+function StateField({
+  id,
+  value,
+  countryId,
+  error,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  countryId: string;
+  error?: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const { data: countries } = useCountries();
+  // states.country holds the NAME; a multi-id or unknown id has none.
+  const countryName = countryNameFor(countryId, countryNameMap(countries?.items));
+  const { data: states } = useQuery({
+    queryKey: ["states", { country: countryName, limit: LOOKUP_LIMIT }],
+    queryFn: () =>
+      apiGet<{ items: ApiState[]; total: number }>("/states", {
+        country: countryName,
+        page: 1,
+        limit: LOOKUP_LIMIT,
+      }),
+    enabled: Boolean(countryName),
+    staleTime: LOOKUP_STALE_MS,
+  });
+  const suggestions = countryName ? (states?.items ?? []) : [];
+  const listId = `${id}-options`;
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>
+        State <span className="text-accent">*</span>
+      </Label>
+      <Input
+        id={id}
+        placeholder="e.g. Uttar Pradesh"
+        maxLength={FIELD_MAX.state}
+        disabled={disabled}
+        value={value}
+        list={suggestions.length > 0 ? listId : undefined}
+        autoComplete="off"
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(error && "border-red-400 focus-visible:ring-red-300")}
+      />
+      {suggestions.length > 0 && (
+        <datalist id={listId}>
+          {suggestions.map((st) => (
+            <option key={st.id} value={st.state_name} />
+          ))}
+        </datalist>
+      )}
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {!error && suggestions.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Type to pick from the states on file for {countryName}, or enter one.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -1253,6 +1497,7 @@ function EditUniversityDialog({
             update={update}
             extraCategories={extraCategories}
             extraStatuses={extraStatuses}
+            storedCountry={seeded.country}
             showStoredHints
           />
         </div>

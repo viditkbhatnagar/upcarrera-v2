@@ -4,6 +4,7 @@ import { ApplicationsController } from './applications.controller';
 import { AcademicStudentsController } from './academic-students.controller';
 import { CandidateStatusesController } from './candidate-statuses.controller';
 import { StudentsService } from './students.service';
+import { StudentProfileService } from './student-profile.service';
 
 /**
  * Students + Applications module.
@@ -16,7 +17,7 @@ import { StudentsService } from './students.service';
     AcademicStudentsController,
     CandidateStatusesController,
   ],
-  providers: [StudentsService],
+  providers: [StudentsService, StudentProfileService],
   exports: [StudentsService],
 })
 export class StudentsModule {}

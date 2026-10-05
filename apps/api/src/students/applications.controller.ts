@@ -17,6 +17,7 @@ import { ApplicationCourseFeeDto } from './dto/application-course-fee.dto';
 import { ApplicationAcademicDto } from './dto/application-academic.dto';
 import { UpdateQualificationsDto } from './dto/update-qualifications.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
+import { CheckDuplicateApplicationDto } from './dto/check-duplicate-application.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
@@ -24,8 +25,8 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
  * Staff-only admission applications endpoints (protected by the global JwtAuthGuard).
  * Mirrors CI4 App/Application.
  *
- * ROUTE ORDER: the literal /documents/:id route is declared BEFORE /:id so Nest
- * matches the literal segment first.
+ * ROUTE ORDER: the literal /check-duplicate and /documents/:id routes are
+ * declared BEFORE /:id so Nest matches the literal segment first.
  */
 @Controller('applications')
 export class ApplicationsController {
@@ -46,7 +47,18 @@ export class ApplicationsController {
     return this.students.createApplication(dto, userId);
   }
 
-  // --- literal sub-path (MUST precede /:id) ---
+  // --- literal sub-paths (MUST precede /:id) ---
+
+  /**
+   * Existing applications sharing a mobile number or email (QA AP10, spec 4.2).
+   * Returns { duplicate, matches[] } — each match carries its display id, name
+   * and counsellor so the Add Lead dialog can point at the existing record.
+   */
+  @Get('check-duplicate')
+  @ResponseMessage('Duplicate check complete')
+  checkDuplicate(@Query() query: CheckDuplicateApplicationDto) {
+    return this.students.findDuplicateApplications(query);
+  }
 
   @Patch('documents/:id')
   @ResponseMessage('Application document updated')

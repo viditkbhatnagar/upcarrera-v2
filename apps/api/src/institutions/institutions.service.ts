@@ -10,6 +10,7 @@ import { UpdateInstitutionDto } from './dto/update-institution.dto';
 import { ListInstitutionsDto } from './dto/list-institutions.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 
+import { stripUserSecrets, type UserSecretField } from '../common/user-secrets';
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 const BCRYPT_ROUNDS = 10;
@@ -248,15 +249,8 @@ export class InstitutionsService {
     }
   }
 
-  /** Strip secret hashes before returning a users row. */
-  private stripSecrets<
-    T extends {
-      password?: string | null;
-      prev_password?: string | null;
-      zoom_password?: string | null;
-    },
-  >(user: T): Omit<T, 'password' | 'prev_password' | 'zoom_password'> {
-    const { password, prev_password, zoom_password, ...rest } = user;
-    return rest;
+  /** Remove every credential column — see common/user-secrets.ts. */
+  private stripSecrets<T extends object>(user: T): Omit<T, UserSecretField> {
+    return stripUserSecrets(user);
   }
 }

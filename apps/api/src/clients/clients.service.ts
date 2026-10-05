@@ -9,6 +9,7 @@ import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { ListClientsDto } from './dto/list-clients.dto';
 
+import { stripUserSecrets, type UserSecretField } from '../common/user-secrets';
 /** Legacy role id for clients (Clients.php hard-codes role_id = 8). */
 const CLIENT_ROLE_ID = 8;
 const BCRYPT_ROUNDS = 10;
@@ -43,12 +44,9 @@ export class ClientsService {
     };
   }
 
-  /** Never leak password hashes in API responses. */
-  private stripSecrets<
-    T extends { password?: string | null; prev_password?: string | null },
-  >(user: T): Omit<T, 'password' | 'prev_password'> {
-    const { password, prev_password, ...rest } = user;
-    return rest;
+  /** Remove every credential column — see common/user-secrets.ts. */
+  private stripSecrets<T extends object>(user: T): Omit<T, UserSecretField> {
+    return stripUserSecrets(user);
   }
 
   // ===========================================================================

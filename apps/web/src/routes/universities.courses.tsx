@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPatch, ApiError } from "@/lib/api";
 import {
@@ -53,7 +53,15 @@ export const Route = createFileRoute("/universities/courses")({
 });
 
 type Level = "Certification" | "Diploma" | "UG" | "PG" | "Doctorate";
+/** What a status can be SET to. */
 type Status = "Active" | "Inactive";
+/**
+ * What a course's status can READ as. `course.status` is a nullable Int with
+ * no DB default and the legacy writer never populated it, so NULL is common —
+ * and NULL is "never set", not "Inactive". It renders as its own state rather
+ * than being silently folded into either real value.
+ */
+type CourseStatus = Status | "Not set";
 
 // `id` is the DB primary key — every write (PATCH /courses/:id etc.) is
 // addressed by it. `code` is a DISPLAY-ONLY label derived from that id; it is
@@ -61,22 +69,35 @@ type Status = "Active" | "Inactive";
 type Course = {
   id: number;
   code: string;
+  /** course.title, or a composed fallback when the title is blank. */
+  name: string;
+  /** course.short_name — the course group label. */
   group: string;
+  /** Names parsed out of course.specialisations (JSON blob or plain text). */
   specialisation: string;
-  level: Level;
+  /** Canonical level when the free-text column maps onto one, else null. */
+  levelKey: Level | null;
+  /** What the Level cell prints: the canonical level, the stored text, or "—". */
+  levelLabel: string;
+  /** total_duration (magnitude) + duration (unit), as stored. */
   duration: string;
-  mappedUniversities: number;
-  status: Status;
+  /** course.university_id is a single FK — the one university, or "—". */
+  university: string;
+  studyMode: string;
+  status: CourseStatus;
   // --- RAW server values ---------------------------------------------------
-  // Everything above is COERCED for rendering and filtering: a NULL level reads
-  // as "Certification", a NULL status as "Inactive", a NULL text column as "—".
-  // Those placeholders must never reach a write, so Edit seeds from these raw
-  // values instead and the PATCH body is diffed against them.
+  // Everything above is COERCED for rendering and filtering (placeholders such
+  // as "—", a canonical level, parsed specialisation names). Those must never
+  // reach a write, so Edit seeds from these raw values instead and the PATCH
+  // body is diffed against them.
   rawTitle: string | null;
   rawShortName: string | null;
   rawLevel: string | null;
   rawDuration: string | null;
+  rawTotalDuration: string | null;
   rawSpecialisations: string | null;
+  rawStudyMode: string | null;
+  rawEligibility: string | null;
   rawStatus: number | null;
 };
 
@@ -116,7 +137,8 @@ type Specialisation = {
   code: string;
   name: string;
   description: string;
-  mappedCourses: number;
+  /** Live count from the API (`courses_count`); null when the API omits it. */
+  mappedCourses: number | null;
   // Raw server values — Edit seeds from these, never from the "—" placeholder.
   rawTitle: string | null;
   rawDescription: string | null;
@@ -135,17 +157,29 @@ interface Paginated<T> {
   limit: number;
 }
 
-// Raw /courses row (Prisma `course`): see academics.service.ts listCourses.
+// Raw /courses row (Prisma `course`): see academics.service.ts listCourses,
+// which also decorates each row with the `university_name` of its single FK.
 interface ApiCourseRow {
   id: number | string;
   title: string | null;
   short_name: string | null;
   level: string | null;
+  /** The UNIT ("Year" / "Semester" / "Month") on legacy rows. */
   duration: string | null;
+  /** The MAGNITUDE ("2") on legacy rows. */
   total_duration: string | null;
   specialisations: string | null;
+  study_mode?: string | null;
+  eligibility_criteria?: string | null;
   university_id: number | string | null;
+  university_name?: string | null;
   status: number | string | null;
+}
+
+// GET /courses/:id — the row plus read-only context (AcademicsService.getCourseDetail).
+interface ApiCourseDetail extends ApiCourseRow {
+  is_lms_course?: number | null;
+  semesters_count?: number | null;
 }
 
 // Raw /group-courses row decorated with its resolved `courses` array
@@ -158,6 +192,8 @@ interface ApiGroupRow {
   course_ids?: string | null;
   /** Decorated, and deliberately filtered to courses with deleted_at = null. */
   courses?: { id: number | string }[] | null;
+  /** Live count of distinct referenced courses that still exist. */
+  courses_count?: number | null;
 }
 
 // Raw /specialisations row (Prisma `specialisations`).
@@ -166,17 +202,28 @@ interface ApiSpecRow {
   title: string | null;
   description: string | null;
   course_id: number | string | null;
+  /**
+   * Live count of courses that use this specialisation — by its course_id FK
+   * or by name inside course.specialisations (AcademicsService).
+   */
+  courses_count?: number | null;
 }
 
 // POST/PATCH /courses -> Create/UpdateCourseDto. Only columns that exist on
 // `model course` are sent.
+//
+// Duration is TWO columns, following the legacy convention the LMS reads:
+// `total_duration` holds the magnitude ("2") and `duration` the unit ("Year").
+// CreateCourseDto requires level, specialisations, total_duration and duration.
 interface CoursePayload {
   title?: string;
   short_name?: string;
   level?: string;
   duration?: string;
+  total_duration?: string;
   specialisations?: string;
   eligibility_criteria?: string;
+  study_mode?: string;
   status?: number;
 }
 
@@ -213,16 +260,101 @@ const OPTIONS_LIMIT = 1000;
 
 const LEVEL_KEYS: Level[] = ["Certification", "Diploma", "UG", "PG", "Doctorate"];
 
-// course.level is a free-text column; coerce to a valid Level so LEVEL_STYLE
-// never resolves to undefined. Unknown / blank values fall back to "Certification".
-function toLevel(value: string | null | undefined): Level {
-  if (!value) return "Certification";
-  const exact = LEVEL_KEYS.find((l) => l.toLowerCase() === String(value).trim().toLowerCase());
-  return exact ?? "Certification";
+/**
+ * Map the free-text `course.level` column onto a canonical Level, or null.
+ *
+ * Stored values are things like "Post Graduate", "Masters", "PG Diploma",
+ * "Under Graduate". Matching runs most-specific first and mirrors the sibling
+ * University-detail screen (pg/post/master -> PG). Anything unrecognised is
+ * NOT coerced: the old fallback turned every unknown level — MBA and MCA
+ * included — into "Certification". The caller prints the stored text instead.
+ */
+function matchLevel(value: string | null | undefined): Level | null {
+  const l = (value ?? "").trim().toLowerCase();
+  if (l === "") return null;
+  const exact = LEVEL_KEYS.find((k) => k.toLowerCase() === l);
+  if (exact) return exact;
+  if (/ph\.?\s?d|doctor|d\.?\s?phil/.test(l)) return "Doctorate";
+  if (/\bpg\b|post|master/.test(l)) return "PG";
+  if (l.includes("diploma")) return "Diploma";
+  if (/\bug\b|under|bachelor|graduat/.test(l)) return "UG";
+  if (l.includes("cert")) return "Certification";
+  return null;
 }
 
-function toStatus(value: number | string | null | undefined): Status {
-  return String(value) === "1" ? "Active" : "Inactive";
+/** 1 -> Active, 0 (or any other number) -> Inactive, NULL -> Not set. */
+function toCourseStatus(value: number | null): CourseStatus {
+  if (value == null) return "Not set";
+  return value === 1 ? "Active" : "Inactive";
+}
+
+/**
+ * Names held in the free-form `course.specialisations` Text column. Mirrors
+ * parseSpecialisationNames in academics.service.ts: the legacy admin wrote a
+ * JSON array of `{ id, name, ... }` objects, others a JSON array of strings,
+ * the CRM a plain (possibly comma-separated) string. The raw blob is never
+ * rendered.
+ */
+function parseSpecialisationNames(raw: string | null | undefined): string[] {
+  const text = (raw ?? "").trim();
+  if (text === "") return [];
+  const fromItem = (item: unknown): string => {
+    if (typeof item === "string") return item;
+    if (item && typeof item === "object") {
+      const rec = item as Record<string, unknown>;
+      const name = rec.name ?? rec.title ?? rec.label;
+      return typeof name === "string" ? name : "";
+    }
+    return "";
+  };
+  if (text.startsWith("[") || text.startsWith("{") || text.startsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      return items.map(fromItem).map((n) => n.trim()).filter((n) => n !== "");
+    } catch {
+      // not JSON after all — fall through to the plain-string reading
+    }
+  }
+  return text
+    .split(/[,\n]/)
+    .map((n) => n.trim())
+    .filter((n) => n !== "");
+}
+
+/** Display form of a specialisation column: parsed names, or "—". */
+function specialisationLabel(raw: string | null | undefined): string {
+  const names = parseSpecialisationNames(raw);
+  return names.length > 0 ? names.join(", ") : "—";
+}
+
+/**
+ * Duration as stored. Legacy rows keep the magnitude in `total_duration` and
+ * the unit in `duration` ("2" + "Year"); reading only `duration` is what made
+ * the column print a bare "Year". A `duration` that already starts with a
+ * number ("2 Years", an older CRM write) is shown as-is.
+ */
+function formatDuration(
+  unit: string | null | undefined,
+  magnitude: string | null | undefined,
+): string {
+  const u = (unit ?? "").trim();
+  const m = (magnitude ?? "").trim();
+  if (u === "" && m === "") return "—";
+  if (m === "") return u;
+  if (u === "" || /^\d/.test(u)) return u || m;
+  return `${m} ${u}`;
+}
+
+/**
+ * A course title composed from its group and specialisation. "General" is
+ * the "no specific specialisation" value, so "MBA" rather than "MBA in General".
+ */
+function composeCourseTitle(group: string, spec: string): string {
+  const g = group.trim();
+  const s = spec.trim();
+  if (s === "" || s.toLowerCase() === "general") return g || s;
+  return g ? `${g} in ${s}` : s;
 }
 
 function blankToDash(value: string | null | undefined): string {
@@ -249,25 +381,44 @@ function rawStatus(value: number | string | null | undefined): number | null {
 }
 
 function mapApiCourse(r: ApiCourseRow): Course {
+  const id = Number(r.id);
+  const shortName = (r.short_name ?? "").trim();
+  const specNames = parseSpecialisationNames(r.specialisations);
+  // The real title wins. Composition is only a fallback for a blank title,
+  // and never produces "MBA in —" — a missing part is simply left out.
+  const name =
+    (r.title ?? "").trim() ||
+    composeCourseTitle(shortName, specNames[0] ?? "") ||
+    `Course #${id}`;
+  const levelKey = matchLevel(r.level);
+  const status = rawStatus(r.status);
   return {
-    id: Number(r.id),
+    id,
     code: `CRS-${String(r.id).padStart(4, "0")}`,
-    group: blankToDash(r.short_name ?? r.title),
-    specialisation: blankToDash(r.specialisations),
-    level: toLevel(r.level),
-    duration: blankToDash(r.duration ?? r.total_duration),
-    // API has no mapped-universities count on the list row → render 0 (never fabricated).
-    mappedUniversities: 0,
-    status: toStatus(r.status),
-    // Raw columns. Note `group` falls back to `title` and `duration` to
-    // `total_duration` for DISPLAY only — the raw fields stay one-to-one with
-    // the columns the PATCH actually writes.
+    name,
+    group: shortName || "—",
+    specialisation: specNames.length > 0 ? specNames.join(", ") : "—",
+    levelKey,
+    levelLabel: levelKey ?? ((r.level ?? "").trim() || "—"),
+    duration: formatDuration(r.duration, r.total_duration),
+    university:
+      (r.university_name ?? "").trim() ||
+      (r.university_id != null && String(r.university_id).trim() !== ""
+        ? `University #${r.university_id}`
+        : "—"),
+    studyMode: (r.study_mode ?? "").trim() || "—",
+    status: toCourseStatus(status),
+    // Raw columns, one-to-one with what the PATCH writes. Every value above is
+    // for DISPLAY only.
     rawTitle: rawText(r.title),
     rawShortName: rawText(r.short_name),
     rawLevel: rawText(r.level),
     rawDuration: rawText(r.duration),
+    rawTotalDuration: rawText(r.total_duration),
     rawSpecialisations: rawText(r.specialisations),
-    rawStatus: rawStatus(r.status),
+    rawStudyMode: rawText(r.study_mode),
+    rawEligibility: rawText(r.eligibility_criteria),
+    rawStatus: status,
   };
 }
 
@@ -300,8 +451,12 @@ function mapApiGroup(r: ApiGroupRow): Group {
     code: `GRP-${String(r.id).padStart(3, "0")}`,
     name: blankToDash(r.group_name),
     description: r.description != null ? String(r.description) : "",
-    // The count the table shows is the number of courses that still exist.
-    totalCourses: courseIds.length,
+    // The count the table shows is the number of courses that still exist —
+    // the API's live `courses_count`, or the resolved list when it is absent.
+    totalCourses:
+      r.courses_count != null && Number.isFinite(Number(r.courses_count))
+        ? Number(r.courses_count)
+        : new Set(courseIds).size,
     courseIds,
     rawGroupName: rawText(r.group_name),
     rawDescription: rawText(r.description),
@@ -315,9 +470,12 @@ function mapApiSpec(r: ApiSpecRow): Specialisation {
     code: `SPC-${String(r.id).padStart(3, "0")}`,
     name: blankToDash(r.title),
     description: r.description != null ? String(r.description) : "",
-    // `specialisations.course_id` is a single optional FK, so a row maps to at
-    // most one course. No many-to-many table exists → never fabricate a count.
-    mappedCourses: r.course_id != null ? 1 : 0,
+    // Live count from the API (course_id FK + courses naming it). Never
+    // fabricated: when the API does not send it, the cell shows "—".
+    mappedCourses:
+      r.courses_count != null && Number.isFinite(Number(r.courses_count))
+        ? Number(r.courses_count)
+        : null,
     rawTitle: rawText(r.title),
     rawDescription: rawText(r.description),
   };
@@ -333,7 +491,21 @@ const LEVEL_STYLE: Record<Level, string> = {
   Doctorate: "bg-rose-50 text-rose-700 ring-rose-200",
 };
 
-const DURATION_TYPES = ["Months", "Years"];
+/**
+ * Duration units, in the legacy vocabulary stored in `course.duration` (the
+ * QA export shows "Year" / "Semester"). A stored value outside this list is
+ * surfaced verbatim by selectOptions.
+ */
+const DURATION_UNITS = ["Year", "Semester", "Month"];
+
+/** `course.study_mode` values (VarChar(25)); stored outliers are surfaced. */
+const STUDY_MODES = ["Online", "ODL", "Distance", "Regular"];
+
+/** The "no specific specialisation" value CreateCourseDto accepts. */
+const GENERAL_SPECIALISATION = "General";
+
+/** A positive duration magnitude — mirrors DURATION_MAGNITUDE in CreateCourseDto. */
+const DURATION_MAGNITUDE = /^(?=.*[1-9])\d+(?:\.\d+)?$/;
 
 /**
  * Options for a Select that is seeded from a free-text column.
@@ -361,17 +533,40 @@ function selectOptions(values: readonly string[], stored: string): string[] {
 }
 
 /**
+ * The ONE specialisation name a stored/picked `specialisations` value stands
+ * for, for title composition. "" for a blank column; null when the value is
+ * not a single name (a JSON blob that parses to 0 or 2+ names, or a
+ * comma-list). The raw value itself is NEVER composed into a title — on the
+ * legacy rows it is a JSON blob like `[{"id":"…","name":"Marketing"}]`.
+ */
+function singleSpecName(raw: string): string | null {
+  if (raw.trim() === "") return "";
+  const names = parseSpecialisationNames(raw);
+  return names.length === 1 ? names[0] : null;
+}
+
+/** Case/space-insensitive title comparison for the "auto-generated" test. */
+function sameTitle(a: string, b: string): boolean {
+  const norm = (v: string) => v.trim().replace(/\s+/g, " ").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
  * The title a course would be STORED with after this edit, or null for
  * "leave `course.title` alone".
  *
  * `title` is DERIVED from short_name + specialisations, and a derived field is
- * still a write. Two rules:
+ * still a write. Rules:
  *   1. Derive only when a component actually changed — a level-only edit must
  *      never rewrite a hand-authored title.
- *   2. Derive only when BOTH components are genuinely present. "" is the
- *      stand-in for a NULL short_name / specialisations column, and
- *      interpolating it would collapse the title to a bare fragment
- *      ("Human Resources") on top of a real one ("Executive MBA — HR").
+ *   2. Derive only from a genuine group and a single PARSED specialisation
+ *      name. A blank component, a multi-name value, or an unparseable value
+ *      means "do not derive". An unchanged specialisation that is a legacy
+ *      JSON blob also means "do not derive" — the row is left as authored.
+ *   3. Derive only over a title that is blank or was itself auto-generated,
+ *      i.e. equals what the SEED values compose to (the same rule
+ *      EditIntakeDialog applies via nameIsAutoGenerated). A hand-written
+ *      "Master of Business Administration" is never replaced by a bare "MBA".
  *
  * The submit path and the read-only Course Name preview both read this one
  * function, so the preview can never show something different from what the
@@ -380,12 +575,26 @@ function selectOptions(values: readonly string[], stored: string): string[] {
 function derivedCourseTitle(
   seed: CourseFormState,
   form: CourseFormState,
+  storedTitle: string | null,
 ): string | null {
-  if (form.group === seed.group && form.spec === seed.spec) return null;
+  const specChanged = form.spec !== seed.spec;
+  if (form.group === seed.group && !specChanged) return null;
+
   const g = form.group.trim();
-  const s = form.spec.trim();
-  if (g === "" || s === "") return null;
-  return `${g} in ${s}`;
+  const s = singleSpecName(form.spec);
+  if (g === "" || s === null || s === "") return null;
+  // Unchanged spec that is not stored as a plain single name (a JSON blob):
+  // leave the title alone rather than re-derive from a legacy encoding.
+  if (!specChanged && form.spec.trim() !== s) return null;
+
+  const stored = storedTitle ?? "";
+  if (stored.trim() !== "") {
+    const seedSpec = singleSpecName(seed.spec);
+    if (seedSpec === null) return null;
+    const seedTitle = composeCourseTitle(seed.group, seedSpec);
+    if (seedTitle === "" || !sameTitle(stored, seedTitle)) return null;
+  }
+  return composeCourseTitle(g, s);
 }
 
 /** Edit-form state for a course, seeded ONLY from raw column values. */
@@ -393,10 +602,18 @@ type CourseFormState = {
   level: string;
   group: string;
   spec: string;
+  /** Edits `total_duration` (the magnitude). */
   durationNum: string;
-  durationType: string;
-  /** Non-null when the stored duration is not "<number> <unit>" — edited as free text. */
-  durationFree: string | null;
+  /** Edits `duration` (the unit). */
+  durationUnit: string;
+  /**
+   * True when the row stores a composite "2 Years" in `duration` with a blank
+   * `total_duration` (an older CRM write). The form splits it for editing and,
+   * only if the operator changes it, writes it back split the legacy way.
+   */
+  durationComposite: boolean;
+  studyMode: string;
+  eligibility: string;
   /** "" means the column is NULL — distinct from an explicit Inactive (0). */
   status: Status | "";
 };
@@ -406,23 +623,37 @@ const EMPTY_COURSE_FORM: CourseFormState = {
   group: "",
   spec: "",
   durationNum: "",
-  durationType: "",
-  durationFree: null,
+  durationUnit: "",
+  durationComposite: false,
+  studyMode: "",
+  eligibility: "",
   status: "",
 };
 
 function seedCourseForm(course: Course): CourseFormState {
-  const stored = (course.rawDuration ?? "").trim();
-  const parsed = stored === "" ? null : stored.match(/^(\d+(?:\.\d+)?)\s*(.*)$/);
+  const unit = course.rawDuration ?? "";
+  const magnitude = course.rawTotalDuration ?? "";
+  const composite =
+    magnitude.trim() === "" ? unit.trim().match(/^(\d+(?:\.\d+)?)\s*(.*)$/) : null;
   return {
     level: course.rawLevel ?? "",
     group: course.rawShortName ?? "",
     spec: course.rawSpecialisations ?? "",
-    durationNum: parsed ? parsed[1] : "",
-    durationType: parsed ? parsed[2].trim() : "",
-    durationFree: stored !== "" && !parsed ? stored : null,
+    durationNum: composite ? composite[1] : magnitude,
+    durationUnit: composite ? composite[2].trim() : unit,
+    durationComposite: composite != null,
+    studyMode: course.rawStudyMode ?? "",
+    eligibility: course.rawEligibility ?? "",
     status: course.rawStatus == null ? "" : course.rawStatus === 1 ? "Active" : "Inactive",
   };
+}
+
+/** Specialisation options: every master name, plus "General" for "none". */
+function specialisationOptions(specs: Specialisation[]): string[] {
+  const names = specs.map((s) => s.name);
+  return names.some((n) => n.trim().toLowerCase() === "general")
+    ? names
+    : [GENERAL_SPECIALISATION, ...names];
 }
 
 function sameIds(a: readonly number[], b: readonly number[]): boolean {
@@ -458,7 +689,18 @@ function mergeCourseIds(
   return [...kept, ...added];
 }
 
-function StatusBadge({ status }: { status: Status }) {
+function StatusBadge({ status }: { status: CourseStatus }) {
+  if (status === "Not set") {
+    return (
+      <Badge
+        variant="outline"
+        className="border-dashed text-muted-foreground"
+        title="No status has been saved for this course"
+      >
+        Not set
+      </Badge>
+    );
+  }
   return status === "Active" ? (
     <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
       <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
@@ -557,9 +799,7 @@ function CoursePicker({
                 onCheckedChange={() => onToggle(c.id)}
               />
               <span className="font-mono text-[11px] text-muted-foreground">{c.code}</span>
-              <span className="truncate">
-                {c.group} in {c.specialisation}
-              </span>
+              <span className="truncate">{c.name}</span>
             </label>
           ))
         )}
@@ -646,6 +886,7 @@ function CoursesPage() {
   const [addSpecOpen, setAddSpecOpen] = useState(false);
 
   const [editCourse, setEditCourse] = useState<Course | null>(null);
+  const [viewCourse, setViewCourse] = useState<Course | null>(null);
   const [editGroup, setEditGroup] = useState<Group | null>(null);
   const [editSpec, setEditSpec] = useState<Specialisation | null>(null);
 
@@ -656,10 +897,24 @@ function CoursesPage() {
   const apiMessage = (e: unknown) =>
     e instanceof ApiError ? e.message : "Something went wrong";
 
+  // Specialisation and group `courses_count` are computed from course rows,
+  // and the application form's pickers read the "catalog" caches — a course
+  // write makes all of them stale, not just ["courses"].
+  const invalidateCourseDependents = () => {
+    qc.invalidateQueries({ queryKey: ["courses"] });
+    qc.invalidateQueries({ queryKey: ["specialisations"] });
+    qc.invalidateQueries({ queryKey: ["group-courses"] });
+    qc.invalidateQueries({ queryKey: ["catalog", "courses"] });
+  };
+  const invalidateSpecialisations = () => {
+    qc.invalidateQueries({ queryKey: ["specialisations"] });
+    qc.invalidateQueries({ queryKey: ["catalog", "specialisations"] });
+  };
+
   const createCourseMut = useMutation({
     mutationFn: (body: CoursePayload) => apiPost("/courses", body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["courses"] });
+      invalidateCourseDependents();
       toast.success("Course created");
       setCreateCourseOpen(false);
     },
@@ -670,7 +925,7 @@ function CoursesPage() {
     mutationFn: ({ id, body }: { id: number; body: CoursePayload }) =>
       apiPatch(`/courses/${id}`, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["courses"] });
+      invalidateCourseDependents();
       toast.success("Course updated");
       setEditCourse(null);
     },
@@ -712,7 +967,7 @@ function CoursesPage() {
   const createSpecMut = useMutation({
     mutationFn: (body: SpecPayload) => apiPost("/specialisations", body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["specialisations"] });
+      invalidateSpecialisations();
       toast.success("Specialisation added");
       setAddSpecOpen(false);
     },
@@ -723,7 +978,7 @@ function CoursesPage() {
     mutationFn: ({ id, body }: { id: number; body: SpecPayload }) =>
       apiPatch(`/specialisations/${id}`, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["specialisations"] });
+      invalidateSpecialisations();
       toast.success("Specialisation updated");
       setEditSpec(null);
     },
@@ -739,8 +994,10 @@ function CoursesPage() {
     return courses.filter(
       (c) =>
         c.code.toLowerCase().includes(q) ||
+        c.name.toLowerCase().includes(q) ||
         c.group.toLowerCase().includes(q) ||
-        c.specialisation.toLowerCase().includes(q),
+        c.specialisation.toLowerCase().includes(q) ||
+        c.university.toLowerCase().includes(q),
     );
   }, [courses, query]);
 
@@ -760,7 +1017,10 @@ function CoursesPage() {
     );
   }, [specs, query]);
 
-  const handleExport = () => toast.success("Export started");
+  // No export endpoint exists for the catalog. Say so rather than claim a
+  // file is on its way.
+  const handleExport = () =>
+    toast.error("Export is not available yet — no file was generated.");
 
   return (
     <div className="space-y-6">
@@ -837,7 +1097,7 @@ function CoursesPage() {
                     <TableHead>Course Group</TableHead>
                     <TableHead>Specialisation</TableHead>
                     <TableHead>Duration</TableHead>
-                    <TableHead>Mapped Universities</TableHead>
+                    <TableHead>University</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right pr-4">Action</TableHead>
                   </TableRow>
@@ -876,26 +1136,29 @@ function CoursesPage() {
                           {(coursePage - 1) * PAGE_SIZE + i + 1}
                         </TableCell>
                         <TableCell className="px-4 py-3">
-                          <button className="font-mono text-xs font-medium text-primary hover:underline">
+                          <button
+                            type="button"
+                            onClick={() => setViewCourse(c)}
+                            className="font-mono text-xs font-medium text-primary hover:underline"
+                            title="View course"
+                          >
                             {c.code}
                           </button>
                         </TableCell>
                         <TableCell className="py-3 text-sm font-medium text-foreground">
-                          {c.group} in {c.specialisation}
+                          {c.name}
                         </TableCell>
                         <TableCell className="py-3">
-                          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${LEVEL_STYLE[c.level]}`}>
-                            {c.level}
-                          </span>
+                          <LevelBadge course={c} />
                         </TableCell>
                         <TableCell className="py-3 text-sm">{c.group}</TableCell>
-                        <TableCell className="py-3 text-sm">{c.specialisation}</TableCell>
-                        <TableCell className="py-3 text-sm">{c.duration}</TableCell>
-                        <TableCell className="py-3">
-                          <button className="text-sm font-medium text-primary hover:underline">
-                            {c.mappedUniversities} Universities
-                          </button>
+                        <TableCell className="max-w-[16rem] py-3 text-sm">
+                          <span className="line-clamp-2" title={c.specialisation}>
+                            {c.specialisation}
+                          </span>
                         </TableCell>
+                        <TableCell className="py-3 text-sm">{c.duration}</TableCell>
+                        <TableCell className="py-3 text-sm">{c.university}</TableCell>
                         <TableCell className="py-3">
                           <div className="flex items-center gap-2">
                             <Switch
@@ -911,7 +1174,13 @@ function CoursesPage() {
                         </TableCell>
                         <TableCell className="py-3 pr-4 text-right">
                           <div className="flex items-center justify-end gap-1">
-                            <Button variant="ghost" size="icon" className="h-8 w-8" title="View">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              title="View"
+                              onClick={() => setViewCourse(c)}
+                            >
                               <Eye className="h-4 w-4" />
                             </Button>
                             <Button
@@ -1063,7 +1332,9 @@ function CoursesPage() {
                       <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">{s.code}</TableCell>
                       <TableCell className="py-3 text-sm font-medium">{s.name}</TableCell>
                       <TableCell className="py-3 text-sm text-muted-foreground">{s.description}</TableCell>
-                      <TableCell className="py-3 text-sm">{s.mappedCourses}</TableCell>
+                      <TableCell className="py-3 text-sm tabular-nums">
+                        {s.mappedCourses ?? "—"}
+                      </TableCell>
                       <TableCell className="py-3 pr-4 text-right">
                         <div className="flex items-center justify-end gap-1">
                           <Button
@@ -1117,6 +1388,15 @@ function CoursesPage() {
         onSubmit={(body) => createSpecMut.mutate(body)}
       />
 
+      <CourseDetailDialog
+        course={viewCourse}
+        onClose={() => setViewCourse(null)}
+        onEdit={(c) => {
+          setViewCourse(null);
+          setEditCourse(c);
+        }}
+      />
+
       <EditCourseDialog
         course={editCourse}
         groups={groupOptions}
@@ -1145,6 +1425,30 @@ function CoursesPage() {
   );
 }
 
+/* ---------------- Level badge ---------------- */
+
+function LevelBadge({ course }: { course: Course }) {
+  if (course.levelKey) {
+    return (
+      <span
+        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ${LEVEL_STYLE[course.levelKey]}`}
+        title={course.rawLevel ?? undefined}
+      >
+        {course.levelKey}
+      </span>
+    );
+  }
+  if (course.levelLabel === "—") {
+    return <span className="text-sm text-muted-foreground">—</span>;
+  }
+  // A stored level that maps onto no canonical one is shown as stored.
+  return (
+    <span className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground ring-1 ring-border">
+      {course.levelLabel}
+    </span>
+  );
+}
+
 /* ---------------- Create Course ---------------- */
 
 function CreateCourseDialog({
@@ -1166,19 +1470,18 @@ function CreateCourseDialog({
   const [group, setGroup] = useState("");
   const [spec, setSpec] = useState("");
   const [duration, setDuration] = useState("");
-  const [durationType, setDurationType] = useState("Years");
+  const [durationUnit, setDurationUnit] = useState(DURATION_UNITS[0]);
+  const [studyMode, setStudyMode] = useState("");
   const [eligibility, setEligibility] = useState("");
   const [status, setStatus] = useState<Status>("Active");
 
-  // A fresh install has no group_courses / specialisations rows, so the
-  // dropdowns would be empty and Create unusable. `short_name` and
-  // `specialisations` are free-text @IsOptional columns server-side, so fall
-  // back to a plain text field rather than blocking the form.
+  // A fresh install has no group_courses rows, so the dropdown would be empty.
+  // `short_name` is a free-text @IsOptional column server-side, so fall back to
+  // a plain text field rather than blocking the form. Specialisation always
+  // has at least "General" to pick.
   const groupFreeText = groups.length === 0;
-  const specFreeText = specs.length === 0;
 
-  const courseName =
-    group && spec ? `${group} in ${spec}` : group.trim() || spec.trim() || "";
+  const courseName = composeCourseTitle(group, spec);
 
   // Clear the form whenever the dialog closes — including the close the parent
   // performs after a confirmed POST.
@@ -1188,28 +1491,43 @@ function CreateCourseDialog({
     setGroup("");
     setSpec("");
     setDuration("");
-    setDurationType("Years");
+    setDurationUnit(DURATION_UNITS[0]);
+    setStudyMode("");
     setEligibility("");
     setStatus("Active");
   }, [open]);
 
   const submit = () => {
-    // `short_name` is @IsOptional server-side, so Course Group is NOT required
-    // — demanding it made Create impossible on a DB with no group_courses rows.
-    if (!level || !spec || !duration) {
+    // Mirrors CreateCourseDto: level, specialisation (or "General") and a
+    // duration magnitude + unit are required. Course Group stays optional
+    // (`short_name` is @IsOptional).
+    if (!level || !spec.trim() || !duration.trim() || !durationUnit) {
       toast.error("Please fill all required fields");
       return;
     }
-    // Maps onto real `course` columns only: title / short_name / level /
-    // duration / specialisations / eligibility_criteria / status (1|0). The
-    // course code is derived from the DB id after insert, so nothing is minted
-    // client-side. Blank optional fields are OMITTED, never sent as "".
+    if (!DURATION_MAGNITUDE.test(duration.trim())) {
+      toast.error("Duration must be a positive number, e.g. 2");
+      return;
+    }
+    // The title is composed from group + specialisation, and "General" adds
+    // nothing to it — with no group the course would be titled just "General".
+    if (!group.trim() && spec.trim().toLowerCase() === "general") {
+      toast.error("Choose a Course Group for a General course");
+      return;
+    }
+    // Real `course` columns only. Duration is written the legacy way —
+    // magnitude in total_duration, unit in duration — which is what the LMS
+    // and the existing rows use. The course code is derived from the DB id
+    // after insert, so nothing is minted client-side. Blank optional fields
+    // are OMITTED, never sent as "".
     onSubmit({
       title: courseName,
       short_name: group.trim() || undefined,
       level,
-      duration: `${duration} ${durationType}`,
+      total_duration: duration.trim(),
+      duration: durationUnit,
       specialisations: spec.trim(),
+      study_mode: studyMode || undefined,
       eligibility_criteria: eligibility.trim() || undefined,
       status: status === "Active" ? 1 : 0,
     });
@@ -1217,7 +1535,7 @@ function CreateCourseDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !isPending && onClose()}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create Course</DialogTitle>
           <DialogDescription>Define a reusable course template.</DialogDescription>
@@ -1261,27 +1579,17 @@ function CreateCourseDialog({
 
           <div className="space-y-1.5">
             <Label>Specialisation *</Label>
-            {specFreeText ? (
-              <>
-                <Input
-                  value={spec}
-                  onChange={(e) => setSpec(e.target.value)}
-                  placeholder="e.g. Finance"
-                />
-                <p className="text-xs text-muted-foreground">
-                  No specialisations exist yet — type one.
-                </p>
-              </>
-            ) : (
-              <Select value={spec} onValueChange={setSpec}>
-                <SelectTrigger><SelectValue placeholder="Select specialisation" /></SelectTrigger>
-                <SelectContent>
-                  {selectOptions(specs.map((s) => s.name), "").map((name) => (
-                    <SelectItem key={name} value={name}>{name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
+            <Select value={spec} onValueChange={setSpec}>
+              <SelectTrigger><SelectValue placeholder="Select specialisation" /></SelectTrigger>
+              <SelectContent>
+                {selectOptions(specialisationOptions(specs), "").map((name) => (
+                  <SelectItem key={name} value={name}>{name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Pick “General” when the course has no specific specialisation.
+            </p>
           </div>
 
           <div className="space-y-1.5">
@@ -1312,23 +1620,48 @@ function CreateCourseDialog({
 
           <div className="space-y-1.5">
             <Label>Duration *</Label>
-            <Input value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="2" type="number" />
+            <Input
+              value={duration}
+              onChange={(e) => setDuration(e.target.value)}
+              placeholder="2"
+              type="number"
+              min={0}
+              step="any"
+            />
           </div>
 
           <div className="space-y-1.5">
-            <Label>Duration Type</Label>
-            <Select value={durationType} onValueChange={setDurationType}>
+            <Label>Duration Unit *</Label>
+            <Select value={durationUnit} onValueChange={setDurationUnit}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="Months">Months</SelectItem>
-                <SelectItem value="Years">Years</SelectItem>
+                {DURATION_UNITS.map((u) => (
+                  <SelectItem key={u} value={u}>{u}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Mode of Study</Label>
+            <Select value={studyMode} onValueChange={setStudyMode}>
+              <SelectTrigger><SelectValue placeholder="Select mode" /></SelectTrigger>
+              <SelectContent>
+                {STUDY_MODES.map((m) => (
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
 
           <div className="space-y-1.5 sm:col-span-2">
             <Label>Eligibility</Label>
-            <Input value={eligibility} onChange={(e) => setEligibility(e.target.value)} placeholder="e.g. Graduation in any discipline" />
+            <Textarea
+              value={eligibility}
+              onChange={(e) => setEligibility(e.target.value)}
+              rows={3}
+              placeholder="e.g. Graduation in any discipline with 50% marks"
+            />
           </div>
         </div>
 
@@ -1340,6 +1673,146 @@ function CreateCourseDialog({
             className="bg-accent text-accent-foreground hover:bg-accent-hover"
           >
             {isPending ? "Saving…" : "Create Course"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ---------------- Course detail (View) ---------------- */
+
+function DetailField({
+  label,
+  children,
+  wide = false,
+}: {
+  label: string;
+  children: ReactNode;
+  wide?: boolean;
+}) {
+  return (
+    <div className={wide ? "sm:col-span-2" : undefined}>
+      <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </dt>
+      <dd className="mt-1 text-sm text-foreground">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * Read-only course detail, fetched from GET /courses/:id so it reflects the
+ * stored row (plus its university and semester count), not the list page's
+ * possibly stale copy. The list row is only used for the header while loading.
+ */
+function CourseDetailDialog({
+  course,
+  onClose,
+  onEdit,
+}: {
+  course: Course | null;
+  onClose: () => void;
+  onEdit: (course: Course) => void;
+}) {
+  const id = course?.id ?? null;
+  const detailQuery = useQuery({
+    queryKey: ["courses", "detail", id],
+    queryFn: () => apiGet<ApiCourseDetail>(`/courses/${id}`),
+    enabled: id != null,
+  });
+
+  const detail = detailQuery.data ?? null;
+  const shown = detail ? mapApiCourse(detail) : course;
+  const specNames = detail
+    ? parseSpecialisationNames(detail.specialisations)
+    : course
+      ? parseSpecialisationNames(course.rawSpecialisations)
+      : [];
+  const eligibility = (detail?.eligibility_criteria ?? "").trim();
+  const semesters = detail?.semesters_count;
+
+  return (
+    <Dialog open={!!course} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex flex-wrap items-center gap-2">
+            {shown?.name ?? "Course"}
+            {shown && (
+              <span className="font-mono text-xs font-normal text-muted-foreground">
+                {shown.code}
+              </span>
+            )}
+          </DialogTitle>
+          <DialogDescription>Course template details.</DialogDescription>
+        </DialogHeader>
+
+        {detailQuery.isLoading ? (
+          <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading course…
+          </div>
+        ) : detailQuery.isError ? (
+          <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+            <AlertTriangle className="h-4 w-4 text-red-500/70" />
+            {detailQuery.error instanceof Error
+              ? detailQuery.error.message
+              : "Couldn’t load this course."}
+          </div>
+        ) : shown ? (
+          <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+            <DetailField label="Level">
+              <LevelBadge course={shown} />
+            </DetailField>
+            <DetailField label="Status">
+              <StatusBadge status={shown.status} />
+            </DetailField>
+            <DetailField label="Course Group">{shown.group}</DetailField>
+            <DetailField label="Duration">{shown.duration}</DetailField>
+            <DetailField label="Mode of Study">{shown.studyMode}</DetailField>
+            <DetailField label="University">{shown.university}</DetailField>
+            <DetailField label="Semesters">
+              {semesters == null
+                ? "—"
+                : semesters === 0
+                  ? "None defined"
+                  : `${semesters} semester${semesters === 1 ? "" : "s"}`}
+            </DetailField>
+            <DetailField label="LMS Course">
+              {detail?.is_lms_course == null ? "—" : detail.is_lms_course === 1 ? "Yes" : "No"}
+            </DetailField>
+            <DetailField label="Specialisations" wide>
+              {specNames.length === 0 ? (
+                "—"
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {specNames.map((n, i) => (
+                    <Badge key={`${n}-${i}`} variant="secondary" className="font-normal">
+                      {n}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </DetailField>
+            <DetailField label="Eligibility" wide>
+              {eligibility === "" ? (
+                "—"
+              ) : (
+                <p className="whitespace-pre-wrap">{eligibility}</p>
+              )}
+            </DetailField>
+          </dl>
+        ) : null}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+          <Button
+            onClick={() => shown && onEdit(shown)}
+            disabled={!shown || detailQuery.isLoading}
+            className="gap-2 bg-accent text-accent-foreground hover:bg-accent-hover"
+          >
+            <Pencil className="h-4 w-4" />
+            Edit
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1537,17 +2010,34 @@ function EditCourseDialog({
     [groups, seed.group],
   );
   const specOptions = useMemo(
-    () => selectOptions(specs.map((s) => s.name), seed.spec),
+    () => selectOptions(specialisationOptions(specs), seed.spec),
     [specs, seed.spec],
   );
-  const durationTypeOptions = useMemo(
-    () => selectOptions(DURATION_TYPES, seed.durationType),
-    [seed.durationType],
+  const durationUnitOptions = useMemo(
+    () => selectOptions(DURATION_UNITS, seed.durationUnit),
+    [seed.durationUnit],
   );
+  const studyModeOptions = useMemo(
+    () => selectOptions(STUDY_MODES, seed.studyMode),
+    [seed.studyMode],
+  );
+  // The stored specialisation may be a legacy JSON blob. It stays the option's
+  // VALUE (so an untouched field diffs clean) but is LABELLED by its names.
+  const specOptionLabel = (value: string) =>
+    value === seed.spec && value !== "" ? specialisationLabel(value) : value;
 
   // What `title` would become — null means the derivation is not safe or not
   // warranted, so `title` is left exactly as stored. Shared with the preview.
-  const nextTitle = useMemo(() => derivedCourseTitle(seed, form), [seed, form]);
+  const nextTitle = useMemo(
+    () => derivedCourseTitle(seed, form, course?.rawTitle ?? null),
+    [seed, form, course],
+  );
+  // The operator changed a component but the stored title is kept (it is
+  // hand-written, or a component is not a single name) — say so beside the preview.
+  const titleKept =
+    nextTitle === null &&
+    (form.group !== seed.group || form.spec !== seed.spec) &&
+    (course?.rawTitle ?? "").trim() !== "";
 
   const submit = () => {
     if (!course) return;
@@ -1558,31 +2048,38 @@ function EditCourseDialog({
     if (form.group !== seed.group) body.short_name = form.group.trim();
     if (form.spec !== seed.spec) body.specialisations = form.spec.trim();
 
-    const durationChanged =
-      form.durationNum !== seed.durationNum ||
-      form.durationType !== seed.durationType ||
-      form.durationFree !== seed.durationFree;
-    if (durationChanged) {
-      if (form.durationFree !== null) {
-        const next = form.durationFree.trim();
-        if (next === "") {
-          toast.error("Duration can’t be cleared");
-          return;
-        }
-        body.duration = next;
-      } else {
-        // The number input is type="number": clearing it yields "". Joining the
-        // parts and testing the RESULT for emptiness is not enough — "" + "Years"
-        // joins to "Years", a unit with no magnitude, which is not a duration and
-        // would be written straight over a valid "2 Years". Guard the magnitude.
-        const magnitude = form.durationNum.trim();
-        const unit = form.durationType.trim();
+    // Duration is two columns: total_duration (magnitude) + duration (unit).
+    const numChanged = form.durationNum !== seed.durationNum;
+    const unitChanged = form.durationUnit !== seed.durationUnit;
+    if (numChanged || unitChanged) {
+      const magnitude = form.durationNum.trim();
+      const unit = form.durationUnit.trim();
+      if (numChanged || seed.durationComposite) {
+        // The number input is type="number": clearing it yields "", and a unit
+        // with no magnitude is not a duration. Guard the magnitude.
         if (magnitude === "") {
           toast.error("Duration can’t be cleared");
           return;
         }
-        body.duration = unit === "" ? magnitude : `${magnitude} ${unit}`;
+        if (!DURATION_MAGNITUDE.test(magnitude)) {
+          toast.error("Duration must be a positive number, e.g. 2");
+          return;
+        }
+        body.total_duration = magnitude;
       }
+      if (unitChanged || seed.durationComposite) {
+        if (unit === "") {
+          toast.error("Choose a duration unit");
+          return;
+        }
+        // A composite "2 Years" row is written back split, the legacy way.
+        body.duration = unit;
+      }
+    }
+
+    if (form.studyMode !== seed.studyMode) body.study_mode = form.studyMode;
+    if (form.eligibility !== seed.eligibility) {
+      body.eligibility_criteria = form.eligibility.trim();
     }
 
     // "" means the stored status is NULL and the operator left it alone.
@@ -1641,7 +2138,7 @@ function EditCourseDialog({
               <SelectTrigger><SelectValue placeholder="Not set" /></SelectTrigger>
               <SelectContent>
                 {specOptions.map((name) => (
-                  <SelectItem key={name} value={name}>{name}</SelectItem>
+                  <SelectItem key={name} value={name}>{specOptionLabel(name)}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -1670,44 +2167,56 @@ function EditCourseDialog({
               readOnly
               className="bg-muted/40"
             />
-          </div>
-          {form.durationFree !== null ? (
-            <div className="space-y-1.5 sm:col-span-2">
-              <Label>Duration</Label>
-              <Input
-                value={form.durationFree}
-                onChange={(e) => setField("durationFree", e.target.value)}
-              />
+            {titleKept && (
               <p className="text-xs text-muted-foreground">
-                Stored as free text, shown exactly as saved.
+                The existing course name is kept.
               </p>
-            </div>
-          ) : (
-            <>
-              <div className="space-y-1.5">
-                <Label>Duration</Label>
-                <Input
-                  value={form.durationNum}
-                  onChange={(e) => setField("durationNum", e.target.value)}
-                  type="number"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Duration Type</Label>
-                <Select
-                  value={form.durationType}
-                  onValueChange={(v) => setField("durationType", v)}
-                >
-                  <SelectTrigger><SelectValue placeholder="Not set" /></SelectTrigger>
-                  <SelectContent>
-                    {durationTypeOptions.map((t) => (
-                      <SelectItem key={t} value={t}>{t}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </>
-          )}
+            )}
+          </div>
+          <div className="space-y-1.5">
+            <Label>Duration</Label>
+            <Input
+              value={form.durationNum}
+              onChange={(e) => setField("durationNum", e.target.value)}
+              type="number"
+              min={0}
+              step="any"
+              placeholder="Not set"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Duration Unit</Label>
+            <Select
+              value={form.durationUnit}
+              onValueChange={(v) => setField("durationUnit", v)}
+            >
+              <SelectTrigger><SelectValue placeholder="Not set" /></SelectTrigger>
+              <SelectContent>
+                {durationUnitOptions.map((t) => (
+                  <SelectItem key={t} value={t}>{t}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Mode of Study</Label>
+            <Select value={form.studyMode} onValueChange={(v) => setField("studyMode", v)}>
+              <SelectTrigger><SelectValue placeholder="Not set" /></SelectTrigger>
+              <SelectContent>
+                {studyModeOptions.map((m) => (
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label>Eligibility</Label>
+            <Textarea
+              value={form.eligibility}
+              onChange={(e) => setField("eligibility", e.target.value)}
+              rows={3}
+            />
+          </div>
         </div>
         <p className="text-xs text-muted-foreground">
           Only fields you change are sent. Blank fields are stored as empty and are

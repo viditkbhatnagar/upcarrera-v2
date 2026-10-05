@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, ApiError } from "@/lib/api";
 import {
@@ -37,10 +38,23 @@ import {
 } from "recharts";
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  type ApiSalesTeam,
+  displayEmpId,
+  EMPTY,
+  groupLabel,
+  leaderLabel,
+  mapTeamStatus,
+  personLabel,
+  teamCode,
+  type TeamStatus,
+} from "@/components/teams/team-shared";
+import {
+  EditTeamDialog,
+  ManageMembersDialog,
+  TransferTeamDialog,
+} from "@/components/teams/team-dialogs";
 
-const EMPTY = "—";
-
-type TeamStatus = "Active" | "Inactive";
 
 /**
  * A resolved team member. Deliberately narrow: these are exactly the fields
@@ -55,6 +69,8 @@ interface TeamMember {
   name: string;
   email: string;
   phone: string;
+  /** True when the roster id resolves to no user (production: 30, 31, 41). */
+  unknown: boolean;
 }
 
 interface TeamRecord {
@@ -70,54 +86,20 @@ interface TeamRecord {
 }
 
 // --- Live API wiring (GET /sales-teams/:id) ------------------------------
-// The profile is opened from /counsellors/teams with a `TM-####` route param
-// whose trailing digits are the real sales_team.id. We fetch the raw
-// sales_team row (SalesService.findOneTeam, members already parsed) and map it
-// into the TeamRecord shape the design renders. The source schema only carries
-// id/name/leader/status/created_at and a JSON `members` array of user IDs — it
-// has NO enriched member objects, group, target, applications, students or
-// activity history. Those sections therefore render honestly empty (member
-// count comes from members.length; leader/group fall back to "—") rather than
-// fabricating data.
-//
-// The members ARE resolvable, though: SalesService.decorateTeams joins the
-// member ids (and the leader id) against `users` in ONE query and returns
-// `members_details` — one entry per member id, with null name/email/phone when
-// the user is missing or soft-deleted. That is the roster source below, so the
-// page no longer has to pull the whole consultants list to resolve names.
-interface ApiMemberDetail {
-  id: number;
-  name: string | null;
-  email: string | null;
-  phone: string | null;
-}
+// The profile is opened from /counsellors/teams with the numeric sales_team.id
+// as the route param (older links carried `TM-####`; its digits are the same
+// id, so both still resolve). SalesService.decorateTeams resolves the leader,
+// the members (`members_details`, one entry per roster id, with null details
+// when the user is missing or soft-deleted) and the parent group in one go.
+// There is NO target, application, student or activity history for a team, so
+// those sections render honestly empty rather than fabricating data.
 
-interface ApiTeam {
-  id: number | string;
-  name: string | null;
-  leader: string | null;
-  members: unknown[] | null;
-  /** Added by SalesService.decorateTeams; absent on older API builds. */
-  members_details?: ApiMemberDetail[] | null;
-  leader_name?: string | null;
-  university_id: string | null;
-  course_id: string | null;
-  status: number | string | null;
-  created_at: string | null;
-}
-
-// sales_team.status is an Int? code; non-zero / truthy => Active (legacy parity).
-function mapTeamStatus(status: number | string | null): TeamStatus {
-  const code = typeof status === "string" ? Number(status) : status;
-  return code && code !== 0 ? "Active" : "Inactive";
-}
-
-// Extract the numeric sales_team id from the `TM-####` route param.
+// Extract the numeric sales_team id from the route param ("2" or "TM-0002").
 function parseTeamId(teamId: string): number | null {
   const digits = teamId.replace(/[^0-9]/g, "");
   if (!digits) return null;
   const n = Number(digits);
-  return Number.isNaN(n) ? null : n;
+  return Number.isNaN(n) || n <= 0 ? null : n;
 }
 
 function asText(value: string | null | undefined): string {
@@ -138,12 +120,10 @@ function parseMemberIds(members: unknown[] | null): number[] {
  * empty table under a non-zero count.
  *
  * Either way there is exactly one row per member id, so the header count and
- * the table can never disagree — which is what produced the old
- * "1 counsellors" / "Member details are not available" contradiction. An id
- * whose user no longer exists resolves to a row with blank details, not a
- * missing row.
+ * the table can never disagree. An id whose user no longer exists renders as
+ * "Unknown user #30" — never as a bare number, and never as a missing row.
  */
-function buildMembers(t: ApiTeam): TeamMember[] {
+function buildMembers(t: ApiSalesTeam): TeamMember[] {
   const details = Array.isArray(t.members_details)
     ? t.members_details
     : parseMemberIds(t.members).map((id) => ({
@@ -151,33 +131,45 @@ function buildMembers(t: ApiTeam): TeamMember[] {
         name: null,
         email: null,
         phone: null,
+        employee_code: null,
       }));
 
-  return details.map((m) => ({
-    id: m.id,
-    // users.id is the only unique key on the row (users.code is the phone dial
-    // code) — matches counsellors.counsellors.tsx.
-    empId: `UC-${m.id}`,
-    name: m.name && m.name.trim() !== "" ? m.name : EMPTY,
-    email: asText(m.email),
-    phone: asText(m.phone),
-  }));
+  return details.map((m) => {
+    const unknown = !(m.name && m.name.trim() !== "");
+    return {
+      id: m.id,
+      empId: unknown ? EMPTY : displayEmpId(m.employee_code, m.id),
+      name: personLabel(m.name, m.id),
+      email: asText(m.email),
+      phone: asText(m.phone),
+      unknown,
+    };
+  });
 }
 
-// Map a raw sales_team row into the TeamRecord shape the existing JSX renders.
-function mapApiTeam(t: ApiTeam, routeId: string): TeamRecord {
+// Map a raw sales_team row into the TeamRecord shape the JSX renders. Display
+// only — the Edit / Members / Transfer dialogs read the raw row, never this.
+function mapApiTeam(t: ApiSalesTeam): TeamRecord {
   const members = buildMembers(t);
   return {
-    id: routeId.toUpperCase(),
+    id: teamCode(t.id),
     name: t.name?.trim() || `Team #${t.id}`,
     shortName: t.name?.trim() || `#${t.id}`,
-    leader: t.leader?.trim() || EMPTY,
-    group: EMPTY,
+    leader: leaderLabel(t),
+    group: groupLabel(t),
     status: mapTeamStatus(t.status),
     createdDate: t.created_at ?? "",
     members,
     memberCount: members.length,
   };
+}
+
+/** "02 Oct 2026", or "—" for a missing / unparseable date. */
+function formatDate(value: string): string {
+  const d = new Date(value);
+  return value && !Number.isNaN(d.getTime())
+    ? d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+    : EMPTY;
 }
 
 const TEAM_STATUS_STYLES: Record<TeamStatus, string> = {
@@ -191,7 +183,7 @@ const TEAM_STATUS_DOT: Record<TeamStatus, string> = {
 
 export const Route = createFileRoute("/counsellors/team-profile/$teamId")({
   head: ({ params }) => ({
-    meta: [{ title: `${params.teamId} — Team Profile` }],
+    meta: [{ title: `Team ${params.teamId} — Team Profile` }],
   }),
   notFoundComponent: () => (
     <div className="rounded-2xl border border-border bg-surface p-10 text-center">
@@ -257,20 +249,36 @@ type TimelineRow = {
 type TrendRow = { month: string; admissions: number; revenue: number };
 type ComparisonRow = { name: string; target: number; achieved: number };
 
-function buildTeamData(team: TeamRecord) {
-  // The roster is real, but neither `users` nor sales_team carries a target or
-  // an achieved figure for a team member, so these stay 0 rather than being
-  // summed out of fabricated per-member values.
-  const totalTarget = 0;
-  const totalAchieved = 0;
-  const totalApplications = 0;
-  const enrollmentsPending = 0;
-  const enrollmentsCompleted = totalAchieved;
-  const pendingRegFee = 0;
-  const conversionRate = totalApplications
-    ? Math.round((totalAchieved / totalApplications) * 100)
-    : 0;
-  const totalRevenue = 0;
+/** A team figure with no data source yet: null renders as EMPTY, never 0. */
+type Figure = number | null;
+
+function showFigure(n: Figure): string {
+  return n == null ? EMPTY : String(n);
+}
+
+function showPercent(part: Figure, whole: Figure): string {
+  return part == null || whole == null || whole === 0
+    ? EMPTY
+    : `${Math.round((part / whole) * 100)}%`;
+}
+
+function showLakhs(n: Figure): string {
+  return n == null ? EMPTY : `₹${(n / 100000).toFixed(1)}L`;
+}
+
+function buildTeamData() {
+  // The roster is real, but neither `users` nor sales_team carries a target,
+  // an achieved figure, applications, fees or revenue for a team. These are
+  // null (rendered "—") rather than 0: a 0 would read as a factual claim that
+  // the team has achieved nothing, and it would disagree with the Teams list,
+  // which no longer shows a Monthly Target column for the same reason.
+  const totalTarget: Figure = null;
+  const totalAchieved: Figure = null;
+  const totalApplications: Figure = null;
+  const enrollmentsPending: Figure = null;
+  const enrollmentsCompleted: Figure = totalAchieved;
+  const pendingRegFee: Figure = null;
+  const totalRevenue: Figure = null;
 
   const trend: TrendRow[] = [];
 
@@ -293,7 +301,6 @@ function buildTeamData(team: TeamRecord) {
     enrollmentsPending,
     enrollmentsCompleted,
     pendingRegFee,
-    conversionRate,
     totalRevenue,
     trend,
     comparison,
@@ -313,9 +320,12 @@ function TeamProfilePage() {
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["sales-teams", "detail", numericId],
-    queryFn: () => apiGet<ApiTeam>(`/sales-teams/${numericId}`),
+    queryFn: () => apiGet<ApiSalesTeam>(`/sales-teams/${numericId}`),
     enabled: numericId !== null,
   });
+
+  const [dialog, setDialog] = useState<"edit" | "members" | "transfer" | null>(null);
+  const closeDialog = (v: boolean) => !v && setDialog(null);
 
   // Loading: show the design's spinner inside the page chrome.
   if (numericId !== null && isLoading) {
@@ -360,8 +370,8 @@ function TeamProfilePage() {
     );
   }
 
-  const team = mapApiTeam(data, teamId);
-  const d = buildTeamData(team);
+  const team = mapApiTeam(data);
+  const d = buildTeamData();
 
   return (
     <div className="space-y-6">
@@ -398,29 +408,36 @@ function TeamProfilePage() {
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span className="font-mono font-semibold text-primary">{team.id}</span>
               <span className="inline-flex items-center gap-1">
-                <CalendarDays className="h-3.5 w-3.5" /> Created{" "}
-                {new Date(team.createdDate).toLocaleDateString("en-IN", {
-                  day: "2-digit",
-                  month: "short",
-                  year: "numeric",
-                })}
+                <CalendarDays className="h-3.5 w-3.5" /> Created {formatDate(team.createdDate)}
               </span>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <HeaderStat icon={UserCheck} label="Team Leader" value={team.leader} />
               <HeaderStat icon={Building2} label="Parent Group" value={team.group} />
               <HeaderStat icon={Users} label="Total Counsellors" value={String(team.memberCount)} />
-              <HeaderStat icon={Target} label="Monthly Target" value={String(d.totalTarget)} />
+              <HeaderStat icon={Target} label="Monthly Target" value={showFigure(d.totalTarget)} />
             </div>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <button className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted">
+            <button
+              type="button"
+              onClick={() => setDialog("edit")}
+              className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+            >
               <Pencil className="h-4 w-4" /> Edit Team
             </button>
-            <button className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted">
+            <button
+              type="button"
+              onClick={() => setDialog("members")}
+              className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+            >
               <UsersRound className="h-4 w-4" /> Manage Members
             </button>
-            <button className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover">
+            <button
+              type="button"
+              onClick={() => setDialog("transfer")}
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover"
+            >
               <ArrowRightLeft className="h-4 w-4" /> Transfer Team
             </button>
           </div>
@@ -442,9 +459,9 @@ function TeamProfilePage() {
         <TabsContent value="overview" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <KpiTile icon={Users} label="Total Counsellors" value={team.memberCount} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={FileText} label="Total Applications" value={d.totalApplications} accent="bg-indigo-500/10 text-indigo-600" />
-            <KpiTile icon={GraduationCap} label="Enrollments Pending" value={d.enrollmentsPending} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={TrendingUp} label="Conversion Rate" value={`${d.conversionRate}%`} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={FileText} label="Total Applications" value={showFigure(d.totalApplications)} accent="bg-indigo-500/10 text-indigo-600" />
+            <KpiTile icon={GraduationCap} label="Enrollments Pending" value={showFigure(d.enrollmentsPending)} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={TrendingUp} label="Conversion Rate" value={showPercent(d.totalAchieved, d.totalApplications)} accent="bg-emerald-500/10 text-emerald-600" />
           </div>
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SectionCard title="Team Information" icon={ShieldCheck}>
@@ -452,14 +469,7 @@ function TeamProfilePage() {
               <InfoRow label="Team Code" value={team.id} mono />
               <InfoRow label="Team Leader" value={team.leader} />
               <InfoRow label="Parent Group" value={team.group} />
-              <InfoRow
-                label="Created Date"
-                value={new Date(team.createdDate).toLocaleDateString("en-IN", {
-                  day: "2-digit",
-                  month: "short",
-                  year: "numeric",
-                })}
-              />
+              <InfoRow label="Created Date" value={formatDate(team.createdDate)} />
               <InfoRow
                 label="Status"
                 value={
@@ -476,11 +486,11 @@ function TeamProfilePage() {
               />
             </SectionCard>
             <SectionCard title="Performance Snapshot" icon={TrendingUp}>
-              <InfoRow label="Monthly Target" value={d.totalTarget} />
-              <InfoRow label="Admissions Achieved" value={d.totalAchieved} />
-              <InfoRow label="Pending Reg. Fee" value={d.pendingRegFee} />
-              <InfoRow label="Enrollments Completed" value={d.enrollmentsCompleted} />
-              <InfoRow label="Revenue" value={`₹${(d.totalRevenue / 100000).toFixed(1)}L`} />
+              <InfoRow label="Monthly Target" value={showFigure(d.totalTarget)} />
+              <InfoRow label="Admissions Achieved" value={showFigure(d.totalAchieved)} />
+              <InfoRow label="Pending Reg. Fee" value={showFigure(d.pendingRegFee)} />
+              <InfoRow label="Enrollments Completed" value={showFigure(d.enrollmentsCompleted)} />
+              <InfoRow label="Revenue" value={showLakhs(d.totalRevenue)} />
             </SectionCard>
           </div>
         </TabsContent>
@@ -521,19 +531,36 @@ function TeamProfilePage() {
                     <tr key={c.id} className="border-b border-border last:border-0 hover:bg-muted/40">
                       <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">{c.empId}</td>
                       <td className="px-4 py-3">
-                        <div className="text-sm font-semibold text-foreground">{c.name}</div>
-                        <div className="text-xs text-muted-foreground">{c.email}</div>
+                        {c.unknown ? (
+                          <>
+                            <div className="text-sm font-medium italic text-muted-foreground">{c.name}</div>
+                            <div className="text-xs text-amber-700">
+                              No such user — remove it with Manage Members
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-sm font-semibold text-foreground">{c.name}</div>
+                            <div className="text-xs text-muted-foreground">{c.email}</div>
+                          </>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{c.phone}</td>
                       <td className="px-4 py-3 text-right">
-                        <Link
-                          to="/counsellors/profile/$empId"
-                          params={{ empId: c.empId }}
-                          title="View Profile"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Link>
+                        {c.unknown ? (
+                          <span className="text-xs text-muted-foreground">{EMPTY}</span>
+                        ) : (
+                          // Routed on the numeric users.id, never the display code.
+                          <Link
+                            to="/counsellors/profile/$empId"
+                            params={{ empId: String(c.id) }}
+                            title="View Profile"
+                            aria-label={`View ${c.name}`}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Link>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -546,9 +573,9 @@ function TeamProfilePage() {
         {/* PERFORMANCE */}
         <TabsContent value="performance" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-            <KpiTile icon={FileText} label="Applications Created" value={d.totalApplications} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={Wallet} label="Pending Registration Fee" value={d.pendingRegFee} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={GraduationCap} label="Enrollments Completed" value={d.enrollmentsCompleted} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={FileText} label="Applications Created" value={showFigure(d.totalApplications)} accent="bg-primary/10 text-primary" />
+            <KpiTile icon={Wallet} label="Pending Registration Fee" value={showFigure(d.pendingRegFee)} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={GraduationCap} label="Enrollments Completed" value={showFigure(d.enrollmentsCompleted)} accent="bg-emerald-500/10 text-emerald-600" />
           </div>
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SectionCard title="Monthly Admissions Trend" icon={TrendingUp}>
@@ -607,10 +634,10 @@ function TeamProfilePage() {
         {/* TARGETS */}
         <TabsContent value="targets" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            <KpiTile icon={Target} label="Total Target" value={d.totalTarget} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={CheckCircle2} label="Achieved" value={d.totalAchieved} accent="bg-emerald-500/10 text-emerald-600" />
-            <KpiTile icon={AlertTriangle} label="Pending" value={Math.max(0, d.totalTarget - d.totalAchieved)} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={Award} label="Achievement %" value={`${d.totalTarget ? Math.round((d.totalAchieved / d.totalTarget) * 100) : 0}%`} accent="bg-indigo-500/10 text-indigo-600" />
+            <KpiTile icon={Target} label="Total Target" value={showFigure(d.totalTarget)} accent="bg-primary/10 text-primary" />
+            <KpiTile icon={CheckCircle2} label="Achieved" value={showFigure(d.totalAchieved)} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={AlertTriangle} label="Pending" value={d.totalTarget == null || d.totalAchieved == null ? EMPTY : String(Math.max(0, d.totalTarget - d.totalAchieved))} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={Award} label="Achievement %" value={showPercent(d.totalAchieved, d.totalTarget)} accent="bg-indigo-500/10 text-indigo-600" />
           </div>
           <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
             <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">Per-counsellor targets</div>
@@ -783,6 +810,10 @@ function TeamProfilePage() {
           </SectionCard>
         </TabsContent>
       </Tabs>
+
+      <EditTeamDialog team={data} open={dialog === "edit"} onOpenChange={closeDialog} />
+      <ManageMembersDialog team={data} open={dialog === "members"} onOpenChange={closeDialog} />
+      <TransferTeamDialog team={data} open={dialog === "transfer"} onOpenChange={closeDialog} />
     </div>
   );
 }

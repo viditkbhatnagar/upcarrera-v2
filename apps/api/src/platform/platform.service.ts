@@ -16,6 +16,7 @@ import { CreateRoleDto, UpdateRoleDto } from './dto/role.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { SwitchRoleDto } from './dto/switch-role.dto';
 
+import { stripUserSecrets, type UserSecretField } from '../common/user-secrets';
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 const BCRYPT_ROUNDS = 10;
@@ -46,10 +47,9 @@ export class PlatformService {
     return { page: safePage, limit: safeLimit, skip: (safePage - 1) * safeLimit, take: safeLimit };
   }
 
-  /** Strip the password hash before returning a user to the client. */
-  private sanitizeUser<T extends { password?: string | null }>(user: T): Omit<T, 'password'> {
-    const { password: _password, ...rest } = user;
-    return rest;
+  /** Remove every credential column — see common/user-secrets.ts. */
+  private sanitizeUser<T extends object>(user: T): Omit<T, UserSecretField> {
+    return stripUserSecrets(user);
   }
 
   // ---------------------------------------------------------------------------

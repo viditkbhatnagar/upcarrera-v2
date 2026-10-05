@@ -2,11 +2,13 @@ import { Type } from 'class-transformer';
 import {
   IsBoolean,
   IsDateString,
+  IsEmail,
   IsInt,
   IsOptional,
   IsString,
   MaxLength,
 } from 'class-validator';
+import { IsIndianMobile } from '../indian-mobile';
 
 /**
  * Body for PATCH /applications/:id — generic bio/contact update.
@@ -19,8 +21,9 @@ export class UpdateApplicationDto {
   @MaxLength(255)
   name?: string;
 
+  /** Validated like the create path (QA AP10). */
   @IsOptional()
-  @IsString()
+  @IsEmail({}, { message: 'email must be a valid email address' })
   @MaxLength(255)
   email?: string;
 
@@ -29,9 +32,9 @@ export class UpdateApplicationDto {
   @IsInt()
   code?: number;
 
+  /** Validated like the create path (QA AP10): a 10-digit Indian mobile. */
   @IsOptional()
-  @IsString()
-  @MaxLength(20)
+  @IsIndianMobile()
   phone?: string;
 
   @IsOptional()

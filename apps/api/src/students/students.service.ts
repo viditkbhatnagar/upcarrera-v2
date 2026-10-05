@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -7,10 +8,16 @@ import {
 import * as bcrypt from 'bcryptjs';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { StudentProfileService } from './student-profile.service';
 import { CreateStudentDto } from './dto/create-student.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
 import { ListStudentsDto } from './dto/list-students.dto';
-import { ListApplicationsDto } from './dto/list-applications.dto';
+import {
+  ApplicationStage,
+  ListApplicationsDto,
+} from './dto/list-applications.dto';
+import { CheckDuplicateApplicationDto } from './dto/check-duplicate-application.dto';
+import { normalizeIndianMobile } from './indian-mobile';
 import { UpdateCredentialsDto } from './dto/update-credentials.dto';
 import { UpsertFinanceDto } from './dto/finance.dto';
 import { ListFinanceDto } from './dto/list-finance.dto';
@@ -24,6 +31,10 @@ import { ApplicationAcademicDto } from './dto/application-academic.dto';
 import { ListAcademicStudentsDto } from './dto/list-academic-students.dto';
 import { UpdateAcademicStudentDto } from './dto/update-academic-student.dto';
 import { CreateEnrolmentDto } from './dto/create-enrolment.dto';
+import {
+  assertApplicationReferences,
+  changesProgramme,
+} from './application-references';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -98,6 +109,14 @@ function applicationStatusLabel(application: {
   return 'Active';
 }
 
+/**
+ * The Phase 1 application id: APP-YYYY-NNNNNN, e.g. APP-2026-000865.
+ * YYYY is the creation year and NNNNNN the zero-padded application_id.
+ */
+function formatApplicationId(createdAt: Date, applicationId: number): string {
+  return `APP-${createdAt.getFullYear()}-${String(applicationId).padStart(6, '0')}`;
+}
+
 /** bcrypt cost factor, matching the rest of the codebase. */
 const BCRYPT_ROUNDS = 10;
 
@@ -107,7 +126,10 @@ const BCRYPT_ROUNDS = 10;
  */
 @Injectable()
 export class StudentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly profile: StudentProfileService,
+  ) {}
 
   // GET /students — paginate + optional filters.
   //   ?admission_status        — students.admission_status
@@ -180,9 +202,13 @@ export class StudentsService {
    * Decorate raw `students` rows with their joined display fields, resolving every
    * related table in ONE bulk query each (no N+1):
    *   - name / email / phone / profile_picture <- users (students.student_id)
+   *   - dial_code                              <- users.code (the phone's country code)
    *   - consultant_name                        <- users (students.consultant_id)
-   *   - course_title + university_id           <- course (students.course_id)
-   *   - university_title                       <- university (course.university_id)
+   *   - course_title + university_id           <- course (students.course_id), else
+   *                                               users.university_id (the legacy
+   *                                               profile joins the university there)
+   *   - university_title                       <- university
+   *   - specialisation_title                   <- specialisations (students.specialisation_id)
    *   - session_title                          <- sessions (students.session_id; PK is session_id)
    *   - admission_status_label                 <- ADMISSION_STATUS_LABELS
    *
@@ -195,6 +221,7 @@ export class StudentsService {
       student_id: number;
       consultant_id: number;
       course_id: number | null;
+      specialisation_id: number | null;
       session_id: number | null;
       admission_status: number | null;
     },
@@ -220,8 +247,16 @@ export class StudentsService {
       ),
     ];
 
+    const specialisationIds = [
+      ...new Set(
+        rows
+          .map((r) => r.specialisation_id)
+          .filter((s): s is number => s != null),
+      ),
+    ];
+
     // ONE bulk query per related table.
-    const [users, courses, sessions] = await Promise.all([
+    const [users, courses, sessions, specialisations] = await Promise.all([
       userIds.length > 0
         ? this.prisma.users.findMany({
             where: { id: { in: userIds } },
@@ -230,6 +265,8 @@ export class StudentsService {
               name: true,
               email: true,
               phone: true,
+              code: true,
+              university_id: true,
               profile_picture: true,
             },
           })
@@ -246,14 +283,22 @@ export class StudentsService {
             select: { session_id: true, session_title: true },
           })
         : Promise.resolve([]),
+      specialisationIds.length > 0
+        ? this.prisma.specialisations.findMany({
+            where: { id: { in: specialisationIds } },
+            select: { id: true, title: true },
+          })
+        : Promise.resolve([]),
     ]);
 
-    // Resolve the universities referenced by the page's courses (one more bulk query).
+    // Resolve the universities referenced by the page's courses, or by the
+    // student's own users.university_id (one more bulk query).
     const universityIds = [
       ...new Set(
-        courses
-          .map((c) => c.university_id)
-          .filter((u): u is number => u != null),
+        [
+          ...courses.map((c) => c.university_id),
+          ...users.map((u) => u.university_id),
+        ].filter((u): u is number => u != null),
       ),
     ];
     const universities =
@@ -273,18 +318,23 @@ export class StudentsService {
     const sessionTitleById = new Map(
       sessions.map((s) => [s.session_id, s.session_title ?? null]),
     );
+    const specialisationTitleById = new Map(
+      specialisations.map((s) => [s.id, s.title ?? null]),
+    );
 
     return rows.map((row) => {
       const studentUser = userById.get(row.student_id);
       const consultant = userById.get(row.consultant_id);
       const course = row.course_id != null ? courseById.get(row.course_id) : undefined;
-      const universityId = course?.university_id ?? null;
+      const universityId =
+        course?.university_id ?? studentUser?.university_id ?? null;
 
       return {
         ...row,
         name: studentUser?.name ?? null,
         email: studentUser?.email ?? null,
         phone: studentUser?.phone ?? null,
+        dial_code: studentUser?.code ?? null,
         profile_picture: studentUser?.profile_picture ?? null,
         consultant_name: consultant?.name ?? null,
         course_title: course?.title ?? null,
@@ -296,6 +346,10 @@ export class StudentsService {
         session_title:
           row.session_id != null
             ? (sessionTitleById.get(row.session_id) ?? null)
+            : null,
+        specialisation_title:
+          row.specialisation_id != null
+            ? (specialisationTitleById.get(row.specialisation_id) ?? null)
             : null,
         admission_status_label: admissionStatusLabel(row.admission_status),
       };
@@ -488,7 +542,9 @@ export class StudentsService {
    *   - consultant_name                        <- users (students.consultant_id)
    *   - course_title + university_id/title     <- course -> university
    *   - admission_status_label                 <- student_status / ADMISSION_STATUS_LABELS
-   *   - finance                                <- invoice + payment roll-up
+   *   - finance                                <- student_payments + course fee +
+   *                                               invoice/payment (StudentProfileService)
+   *   - application                            <- the linked application, or null
    *
    * The join fields reuse decorateStudents() (same single-row contract as the
    * list), then the invoice/payment finance block is layered on top. Every key is
@@ -509,13 +565,23 @@ export class StudentsService {
       decorated.admission_status_label,
     );
 
-    const finance = await this.buildStudentFinance(student.student_id);
+    const [finance, application] = await Promise.all([
+      this.profile.finance(student),
+      this.profile.linkedApplication(student),
+    ]);
 
     return {
       ...decorated,
       admission_status_label: admissionStatusLabel,
       finance,
+      application,
     };
+  }
+
+  /** GET /students/:id/timeline — events built from the student's real records. */
+  async getStudentTimeline(id: number) {
+    const student = await this.getStudent(id);
+    return this.profile.timeline(student);
   }
 
   /**
@@ -536,82 +602,6 @@ export class StudentsService {
     return row?.title ?? fallback;
   }
 
-  /**
-   * Builds the finance block for one student from the invoice + payment tables.
-   * invoice.student_id is the student's user id (= students.student_id). Payable
-   * totals come from the live invoices; paid totals from the live payments tied
-   * to those invoices. Two bulk queries only (invoices, then their payments) —
-   * no per-invoice query.
-   *
-   * Returns:
-   *   total       — SUM(invoice.payable_amount) across live invoices
-   *   paid        — SUM(payment.paid_amount) across those invoices' live payments
-   *   outstanding — max(total - paid, 0) (overpayment never reads as negative)
-   *   invoices    — each invoice + its paid_amount_total / outstanding_amount
-   *   payments    — flat payment history, newest first
-   */
-  private async buildStudentFinance(studentUserId: number) {
-    const invoices = await this.prisma.invoice.findMany({
-      where: { student_id: studentUserId, deleted_at: null },
-      orderBy: { id: 'desc' },
-    });
-
-    const invoiceIds = invoices.map((inv) => inv.id);
-    const payments = invoiceIds.length
-      ? await this.prisma.payment.findMany({
-          where: { invoice_id: { in: invoiceIds }, deleted_at: null },
-          orderBy: [{ payment_date: 'desc' }, { id: 'desc' }],
-        })
-      : [];
-
-    // Roll the payments up by invoice for the per-invoice paid total.
-    const paidByInvoice = new Map<number, number>();
-    let paid = 0;
-    for (const pay of payments) {
-      const amount = this.toMoney(pay.paid_amount);
-      paid += amount;
-      if (pay.invoice_id != null) {
-        paidByInvoice.set(
-          pay.invoice_id,
-          (paidByInvoice.get(pay.invoice_id) ?? 0) + amount,
-        );
-      }
-    }
-
-    let total = 0;
-    const invoiceRows = invoices.map((inv) => {
-      const payable = this.toMoney(inv.payable_amount);
-      total += payable;
-      const invPaid = paidByInvoice.get(inv.id) ?? 0;
-      return {
-        ...inv,
-        paid_amount_total: invPaid,
-        outstanding_amount: Math.max(payable - invPaid, 0),
-      };
-    });
-
-    return {
-      total,
-      paid,
-      outstanding: Math.max(total - paid, 0),
-      invoice_count: invoices.length,
-      payment_count: payments.length,
-      invoices: invoiceRows,
-      payments,
-    };
-  }
-
-  /**
-   * Coerces a mixed Float/Decimal/null money value to a finite number, returning
-   * 0 for null/blank/NaN so finance aggregation stays safe. Mirrors the finance
-   * module's toMoney() so totals reconcile across surfaces.
-   */
-  private toMoney(value: unknown): number {
-    if (value === null || value === undefined || value === '') return 0;
-    const n = Number(value);
-    return Number.isFinite(n) ? n : 0;
-  }
-
   // POST /students
   async createStudent(dto: CreateStudentDto) {
     const now = new Date();
@@ -629,15 +619,122 @@ export class StudentsService {
   }
 
   // PATCH /students/:id
-  async updateStudent(id: number, dto: UpdateStudentDto) {
-    await this.getStudent(id); // 404 if missing or already soft-deleted
-    return this.prisma.students.update({
-      where: { id },
-      data: {
-        ...this.toStudentData(dto),
-        updated_at: new Date(),
-      },
+  //
+  // The Students list's Edit dialog (QA ST04) sends only the fields the operator
+  // changed. Every id it carries must point at a real row, a specialisation must
+  // belong to the student's course, and the NOT NULL columns cannot be cleared —
+  // otherwise a typo would save a dangling reference into a table the live LMS
+  // reads. Moving a student to Dropout stamps users.drop_out_at exactly as
+  // PATCH /students/:id/dropout does, so the two paths agree.
+  async updateStudent(id: number, dto: UpdateStudentDto, actorUserId?: number) {
+    const existing = await this.getStudent(id); // 404 if missing or already soft-deleted
+    await this.assertStudentReferences(existing, dto);
+
+    const now = new Date();
+    const becomesDropout =
+      dto.admission_status === ADMISSION_STATUS_DROPOUT &&
+      existing.admission_status !== ADMISSION_STATUS_DROPOUT;
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.students.update({
+        where: { id },
+        data: {
+          ...this.toStudentData(dto),
+          ...(actorUserId != null ? { updated_by: actorUserId } : {}),
+          updated_at: now,
+        },
+      });
+      if (becomesDropout) {
+        await tx.users.updateMany({
+          where: { id: existing.student_id },
+          data: { drop_out_at: now, updated_at: now },
+        });
+      }
+      return updated;
     });
+  }
+
+  /**
+   * 400s when a PATCH /students/:id body would clear a NOT NULL column or point
+   * at a row that does not exist. One query per referenced table, in parallel.
+   */
+  private async assertStudentReferences(
+    existing: { course_id: number | null },
+    dto: UpdateStudentDto,
+  ) {
+    const body = dto as Record<string, unknown>;
+    for (const field of ['student_id', 'consultant_id', 'address'] as const) {
+      if (body[field] === null) {
+        throw new BadRequestException(`${field} cannot be cleared`);
+      }
+    }
+
+    const [course, specialisation, session, consultant, user] =
+      await Promise.all([
+        dto.course_id != null
+          ? this.prisma.course.findFirst({
+              where: { id: dto.course_id, deleted_at: null },
+              select: { id: true },
+            })
+          : null,
+        dto.specialisation_id != null
+          ? this.prisma.specialisations.findFirst({
+              where: { id: dto.specialisation_id, deleted_at: null },
+              select: { id: true, course_id: true },
+            })
+          : null,
+        dto.session_id != null
+          ? this.prisma.sessions.findFirst({
+              where: { session_id: dto.session_id, deleted_at: null },
+              select: { session_id: true },
+            })
+          : null,
+        dto.consultant_id != null
+          ? this.prisma.users.findFirst({
+              where: { id: dto.consultant_id, deleted_at: null },
+              select: { id: true },
+            })
+          : null,
+        dto.student_id != null
+          ? this.prisma.users.findFirst({
+              where: { id: dto.student_id, deleted_at: null },
+              select: { id: true },
+            })
+          : null,
+      ]);
+
+    if (dto.course_id != null && !course) {
+      throw new BadRequestException(`Course ${dto.course_id} does not exist`);
+    }
+    if (dto.specialisation_id != null && !specialisation) {
+      throw new BadRequestException(
+        `Specialisation ${dto.specialisation_id} does not exist`,
+      );
+    }
+    if (dto.session_id != null && !session) {
+      throw new BadRequestException(`Session ${dto.session_id} does not exist`);
+    }
+    if (dto.consultant_id != null && !consultant) {
+      throw new BadRequestException(
+        `Counsellor ${dto.consultant_id} does not exist`,
+      );
+    }
+    if (dto.student_id != null && !user) {
+      throw new BadRequestException(`User ${dto.student_id} does not exist`);
+    }
+
+    // The course the student will be on after this save.
+    const courseId =
+      dto.course_id !== undefined ? dto.course_id : existing.course_id;
+    if (
+      specialisation?.course_id != null &&
+      courseId != null &&
+      specialisation.course_id !== courseId
+    ) {
+      throw new BadRequestException(
+        'The specialisation does not belong to the selected course',
+      );
+    }
   }
 
   // DELETE /students/:id — soft delete (set deleted_at = now).
@@ -651,21 +748,25 @@ export class StudentsService {
   }
 
   // GET /students/:id/documents
+  //
+  // student_document.student_id holds the student's USERS id (legacy
+  // document_add, convertApplication and POST /files/student-document all write
+  // it), not the students PK this route takes. Matching the PK returned another
+  // student's documents, or none (QA ST01). Rows uploaded with the linked
+  // application before conversion are included too.
   async getStudentDocuments(id: number) {
-    await this.getStudent(id);
-    return this.prisma.student_document.findMany({
-      where: { student_id: id, deleted_at: null },
-      orderBy: { student_document_id: 'desc' },
-    });
+    const student = await this.getStudent(id);
+    return this.profile.documents(student);
   }
 
   // GET /students/:id/qualifications
   async getStudentQualifications(id: number) {
-    await this.getStudent(id);
+    const student = await this.getStudent(id);
     // NOTE: qualification.deleted_at is an Int? in the legacy schema (not a timestamp);
     // "not deleted" is still represented as NULL.
+    // qualification.student_id is the USERS id, like student_document (QA ST01).
     return this.prisma.qualification.findMany({
-      where: { student_id: id, deleted_at: null },
+      where: { student_id: student.student_id, deleted_at: null },
       orderBy: { qualification_id: 'desc' },
     });
   }
@@ -680,8 +781,10 @@ export class StudentsService {
    *      stores directly on the application before conversion)
    *   - profile_picture                                    <- users / row.cropped_image
    *   - consultant_name / consultant_id                    <- users (pipeline_user ?? created_by)
-   *   - course_title + university_id                       <- course (applications.course_id)
-   *   - university_title                                   <- university (course.university_id)
+   *   - course_title                                       <- course (applications.course_id)
+   *   - university_id + university_title                   <- university (course.university_id,
+   *                                                           else applications.university_id)
+   *   - session_title (the intake / "Batch")               <- sessions (applications.session_id)
    *   - status_label                                       <- applicationStatusLabel()
    *
    * The applicant-user id and the consultant id both point at `users`, so they
@@ -698,6 +801,8 @@ export class StudentsService {
       pipeline_user: number | null;
       created_by: number | null;
       course_id: number | null;
+      university_id: number | null;
+      session_id: number | null;
       name: string | null;
       email: string | null;
       phone: string | null;
@@ -728,8 +833,15 @@ export class StudentsService {
       ),
     ];
 
+    // sessions PK is session_id (NOT id); applications.session_id is the intake.
+    const sessionIds = [
+      ...new Set(
+        rows.map((r) => r.session_id).filter((s): s is number => s != null),
+      ),
+    ];
+
     // ONE bulk query per related table.
-    const [users, courses] = await Promise.all([
+    const [users, courses, sessions] = await Promise.all([
       userIds.length > 0
         ? this.prisma.users.findMany({
             where: { id: { in: userIds } },
@@ -742,14 +854,30 @@ export class StudentsService {
             select: { id: true, title: true, university_id: true },
           })
         : Promise.resolve([]),
+      sessionIds.length > 0
+        ? this.prisma.sessions.findMany({
+            where: { session_id: { in: sessionIds } },
+            select: { session_id: true, session_title: true },
+          })
+        : Promise.resolve([]),
     ]);
 
-    // Resolve the universities referenced by the page's courses (one more bulk query).
+    const courseById = new Map(courses.map((c) => [c.id, c]));
+
+    // The university an application belongs to: its course's university, or —
+    // when the course carries none (or no course is chosen yet) — the
+    // application's own university_id, which Add Lead and PATCH /:id/academic
+    // write. listApplications' university_id filter applies the same rule, so
+    // filtering by a university returns exactly the rows that display it.
+    const universityIdFor = (r: T): number | null => {
+      const course = r.course_id != null ? courseById.get(r.course_id) : undefined;
+      return course?.university_id ?? r.university_id ?? null;
+    };
+
+    // Resolve the universities referenced by the page (one more bulk query).
     const universityIds = [
       ...new Set(
-        courses
-          .map((c) => c.university_id)
-          .filter((u): u is number => u != null),
+        rows.map((r) => universityIdFor(r)).filter((u): u is number => u != null),
       ),
     ];
     const universities =
@@ -762,15 +890,17 @@ export class StudentsService {
 
     // Build id -> row Maps and merge.
     const userNameById = new Map(users.map((u) => [u.id, u.name ?? null]));
-    const courseById = new Map(courses.map((c) => [c.id, c]));
     const universityTitleById = new Map(
       universities.map((u) => [u.id, u.title ?? null]),
+    );
+    const sessionTitleById = new Map(
+      sessions.map((s) => [s.session_id, s.session_title ?? null]),
     );
 
     return rows.map((row) => {
       const consultantId = consultantIdFor(row);
       const course = row.course_id != null ? courseById.get(row.course_id) : undefined;
-      const universityId = course?.university_id ?? null;
+      const universityId = universityIdFor(row);
 
       return {
         ...row,
@@ -791,6 +921,12 @@ export class StudentsService {
         university_title:
           universityId != null
             ? (universityTitleById.get(universityId) ?? null)
+            : null,
+        // The intake ("Batch" column): sessions.session_title. The list used to
+        // render enrollment_date here, which is why Batch showed a date (QA AP08).
+        session_title:
+          row.session_id != null
+            ? (sessionTitleById.get(row.session_id) ?? null)
             : null,
         // Human lifecycle label.
         status_label: applicationStatusLabel(row),
@@ -867,15 +1003,121 @@ export class StudentsService {
     return counts;
   }
 
+  /**
+   * Where-clause for one pipeline stage — the same folding applicationStageCounts
+   * applies, so filtering by a stage returns exactly the rows its card counts.
+   *
+   * NULL-safe on purpose: is_converted and status are nullable, and SQL's
+   * `is_converted <> 1` is NOT true for a NULL, so "not converted" has to be
+   * spelled as `IS NULL OR <> 1`.
+   */
+  private applicationStageFilter(
+    stage: ApplicationStage | undefined,
+  ): Prisma.applicationsWhereInput | undefined {
+    if (!stage) return undefined;
+
+    const notConverted: Prisma.applicationsWhereInput = {
+      OR: [{ is_converted: null }, { is_converted: { not: 1 } }],
+    };
+
+    switch (stage) {
+      case 'Enrolled':
+        return { is_converted: 1 };
+      case 'Rejected':
+        return {
+          AND: [notConverted, { OR: [{ is_archived: true }, { status: false }] }],
+        };
+      case 'New Lead':
+        return {
+          AND: [
+            notConverted,
+            { is_archived: false },
+            { OR: [{ status: null }, { status: true }] },
+          ],
+        };
+      default:
+        // No column records this stage yet (Phase 1 stage engine) — it is empty.
+        return { application_id: { in: [] } };
+    }
+  }
+
+  /**
+   * Where-clause for the university the list DISPLAYS (see decorateApplications):
+   * the course's university, or the application's own university_id when the
+   * course has none or no course is chosen.
+   */
+  private async applicationUniversityFilter(
+    universityId: number | undefined,
+  ): Promise<Prisma.applicationsWhereInput | undefined> {
+    if (universityId == null) return undefined;
+
+    const [coursesOfUniversity, coursesWithAUniversity] = await Promise.all([
+      this.prisma.course.findMany({
+        where: { university_id: universityId },
+        select: { id: true },
+      }),
+      this.prisma.course.findMany({
+        where: { university_id: { not: null } },
+        select: { id: true },
+      }),
+    ]);
+
+    return {
+      OR: [
+        { course_id: { in: coursesOfUniversity.map((c) => c.id) } },
+        {
+          university_id: universityId,
+          OR: [
+            { course_id: null },
+            { course_id: { notIn: coursesWithAUniversity.map((c) => c.id) } },
+          ],
+        },
+      ],
+    };
+  }
+
+  /**
+   * Every list filter except `stage`. The stage counts are computed over this,
+   * so the pipeline cards keep showing the whole funnel of the filtered set
+   * while the table narrows to one stage.
+   */
+  private async applicationListWhere(
+    query: ListApplicationsDto,
+  ): Promise<Prisma.applicationsWhereInput> {
+    const and: Prisma.applicationsWhereInput[] = [];
+
+    const search = this.applicationSearchFilter(query.search);
+    if (search) and.push(search);
+
+    const university = await this.applicationUniversityFilter(query.university_id);
+    if (university) and.push(university);
+
+    if (query.course_id != null) and.push({ course_id: query.course_id });
+    if (query.session_id != null) and.push({ session_id: query.session_id });
+
+    // The counsellor the list displays: pipeline_user, else created_by.
+    if (query.consultant_id != null) {
+      and.push({
+        OR: [
+          { pipeline_user: query.consultant_id },
+          { pipeline_user: null, created_by: query.consultant_id },
+        ],
+      });
+    }
+
+    return and.length > 0 ? { deleted_at: null, AND: and } : { deleted_at: null };
+  }
+
   async listApplications(query: ListApplicationsDto) {
     const page = query.page ?? DEFAULT_PAGE;
     const limit = query.limit ?? DEFAULT_LIMIT;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.applicationsWhereInput = {
-      deleted_at: null,
-      ...this.applicationSearchFilter(query.search),
-    };
+    const filtered = await this.applicationListWhere(query);
+    const stage = this.applicationStageFilter(query.stage);
+    const where: Prisma.applicationsWhereInput = stage
+      ? { AND: [filtered, stage] }
+      : filtered;
 
     const [rows, total, counts] = await Promise.all([
       this.prisma.applications.findMany({
@@ -885,14 +1127,90 @@ export class StudentsService {
         orderBy: { application_id: 'desc' },
       }),
       this.prisma.applications.count({ where }),
-      // Computed over the same filtered set minus pagination, so the pipeline
-      // cards always reconcile with the rows the list is reporting.
-      this.applicationStageCounts(where),
+      // Computed over the filtered set minus pagination AND minus the stage
+      // filter, so every card shows its count for the current filters.
+      this.applicationStageCounts(filtered),
     ]);
 
     const items = await this.decorateApplications(rows);
 
     return { items, total, page, limit, counts };
+  }
+
+  /**
+   * GET /applications/check-duplicate — existing applications that share the
+   * given mobile number or email (QA AP10, spec 4.2: show the existing
+   * application and its counsellor instead of creating a second one).
+   *
+   * The phone is compared on its canonical 10 digits and matched by suffix, so a
+   * row stored as "+919876543210" or "9876543210" is found for "98765 43210".
+   * Email equality is case-insensitive under the table's collation. Soft-deleted
+   * applications are ignored. At most 5 matches, newest first.
+   */
+  async findDuplicateApplications(query: CheckDuplicateApplicationDto) {
+    const phone = this.duplicatePhoneKey(query.phone);
+    const email = query.email?.trim() || null;
+
+    const or: Prisma.applicationsWhereInput[] = [];
+    if (phone) or.push({ phone: { endsWith: phone } });
+    if (email) or.push({ email });
+    if (or.length === 0) return { duplicate: false, matches: [] };
+
+    const rows = await this.prisma.applications.findMany({
+      where: {
+        deleted_at: null,
+        OR: or,
+        ...(query.exclude_id != null
+          ? { application_id: { not: query.exclude_id } }
+          : {}),
+      },
+      orderBy: { application_id: 'desc' },
+      take: 5,
+    });
+
+    const decorated = await this.decorateApplications(rows);
+    const matches = decorated.map((r) => {
+      const matchedOn: Array<'phone' | 'email'> = [];
+      if (phone && this.duplicatePhoneKey(r.phone) === phone) matchedOn.push('phone');
+      if (email && r.email != null && r.email.toLowerCase() === email.toLowerCase()) {
+        matchedOn.push('email');
+      }
+      return {
+        application_id: r.application_id,
+        display_id: this.applicationDisplayId(r),
+        name: r.name,
+        phone: r.phone,
+        email: r.email,
+        matched_on: matchedOn,
+        consultant_id: r.consultant_id,
+        consultant_name: r.consultant_name,
+        course_title: r.course_title,
+        university_title: r.university_title,
+        status_label: r.status_label,
+        created_at: r.created_at,
+      };
+    });
+
+    return { duplicate: matches.length > 0, matches };
+  }
+
+  /** The 10-digit key a phone is de-duplicated on, or null when too short to mean anything. */
+  private duplicatePhoneKey(raw: string | null | undefined): string | null {
+    const canonical = normalizeIndianMobile(raw);
+    if (canonical) return canonical;
+    const digits = (raw ?? '').replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : null;
+  }
+
+  /** The id the list prints: custom_application_id, else enrollment_id, else APP-{id}. */
+  private applicationDisplayId(r: {
+    application_id: number;
+    custom_application_id: string | null;
+    enrollment_id: string | null;
+  }): string {
+    if (r.custom_application_id?.trim()) return r.custom_application_id;
+    if (r.enrollment_id?.trim()) return r.enrollment_id;
+    return `APP-${r.application_id}`;
   }
 
   // GET /applications/:id
@@ -1575,18 +1893,19 @@ export class StudentsService {
   /**
    * PATCH /students/:id/qualifications — bulk-update the student's qualification
    * rows. Each row is matched by its `qualification` label (10th/12th/Degree) and
-   * updated in place. Mirrors the existing GET semantics (qualification.student_id
-   * matched against the route :id). Ports App/Academic::edit_qualification.
+   * updated in place. qualification.student_id is the student's USERS id, so it
+   * is matched against students.student_id — matching the route's students PK
+   * wrote onto ANOTHER student's rows. Ports App/Academic::edit_qualification.
    */
   async updateStudentQualifications(id: number, dto: UpdateQualificationsDto) {
-    await this.getStudent(id);
+    const student = await this.getStudent(id);
     const now = new Date();
 
     const results: Array<{ qualification: string; updated: number }> = [];
     for (const row of dto.qualifications) {
       const updated = await this.prisma.qualification.updateMany({
         where: {
-          student_id: id,
+          student_id: student.student_id,
           qualification: row.qualification,
           deleted_at: null,
         },
@@ -1614,9 +1933,10 @@ export class StudentsService {
    * row. Ports App/Academic::delete_qualification (a soft "clear", not a delete).
    */
   async clearStudentQualification(id: number, qualification: string) {
-    await this.getStudent(id);
+    const student = await this.getStudent(id);
     const result = await this.prisma.qualification.updateMany({
-      where: { student_id: id, qualification, deleted_at: null },
+      // The USERS id, as in updateStudentQualifications.
+      where: { student_id: student.student_id, qualification, deleted_at: null },
       data: {
         board: null,
         percentage: null,
@@ -1746,35 +2066,73 @@ export class StudentsService {
     const now = new Date();
     const { dob, enrollment_date, ...rest } = dto;
 
-    const application = await this.prisma.applications.create({
-      data: {
-        ...rest,
-        ...(dob !== undefined ? { dob: new Date(dob) } : {}),
-        ...(enrollment_date !== undefined
-          ? { enrollment_date: new Date(enrollment_date) }
-          : {}),
-        is_converted: 0,
-        is_archived: false,
-        created_by: actorUserId,
-        created_at: now,
-      },
+    // Spec 4.2 / QA AP10: one applicant, one application. If the mobile or email
+    // is already on an application, refuse and name it (and its counsellor) so
+    // the counsellor can open that record instead. The Add Lead dialog runs the
+    // same lookup first via GET /applications/check-duplicate; this is the
+    // server-side guarantee behind it.
+    const existing = await this.findDuplicateApplications({
+      phone: dto.phone,
+      email: dto.email,
     });
+    if (existing.duplicate) {
+      throw new ConflictException(this.duplicateMessage(existing.matches[0]));
+    }
+    await assertApplicationReferences(this.prisma, dto, null);
 
-    // Seed the three default qualification levels for this application.
-    const DEFAULT_QUALIFICATIONS = ['10th', '12th', 'Degree'];
-    await this.prisma.qualification.createMany({
-      data: DEFAULT_QUALIFICATIONS.map((qualification) => ({
-        // student_id is NOT NULL in the schema; 0 marks "not yet a student"
-        // (gets stamped with the real user id at conversion time).
-        student_id: 0,
-        application_id: application.application_id,
-        qualification,
-        created_by: actorUserId,
-        created_at: now,
-      })),
+    return this.prisma.$transaction(async (tx) => {
+      const created = await tx.applications.create({
+        data: {
+          ...rest,
+          ...(dob !== undefined ? { dob: new Date(dob) } : {}),
+          ...(enrollment_date !== undefined
+            ? { enrollment_date: new Date(enrollment_date) }
+            : {}),
+          is_converted: 0,
+          is_archived: false,
+          created_by: actorUserId,
+          created_at: now,
+        },
+      });
+
+      // The Phase 1 application id, APP-YYYY-NNNNNN, issued by the server. NNNNNN
+      // is the auto-increment primary key, so it is unique, in creation order and
+      // race-free without a counter table; it does not restart each year.
+      const application = await tx.applications.update({
+        where: { application_id: created.application_id },
+        data: {
+          custom_application_id: formatApplicationId(now, created.application_id),
+        },
+      });
+
+      // Seed the three default qualification levels for this application.
+      const DEFAULT_QUALIFICATIONS = ['10th', '12th', 'Degree'];
+      await tx.qualification.createMany({
+        data: DEFAULT_QUALIFICATIONS.map((qualification) => ({
+          // student_id is NOT NULL in the schema; 0 marks "not yet a student"
+          // (gets stamped with the real user id at conversion time).
+          student_id: 0,
+          application_id: application.application_id,
+          qualification,
+          created_by: actorUserId,
+          created_at: now,
+        })),
+      });
+
+      return application;
     });
+  }
 
-    return application;
+  /** The 409 message for a duplicate lead: which application, whose, matched on what. */
+  private duplicateMessage(match: {
+    display_id: string;
+    name: string | null;
+    consultant_name: string | null;
+    matched_on: Array<'phone' | 'email'>;
+  }): string {
+    const on = match.matched_on.includes('phone') ? 'mobile number' : 'email';
+    const counsellor = match.consultant_name ?? 'no counsellor assigned';
+    return `An application with this ${on} already exists: ${match.display_id} (${match.name ?? 'unnamed'}, ${counsellor}).`;
   }
 
   /**
@@ -1787,6 +2145,20 @@ export class StudentsService {
     actorUserId: number,
   ) {
     await this.getApplication(applicationId);
+
+    // Changing the mobile/email onto another application's is the same duplicate
+    // the create path refuses (QA AP10). The row being edited is not its own match.
+    if (dto.phone !== undefined || dto.email !== undefined) {
+      const existing = await this.findDuplicateApplications({
+        phone: dto.phone,
+        email: dto.email,
+        exclude_id: applicationId,
+      });
+      if (existing.duplicate) {
+        throw new ConflictException(this.duplicateMessage(existing.matches[0]));
+      }
+    }
+
     const { dob, enrollment_date, ...rest } = dto;
     return this.prisma.applications.update({
       where: { application_id: applicationId },
@@ -1826,20 +2198,27 @@ export class StudentsService {
 
   /**
    * PATCH /applications/:id/academic — update the academic/admission fields.
-   * Legacy force-sets admission_status = 0 (false) on this step; preserved here.
    * Ports App/Application::academic.
+   *
+   * The legacy step force-set admission_status = 0 (false) on every save. The
+   * Edit Application dialog uses this route for ANY academic change (counsellor,
+   * source, intake), and convertApplication copies admission_status into the
+   * student, so the reset now happens only when the university or course really
+   * changes. References are checked (and a course/specialisation must fit the
+   * university/course it is paired with) before anything is written.
    */
   async updateApplicationAcademic(
     applicationId: number,
     dto: ApplicationAcademicDto,
     actorUserId: number,
   ) {
-    await this.getApplication(applicationId);
+    const existing = await this.getApplication(applicationId);
+    await assertApplicationReferences(this.prisma, dto, existing);
     return this.prisma.applications.update({
       where: { application_id: applicationId },
       data: {
         ...dto,
-        admission_status: false,
+        ...(changesProgramme(dto, existing) ? { admission_status: false } : {}),
         updated_by: actorUserId,
         updated_at: new Date(),
       },
@@ -1915,11 +2294,13 @@ export class StudentsService {
     const { dob, enrollment_date, ...rest } = dto;
     // student_id/address/consultant_id are set explicitly on create; for update they
     // pass through `rest` only when present. Date strings are converted to Date objects.
+    // null clears the date; new Date(null) would have saved 1970-01-01.
+    const toDate = (v: string | null) => (v === null ? null : new Date(v));
     return {
       ...rest,
-      ...(dob !== undefined ? { dob: new Date(dob) } : {}),
+      ...(dob !== undefined ? { dob: toDate(dob) } : {}),
       ...(enrollment_date !== undefined
-        ? { enrollment_date: new Date(enrollment_date) }
+        ? { enrollment_date: toDate(enrollment_date) }
         : {}),
     };
   }

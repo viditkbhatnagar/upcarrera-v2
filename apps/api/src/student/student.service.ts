@@ -10,6 +10,7 @@ import { SessionFeedbackDto } from './dto/session-feedback.dto';
 import { PerformanceQueryDto } from './dto/performance.dto';
 import { InitiatePaymentDto } from './dto/initiate-payment.dto';
 
+import { stripUserSecrets } from '../common/user-secrets';
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 
@@ -224,7 +225,9 @@ export class StudentService {
     const student = await this.prisma.students.findFirst({
       where: { student_id: userId, deleted_at: null },
     });
-    const { password: _pw, prev_password: _ppw, otp: _otp, ...safeUser } = user;
+    // Shared deny-list (common/user-secrets.ts). This local copy used to strip
+    // password, prev_password and otp but miss zoom_password.
+    const safeUser = stripUserSecrets(user);
     return { profile: safeUser, student };
   }
 
