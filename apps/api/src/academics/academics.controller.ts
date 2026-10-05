@@ -12,6 +12,7 @@ import {
 import { AcademicsService } from './academics.service';
 import { IntakeMasterService } from './intake-master.service';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
 import { ListQueryDto } from './dto/list-query.dto';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
@@ -152,19 +153,25 @@ export class UniversitiesController {
     return this.academics.getUniversity(id);
   }
 
+  // Writes carry the catalog-manage slug (Admin; Super Admin bypasses). Reads
+  // stay open to any authenticated staff. Ports the design's "@Roles(1,7) on
+  // writes" onto the permission system WS1 adopted.
   @Post()
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('University Added Successfully!')
   create(@Body() dto: CreateUniversityDto) {
     return this.academics.createUniversity(dto);
   }
 
   @Patch(':id')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('University Updated Successfully!')
   update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateUniversityDto) {
     return this.academics.updateUniversity(id, dto);
   }
 
   @Delete(':id')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('University Deleted Successfully!')
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.academics.deleteUniversity(id);

@@ -32,6 +32,7 @@ import { MaintenanceModule } from './maintenance/maintenance.module';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { CommonModule } from './common/common.module';
 import { WorkflowModule } from './workflow/workflow.module';
+import { FeeStructuresModule } from './finance/fee-structures/fee-structures.module';
 
 @Module({
   imports: [
@@ -64,6 +65,7 @@ import { WorkflowModule } from './workflow/workflow.module';
     CallsModule,
     MaintenanceModule,
     WorkflowModule,
+    FeeStructuresModule,
   ],
   providers: [
     // Global JWT guard — every route is protected unless marked @Public().

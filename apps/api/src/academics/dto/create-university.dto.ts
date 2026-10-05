@@ -1,4 +1,5 @@
-import { IsInt, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, MaxLength } from 'class-validator';
+import { FEE_COLLECTION_MODELS } from '../../finance/fee-structures/fee-structure.money';
 
 /**
  * Port of the legacy university form. All fields optional (legacy did no
@@ -76,4 +77,14 @@ export class CreateUniversityDto {
   @IsString()
   @MaxLength(1)
   status?: string;
+
+  /**
+   * Spec 3.4 fee collection model. Validated when present; the SERVICE makes it
+   * required on create and refuses to clear it once set. @IsOptional lets an
+   * explicit `null` through validation, so updateUniversity() rejects a
+   * present-but-null/empty value with a 400 — omit the key to leave it unchanged.
+   */
+  @IsOptional()
+  @IsIn(FEE_COLLECTION_MODELS as unknown as string[])
+  fee_collection_model?: string;
 }

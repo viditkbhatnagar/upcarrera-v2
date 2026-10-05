@@ -56,6 +56,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import {
+  COLLECTION_MODEL_HELP,
+  COLLECTION_MODEL_LABEL,
+  feeStructureKeys,
+  listFeeStructures,
+  type FeeCollectionModel,
+} from "@/lib/api/fee-structures";
+import { CollectionModelBadge } from "@/components/fee-structure/badges";
 
 /**
  * The subset of the `universities` row the Edit form writes back, carried
@@ -71,6 +79,7 @@ type RawUniversity = {
   state: string | null;
   address: string | null;
   status: string | null;
+  fee_collection_model: string | null;
 };
 
 type UniRow = {
@@ -152,6 +161,7 @@ interface ApiUniversity {
   state: string | null;
   photo: string | null;
   status: number | string | null;
+  fee_collection_model: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -297,6 +307,7 @@ function mapApiUniversity(
       address: u.address ?? null,
       status:
         u.status === null || u.status === undefined ? null : String(u.status),
+      fee_collection_model: u.fee_collection_model ?? null,
     },
   };
 }
@@ -478,6 +489,7 @@ function UniversityProfilePage() {
               state: null,
               address: null,
               status: null,
+              fee_collection_model: null,
             },
           },
     [apiUni, code, countryNames, countryLookup],
@@ -494,6 +506,15 @@ function UniversityProfilePage() {
   );
 
   const [editUniversityOpen, setEditUniversityOpen] = useState(false);
+
+  // Active fee-structure count for this university, for the overview link.
+  const activeFeesQuery = useQuery({
+    queryKey: feeStructureKeys.list({ university_id: Number(code), status: "active", limit: 1 }),
+    queryFn: () =>
+      listFeeStructures({ university_id: Number(code), status: "active", limit: 1 }),
+    enabled: Number.isFinite(Number(code)),
+  });
+  const activeFeeCount = activeFeesQuery.data?.total ?? 0;
 
   const [tagCourseOpen, setTagCourseOpen] = useState(false);
   const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
@@ -937,6 +958,27 @@ function UniversityProfilePage() {
               <Field label="University Code" value={basicInfo.code} mono />
               <Field label="University Type" value={basicInfo.type} />
               <Field label="University Category" value={basicInfo.category} />
+              <Field
+                label="Fee Collection Model"
+                value={
+                  <CollectionModelBadge
+                    model={profile.raw.fee_collection_model as FeeCollectionModel | null}
+                    universityId={Number(code)}
+                  />
+                }
+              />
+              <Field
+                label="Fee Structures"
+                value={
+                  <Link
+                    to="/universities/fee-structure"
+                    search={{ university_id: String(code) }}
+                    className="inline-flex items-center gap-1 text-primary hover:underline"
+                  >
+                    {activeFeeCount} active
+                  </Link>
+                }
+              />
               <Field label="Country" value={basicInfo.country} />
               <Field label="State" value={basicInfo.state} />
               {/* No City row: there is no city column. It used to render the
@@ -2179,6 +2221,7 @@ type UniversityForm = {
   state: string;
   address: string;
   status: string;
+  fee_collection_model: string;
 };
 
 /** "Active"/"Inactive" -> the CHAR(1) column. Anything else passes through. */
@@ -2213,6 +2256,7 @@ function toUniversityPayload(form: UniversityForm) {
     // so that path wrote a column back from its own display derivative.
     address: form.address.trim(),
     status: statusToColumn(form.status),
+    fee_collection_model: form.fee_collection_model,
   };
 }
 
@@ -2237,6 +2281,7 @@ function seedUniversityForm(raw: RawUniversity): UniversityForm {
     state: raw.state ?? "",
     address: raw.address ?? "",
     status: columnToStatus(raw.status),
+    fee_collection_model: raw.fee_collection_model ?? "",
   };
 }
 
@@ -2295,6 +2340,11 @@ function validateUniversityForm(form: UniversityForm): Record<string, string> {
   const next: Record<string, string> = {};
   if (!form.name.trim()) next.name = "University name is required";
   if (!form.category.trim()) next.category = "University category is required";
+  // Spec 3.4: required, but only blocks when touched (Edit validates touched
+  // fields only), so an existing NULL-model row is never force-blocked and the
+  // model can never be cleared via the Select.
+  if (!form.fee_collection_model)
+    next.fee_collection_model = "Fee collection model is required";
   // The picker only ever yields numeric ids; this guards the raw-id fallback
   // input (shown when GET /countries fails or is empty) against a typed
   // country NAME. Edit validates touched fields only, so a legacy stored value
@@ -2517,6 +2567,41 @@ function EditUniversityDialog({
                   profile shows a default, not a stored value.
                 </p>
               )}
+            </div>
+
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>
+                Fee Collection Model <span className="text-accent">*</span>
+              </Label>
+              <Select
+                value={form.fee_collection_model}
+                onValueChange={(v) => update("fee_collection_model", v)}
+              >
+                <SelectTrigger
+                  className={cn(
+                    errors.fee_collection_model && "border-red-400 focus:ring-red-300",
+                  )}
+                >
+                  <SelectValue placeholder="Select collection model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(["upcarrera_collects", "university_collects"] as FeeCollectionModel[]).map(
+                    (m) => (
+                      <SelectItem key={m} value={m}>
+                        {COLLECTION_MODEL_LABEL[m]}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectContent>
+              </Select>
+              {errors.fee_collection_model && (
+                <p className="text-xs text-red-500">{errors.fee_collection_model}</p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {form.fee_collection_model
+                  ? COLLECTION_MODEL_HELP[form.fee_collection_model as FeeCollectionModel]
+                  : "upCarrera collects: the student pays upCarrera (royalty to the university). University collects: the student pays the university (commission to upCarrera)."}
+              </p>
             </div>
 
             <div className="space-y-1.5">

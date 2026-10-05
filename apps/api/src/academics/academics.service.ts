@@ -449,6 +449,11 @@ export class AcademicsService {
   }
 
   async createUniversity(dto: CreateUniversityDto) {
+    // Spec 3.4: the collection model is required up front — activation of any fee
+    // structure for this university is blocked until it is set.
+    if (!dto.fee_collection_model) {
+      throw new BadRequestException('Fee collection model is required.');
+    }
     const now = new Date();
     return this.prisma.university.create({
       data: {
@@ -467,6 +472,13 @@ export class AcademicsService {
 
   async updateUniversity(id: number, dto: UpdateUniversityDto) {
     await this.getUniversity(id);
+    // Spec 3.4: the collection model can be SET (unset -> a valid value) but never
+    // cleared once present. @IsOptional lets an explicit null through validation, so
+    // guard it here: the key present but null/empty is a 400, an omitted key leaves
+    // the stored value untouched.
+    if ('fee_collection_model' in dto && !dto.fee_collection_model) {
+      throw new BadRequestException('Fee collection model cannot be cleared once set.');
+    }
     return this.prisma.university.update({
       where: { id },
       data: { ...dto, updated_at: new Date() },

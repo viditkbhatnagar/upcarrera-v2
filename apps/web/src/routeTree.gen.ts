@@ -54,6 +54,8 @@ import { Route as AdministrationAuditLogsRouteImport } from './routes/administra
 import { Route as StudentsStudentsIndexRouteImport } from './routes/students.students.index'
 import { Route as StudentsApplicationsIndexRouteImport } from './routes/students.applications.index'
 import { Route as UniversitiesUniversitiesCodeRouteImport } from './routes/universities.universities_.$code'
+import { Route as UniversitiesFeeStructureNewRouteImport } from './routes/universities.fee-structure_.new'
+import { Route as UniversitiesFeeStructureIdRouteImport } from './routes/universities.fee-structure_.$id'
 import { Route as StudentsStudentsIdRouteImport } from './routes/students.students.$id'
 import { Route as StudentsApplicationsNewRouteImport } from './routes/students.applications.new'
 import { Route as StudentsApplicationsAppIdRouteImport } from './routes/students.applications.$appId'
@@ -293,6 +295,18 @@ const UniversitiesUniversitiesCodeRoute =
     path: '/universities/$code',
     getParentRoute: () => UniversitiesRoute,
   } as any)
+const UniversitiesFeeStructureNewRoute =
+  UniversitiesFeeStructureNewRouteImport.update({
+    id: '/fee-structure_/new',
+    path: '/fee-structure/new',
+    getParentRoute: () => UniversitiesRoute,
+  } as any)
+const UniversitiesFeeStructureIdRoute =
+  UniversitiesFeeStructureIdRouteImport.update({
+    id: '/fee-structure_/$id',
+    path: '/fee-structure/$id',
+    getParentRoute: () => UniversitiesRoute,
+  } as any)
 const StudentsStudentsIdRoute = StudentsStudentsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -369,6 +383,8 @@ export interface FileRoutesByFullPath {
   '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
+  '/universities/fee-structure/$id': typeof UniversitiesFeeStructureIdRoute
+  '/universities/fee-structure/new': typeof UniversitiesFeeStructureNewRoute
   '/universities/universities/$code': typeof UniversitiesUniversitiesCodeRoute
   '/students/applications/': typeof StudentsApplicationsIndexRoute
   '/students/students/': typeof StudentsStudentsIndexRoute
@@ -413,6 +429,8 @@ export interface FileRoutesByTo {
   '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
+  '/universities/fee-structure/$id': typeof UniversitiesFeeStructureIdRoute
+  '/universities/fee-structure/new': typeof UniversitiesFeeStructureNewRoute
   '/universities/universities/$code': typeof UniversitiesUniversitiesCodeRoute
   '/students/applications': typeof StudentsApplicationsIndexRoute
   '/students/students': typeof StudentsStudentsIndexRoute
@@ -466,6 +484,8 @@ export interface FileRoutesById {
   '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
+  '/universities/fee-structure_/$id': typeof UniversitiesFeeStructureIdRoute
+  '/universities/fee-structure_/new': typeof UniversitiesFeeStructureNewRoute
   '/universities/universities_/$code': typeof UniversitiesUniversitiesCodeRoute
   '/students/applications/': typeof StudentsApplicationsIndexRoute
   '/students/students/': typeof StudentsStudentsIndexRoute
@@ -520,6 +540,8 @@ export interface FileRouteTypes {
     | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
+    | '/universities/fee-structure/$id'
+    | '/universities/fee-structure/new'
     | '/universities/universities/$code'
     | '/students/applications/'
     | '/students/students/'
@@ -564,6 +586,8 @@ export interface FileRouteTypes {
     | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
+    | '/universities/fee-structure/$id'
+    | '/universities/fee-structure/new'
     | '/universities/universities/$code'
     | '/students/applications'
     | '/students/students'
@@ -616,6 +640,8 @@ export interface FileRouteTypes {
     | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
+    | '/universities/fee-structure_/$id'
+    | '/universities/fee-structure_/new'
     | '/universities/universities_/$code'
     | '/students/applications/'
     | '/students/students/'
@@ -954,6 +980,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof UniversitiesUniversitiesCodeRouteImport
       parentRoute: typeof UniversitiesRoute
     }
+    '/universities/fee-structure_/new': {
+      id: '/universities/fee-structure_/new'
+      path: '/fee-structure/new'
+      fullPath: '/universities/fee-structure/new'
+      preLoaderRoute: typeof UniversitiesFeeStructureNewRouteImport
+      parentRoute: typeof UniversitiesRoute
+    }
+    '/universities/fee-structure_/$id': {
+      id: '/universities/fee-structure_/$id'
+      path: '/fee-structure/$id'
+      fullPath: '/universities/fee-structure/$id'
+      preLoaderRoute: typeof UniversitiesFeeStructureIdRouteImport
+      parentRoute: typeof UniversitiesRoute
+    }
     '/students/students/$id': {
       id: '/students/students/$id'
       path: '/$id'
@@ -1126,6 +1166,8 @@ interface UniversitiesRouteChildren {
   UniversitiesIntakesRoute: typeof UniversitiesIntakesRoute
   UniversitiesUniversitiesRoute: typeof UniversitiesUniversitiesRoute
   UniversitiesIndexRoute: typeof UniversitiesIndexRoute
+  UniversitiesFeeStructureIdRoute: typeof UniversitiesFeeStructureIdRoute
+  UniversitiesFeeStructureNewRoute: typeof UniversitiesFeeStructureNewRoute
   UniversitiesUniversitiesCodeRoute: typeof UniversitiesUniversitiesCodeRoute
 }
 
@@ -1135,6 +1177,8 @@ const UniversitiesRouteChildren: UniversitiesRouteChildren = {
   UniversitiesIntakesRoute: UniversitiesIntakesRoute,
   UniversitiesUniversitiesRoute: UniversitiesUniversitiesRoute,
   UniversitiesIndexRoute: UniversitiesIndexRoute,
+  UniversitiesFeeStructureIdRoute: UniversitiesFeeStructureIdRoute,
+  UniversitiesFeeStructureNewRoute: UniversitiesFeeStructureNewRoute,
   UniversitiesUniversitiesCodeRoute: UniversitiesUniversitiesCodeRoute,
 }
 

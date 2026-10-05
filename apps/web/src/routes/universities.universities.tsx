@@ -3,6 +3,11 @@ import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPatch, ApiError } from "@/lib/api";
 import {
+  COLLECTION_MODEL_HELP,
+  COLLECTION_MODEL_LABEL,
+  type FeeCollectionModel,
+} from "@/lib/api/fee-structures";
+import {
   Plus,
   Search,
   Pencil,
@@ -109,6 +114,7 @@ type RawUniversity = {
   state: string | null;
   address: string | null;
   status: string | null;
+  fee_collection_model: string | null;
 };
 
 // ---- Live API wiring (GET /api/universities) ----
@@ -126,6 +132,7 @@ interface ApiUniversity {
   address?: string | null;
   state?: string | null;
   status?: string | number | null;
+  fee_collection_model?: string | null;
   // Server-decorated aggregates (GET /api/universities):
   tagged_courses_count?: number | null;
   intakes_count?: number | null;
@@ -228,6 +235,7 @@ function mapApiUniversity(u: ApiUniversity): UniRow {
       state: u.state ?? null,
       address: u.address ?? null,
       status: u.status === null || u.status === undefined ? null : String(u.status),
+      fee_collection_model: u.fee_collection_model ?? null,
     },
   };
 }
@@ -270,6 +278,8 @@ interface UniversityForm {
    * Edit can SHOW what is stored instead of snapping it to "Active".
    */
   status: string;
+  /** "" = not set (nullable); otherwise one of the two collection models. */
+  fee_collection_model: string;
 }
 
 const EMPTY_UNIVERSITY_FORM: UniversityForm = {
@@ -282,6 +292,7 @@ const EMPTY_UNIVERSITY_FORM: UniversityForm = {
   state: "",
   address: "",
   status: "Active",
+  fee_collection_model: "",
 };
 
 /**
@@ -328,6 +339,12 @@ function validateUniversityForm(form: UniversityForm): Record<string, string> {
     errors.name = `University name must be ${FIELD_MAX.name} characters or fewer`;
 
   if (!form.category) errors.category = "University category is required";
+
+  // Spec 3.4: the collection model is mandatory. Validation runs over every
+  // field on Add and only over touched fields on Edit, so an existing row with
+  // no model set is not force-blocked, but the model can never be cleared.
+  if (!form.fee_collection_model)
+    errors.fee_collection_model = "Fee collection model is required";
   // The picker only ever yields numeric ids; this guards the raw-id fallback
   // input (shown when GET /countries fails or is empty) against a typed
   // country NAME. Edit validates touched fields only, so a legacy stored value
@@ -397,6 +414,7 @@ function toUniversityPayload(form: UniversityForm) {
     state: form.state.trim(),
     address: form.address.trim(),
     status: statusToColumn(form.status),
+    fee_collection_model: form.fee_collection_model,
   };
 }
 
@@ -421,6 +439,7 @@ function seedUniversityForm(raw: RawUniversity): UniversityForm {
     state: raw.state ?? "",
     address: raw.address ?? "",
     status: columnToStatus(raw.status),
+    fee_collection_model: raw.fee_collection_model ?? "",
   };
 }
 
@@ -1049,6 +1068,42 @@ function UniversityFormFields({
               No category is stored for this university.
             </p>
           )}
+        </div>
+
+        <div className="space-y-1.5 sm:col-span-2">
+          <Label>
+            Fee Collection Model <span className="text-accent">*</span>
+          </Label>
+          <Select
+            value={form.fee_collection_model}
+            disabled={disabled}
+            onValueChange={(v) => update("fee_collection_model", v)}
+          >
+            <SelectTrigger
+              className={cn(
+                errors.fee_collection_model && "border-red-400 focus:ring-red-300",
+              )}
+            >
+              <SelectValue placeholder="Select collection model" />
+            </SelectTrigger>
+            <SelectContent>
+              {(["upcarrera_collects", "university_collects"] as FeeCollectionModel[]).map(
+                (m) => (
+                  <SelectItem key={m} value={m}>
+                    {COLLECTION_MODEL_LABEL[m]}
+                  </SelectItem>
+                ),
+              )}
+            </SelectContent>
+          </Select>
+          {errors.fee_collection_model && (
+            <p className="text-xs text-red-500">{errors.fee_collection_model}</p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            {form.fee_collection_model
+              ? COLLECTION_MODEL_HELP[form.fee_collection_model as FeeCollectionModel]
+              : "upCarrera collects: the student pays upCarrera (royalty to the university). University collects: the student pays the university (commission to upCarrera)."}
+          </p>
         </div>
 
         <div className="space-y-1.5">
