@@ -73,6 +73,11 @@ jobs:
       - name: Seed CI database
         working-directory: apps/api
         run: pnpm exec prisma db execute --file ../../database/ci-seed.sql --schema prisma/schema.prisma
+      # 002's tables and columns already exist from db push (its guards skip them);
+      # this adds the role keys, roles 101-104 and the crm: grants the API checks.
+      - name: Apply migration 002 (roles and grants)
+        working-directory: apps/api
+        run: pnpm exec prisma db execute --file ../../database/migrations/002-phase1-admission.sql --schema prisma/schema.prisma
       - name: Run e2e tests (Jest + Supertest)
         working-directory: apps/api
         run: pnpm exec jest --config ./test/jest-e2e.json --runInBand

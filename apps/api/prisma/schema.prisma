@@ -52,6 +52,29 @@ model applications {
   updated_at            DateTime? @db.DateTime(0)
   deleted_at            DateTime? @db.DateTime(0)
   deleted_by            Int?
+
+  /// Workflow stage (migration 002): lead_added | form_pending | counsellor_review |
+  /// fee_pending | fee_verification | sa_verification | converted | rejected.
+  /// NULL = not yet in the workflow (every legacy row, every LMS insert); the API
+  /// derives its stage. status NULL means active, and is_archived = 1 is the LMS
+  /// draft flag, never "rejected".
+  stage              String?   @db.VarChar(32)
+  stage_entered_at   DateTime? @db.DateTime(0)
+  /// Non-NULL = On Hold (the stage is kept). Reason and actor live in application_stage_log.
+  hold_at            DateTime? @db.DateTime(0)
+  hold_followup_date DateTime? @db.Date
+  /// normalizeIndianMobile(phone) (src/students/indian-mobile.ts), or NULL when phone is
+  /// not a valid Indian mobile (migration 002). The API must set it on every write of
+  /// phone; the LMS does not maintain it. Not unique: legacy data has shared numbers.
+  phone_normalized   String?   @db.Char(10)
+  /// Add Lead "Quick Notes" (migration 002).
+  remarks            String?   @db.Text
+  /// users.id of whoever referred a Referral lead; same type as students.referred_by.
+  referred_by        Int?
+
+  @@index([stage, stage_entered_at], map: "idx_applications_stage")
+  @@index([pipeline_user, created_by], map: "idx_applications_owner")
+  @@index([phone_normalized], map: "idx_applications_phone_norm")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -303,6 +326,10 @@ model intake {
   updated_at   DateTime? @db.DateTime(0)
   created_at   DateTime? @db.DateTime(0)
   deleted_at   DateTime? @db.DateTime(0)
+
+  /// sessions.session_id this schedule belongs to (migration 002, 1:1). An intake IS a
+  /// sessions row; this table holds its schedule.
+  session_id Int? @unique(map: "uq_intake_session_id")
 }
 
 model enrol {
@@ -639,6 +666,17 @@ model qualification {
   updated_at       DateTime? @db.DateTime(0)
   updated_by       Int?
   deleted_at       Int?
+
+  /// Migration 002: 10th | 12th | diploma | ug | pg | doctorate.
+  level_code   String?  @db.VarChar(16)
+  institution  String?  @db.VarChar(160)
+  /// Year of passing.
+  passing_year Int?     @db.SmallInt
+  /// percentage | cgpa | grade. For a percentage the API also writes ROUND(score_value)
+  /// into the legacy percentage column.
+  score_type   String?  @db.VarChar(16)
+  score_value  Decimal? @db.Decimal(5, 2)
+  score_scale  Decimal? @db.Decimal(5, 2)
 }
 
 model resource_category {
@@ -1000,6 +1038,9 @@ model students {
   created_at           DateTime? @db.DateTime(0)
   updated_at           DateTime? @db.DateTime(0)
   deleted_at           DateTime? @db.DateTime(0)
+
+  /// STU-YYYY-NNNNNN (migration 002), set at conversion. NOT enrollment_id.
+  student_no String? @unique(map: "uq_students_student_no") @db.VarChar(32)
 }
 
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
@@ -1118,6 +1159,9 @@ model university {
   updated_at       DateTime? @db.DateTime(0)
   created_at       DateTime? @db.DateTime(0)
   deleted_at       DateTime? @db.DateTime(0)
+
+  /// Migration 002: upcarrera_collects | university_collects. Required by the API.
+  fee_collection_model String? @db.VarChar(32)
 }
 
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
@@ -1146,6 +1190,11 @@ model user_role {
   updated_at DateTime? @db.DateTime(0)
   deleted_at DateTime? @db.DateTime(0)
   deleted_by Int?
+
+  /// Stable machine key (migration 002): super_admin, telecaller, teacher, student,
+  /// institution, counsellor, admin, client (ids 1-8), team_leader 101, manager 102,
+  /// accounts 103, student_affairs 104. Resolve roles by this key, never by title.
+  role_key String? @unique(map: "uq_user_role_role_key") @db.VarChar(32)
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -1195,17 +1244,17 @@ model users {
   /// Counsellor hierarchy (migration 001). A counsellor belongs to exactly one
   /// sales_team; unlike sales_team.members (a JSON blob) this is queryable in
   /// both directions and indexed.
-  team_id               Int?
+  team_id       Int?
   /// users.id of the Team Leader or Manager this user reports to.
-  reports_to            Int?
+  reports_to    Int?
   /// Hand-entered employee id ("UC-1024"). NOT users.code — that column is the
   /// phone dial code and is 91 for every Indian user.
-  employee_code         String?   @db.VarChar(32)
+  employee_code String? @db.VarChar(32)
 
+  @@unique([employee_code], map: "uq_users_employee_code")
   @@index([role_id], map: "role_id")
   @@index([team_id], map: "idx_users_team")
   @@index([reports_to], map: "idx_users_reports_to")
-  @@unique([employee_code], map: "uq_users_employee_code")
 }
 
 enum resources_type {
@@ -1262,4 +1311,386 @@ model counsellor_group {
   deleted_at DateTime? @db.DateTime(0)
 
   @@index([manager_id], map: "idx_counsellor_group_manager")
+}
+
+// ---------------------------------------------------------------------------
+// Migration 002 (database/migrations/002-phase1-admission.sql). Hand-written to
+// match the DDL exactly; `prisma migrate diff` against a migrated DB is empty.
+// No @relation, matching the rest of this file. Never `prisma db push` prod.
+// ---------------------------------------------------------------------------
+
+/// Spec 1.5 audit trail: one row per changed field (change_id groups a save).
+/// actor_type: user | applicant | system | anonymous. Append-only.
+model audit_log {
+  id             Int      @id @default(autoincrement())
+  occurred_at    DateTime @db.DateTime(3)
+  actor_id       Int?
+  actor_role_id  Int?
+  actor_type     String   @default("user") @db.VarChar(16)
+  action         String   @db.VarChar(32)
+  entity         String   @db.VarChar(48)
+  entity_id      String?  @db.VarChar(64)
+  application_id Int?
+  field          String?  @db.VarChar(64)
+  old_value      String?  @db.Text
+  new_value      String?  @db.Text
+  reason         String?  @db.VarChar(500)
+  change_id      String?  @db.Char(36)
+  ip             String?  @db.VarChar(45)
+  user_agent     String?  @db.VarChar(255)
+  /// JSON text (LONGTEXT, not JSON, so MariaDB and MySQL introspect alike).
+  context        String?  @db.LongText
+
+  @@index([entity, entity_id, occurred_at], map: "idx_audit_entity")
+  @@index([application_id, occurred_at], map: "idx_audit_application")
+  @@index([actor_id, occurred_at], map: "idx_audit_actor")
+  @@index([action, occurred_at], map: "idx_audit_action")
+}
+
+/// The application timeline: one row per stage event (created, magic_link_sent,
+/// form_submitted, accepted, reopened, payment_recorded, fee_verified, hold, ...).
+model application_stage_log {
+  id             Int       @id @default(autoincrement())
+  application_id Int
+  event          String    @db.VarChar(32)
+  from_stage     String?   @db.VarChar(32)
+  to_stage       String?   @db.VarChar(32)
+  reason         String?   @db.VarChar(1000)
+  followup_date  DateTime? @db.Date
+  actor_id       Int?
+  actor_role_id  Int?
+  actor_type     String    @default("user") @db.VarChar(16)
+  on_behalf      Boolean   @default(false)
+  ref_table      String?   @db.VarChar(48)
+  ref_id         Int?
+  created_at     DateTime  @db.DateTime(3)
+
+  @@index([application_id, created_at], map: "idx_asl_application")
+  @@index([to_stage, created_at], map: "idx_asl_to_stage")
+  @@index([actor_id, created_at], map: "idx_asl_actor")
+}
+
+/// Pre-conversion registration-fee entries (stages 4-5). txn_ref_active is the
+/// normalised txn number while pending/verified, NULL after mismatch/void.
+/// amount is Decimal(10,2) so ROUND(amount) always fits the INT LMS columns it is
+/// mirrored into. paid_to / payment_mode are CRM codes: map them to the LMS
+/// vocabulary ('upCarrera'/'University', 'Online'/'Cash'/'Cheque') when mirroring.
+model application_payment {
+  id                   Int       @id @default(autoincrement())
+  application_id       Int
+  fee_kind             String    @default("registration") @db.VarChar(32)
+  fee_structure_id     Int?
+  amount_expected      Decimal?  @db.Decimal(10, 2)
+  amount               Decimal   @db.Decimal(10, 2)
+  amount_change_reason String?   @db.VarChar(500)
+  paid_to              String    @db.VarChar(16)
+  payment_mode         String    @db.VarChar(16)
+  txn_ref              String    @db.VarChar(100)
+  txn_ref_norm         String    @db.VarChar(100)
+  txn_ref_active       String?   @unique(map: "uq_app_payment_txn_active") @db.VarChar(100)
+  paid_on              DateTime  @db.Date
+  proof_path           String    @db.VarChar(255)
+  proof_mime           String?   @db.VarChar(64)
+  proof_size           Int?
+  proof_original_name  String?   @db.VarChar(255)
+  status               String    @default("pending") @db.VarChar(16)
+  entered_by           Int
+  entered_at           DateTime  @db.DateTime(0)
+  verified_by          Int?
+  verified_at          DateTime? @db.DateTime(0)
+  bank_credit_date     DateTime? @db.Date
+  verify_note          String?   @db.VarChar(500)
+  mismatch_by          Int?
+  mismatch_at          DateTime? @db.DateTime(0)
+  mismatch_reason      String?   @db.VarChar(500)
+  updated_by           Int?
+  updated_at           DateTime? @db.DateTime(0)
+  deleted_by           Int?
+  deleted_at           DateTime? @db.DateTime(0)
+
+  @@index([application_id, status], map: "idx_app_payment_application")
+  @@index([status, paid_on], map: "idx_app_payment_queue")
+  @@index([txn_ref_norm], map: "idx_app_payment_txn_norm")
+}
+
+/// One row per Student Affairs decision (approved | sent_back | rejected).
+model application_sa_review {
+  id              Int      @id @default(autoincrement())
+  application_id  Int
+  identity_ok     Boolean  @default(false)
+  eligibility_ok  Boolean  @default(false)
+  legible_ok      Boolean  @default(false)
+  program_ok      Boolean  @default(false)
+  decision        String   @db.VarChar(16)
+  reason          String?  @db.VarChar(1000)
+  student_user_id Int?
+  reviewed_by     Int
+  reviewed_at     DateTime @db.DateTime(0)
+
+  @@index([application_id], map: "idx_asr_application")
+}
+
+/// Gap-free yearly counters (seq_key 'STU' -> STU-YYYY-NNNNNN).
+model doc_sequence {
+  seq_key    String    @db.VarChar(16)
+  seq_year   Int       @db.SmallInt
+  last_no    Int       @default(0)
+  updated_at DateTime? @db.DateTime(0)
+
+  @@id([seq_key, seq_year])
+}
+
+/// One row per issued magic link; only the SHA-256 of the token is stored. A live
+/// link: revoked_at IS NULL AND consumed_at IS NULL AND email_status = 'sent'.
+model application_magic_link {
+  id              Int       @id @default(autoincrement())
+  application_id  Int
+  token_hash      String    @unique(map: "uq_aml_token_hash") @db.Char(64)
+  purpose         String    @default("initial") @db.VarChar(16)
+  sent_to_email   String?   @db.VarChar(255)
+  email_status    String?   @db.VarChar(16)
+  email_sent_at   DateTime? @db.DateTime(0)
+  email_error     String?   @db.VarChar(255)
+  expires_at      DateTime  @db.DateTime(0)
+  consumed_at     DateTime? @db.DateTime(0)
+  revoked_at      DateTime? @db.DateTime(0)
+  revoked_by      Int?
+  revoke_reason   String?   @db.VarChar(32)
+  first_opened_at DateTime? @db.DateTime(0)
+  last_opened_at  DateTime? @db.DateTime(0)
+  open_count      Int       @default(0)
+  last_ip         String?   @db.VarChar(45)
+  created_by      Int?
+  created_at      DateTime  @db.DateTime(0)
+  updated_at      DateTime? @db.DateTime(0)
+
+  @@index([application_id, revoked_at, consumed_at], map: "idx_aml_application")
+  @@index([application_id, created_at], map: "idx_aml_app_created")
+  @@index([expires_at], map: "idx_aml_expires")
+}
+
+/// The student form (1:1 with applications): fields with no legacy column,
+/// section completion stamps, eligibility and the declaration.
+/// name_on_certificate is VarChar(100) = users.name, which it becomes at conversion.
+model application_form {
+  id                          Int       @id @default(autoincrement())
+  application_id              Int       @unique(map: "uq_application_form_app")
+  name_on_certificate         String?   @db.VarChar(100)
+  father_guardian_name        String?   @db.VarChar(160)
+  mother_name                 String?   @db.VarChar(160)
+  category                    String?   @db.VarChar(16)
+  marital_status              String?   @db.VarChar(16)
+  aadhaar_last4               String?   @db.Char(4)
+  pin_code                    String?   @db.Char(6)
+  highest_qualification       String?   @db.VarChar(16)
+  employment_status           String?   @db.VarChar(16)
+  total_experience_months     Int?      @db.SmallInt
+  current_employer            String?   @db.VarChar(160)
+  current_designation         String?   @db.VarChar(120)
+  /// JSON array text, parsed by the API.
+  employment_history          String?   @db.LongText
+  program_change_request      String?   @db.VarChar(500)
+  program_change_requested_at DateTime? @db.DateTime(0)
+  personal_saved_at           DateTime? @db.DateTime(0)
+  contact_saved_at            DateTime? @db.DateTime(0)
+  program_confirmed_at        DateTime? @db.DateTime(0)
+  education_saved_at          DateTime? @db.DateTime(0)
+  employment_saved_at         DateTime? @db.DateTime(0)
+  documents_completed_at      DateTime? @db.DateTime(0)
+  eligibility_status          String?   @db.VarChar(16)
+  eligibility_detail          String?   @db.VarChar(500)
+  eligibility_checked_at      DateTime? @db.DateTime(0)
+  declaration_accepted_at     DateTime? @db.DateTime(0)
+  declaration_version         String?   @db.VarChar(16)
+  declaration_ip              String?   @db.VarChar(45)
+  summary_pdf_path            String?   @db.VarChar(255)
+  row_version                 Int       @default(0)
+  updated_via                 String?   @db.VarChar(16)
+  updated_by                  Int?
+  created_at                  DateTime  @db.DateTime(0)
+  updated_at                  DateTime? @db.DateTime(0)
+}
+
+/// Documents uploaded before conversion, with the Student Affairs verdict
+/// (pending | verified | rejected). Copied into student_document at conversion
+/// (label VarChar(50) = student_document.label).
+model application_document {
+  id                  Int       @id @default(autoincrement())
+  application_id      Int
+  requirement_id      Int?
+  document_type_id    Int?
+  label               String?   @db.VarChar(50)
+  file_path           String    @db.VarChar(255)
+  original_name       String?   @db.VarChar(255)
+  mime_type           String?   @db.VarChar(64)
+  size_bytes          Int?
+  sha256              String?   @db.Char(64)
+  uploaded_via        String?   @db.VarChar(16)
+  uploaded_by         Int?
+  magic_link_id       Int?
+  verification_status String    @default("pending") @db.VarChar(16)
+  reviewed_by         Int?
+  reviewed_at         DateTime? @db.DateTime(0)
+  rejection_reason    String?   @db.VarChar(500)
+  student_document_id Int?
+  created_at          DateTime  @db.DateTime(0)
+  updated_at          DateTime? @db.DateTime(0)
+  deleted_at          DateTime? @db.DateTime(0)
+  deleted_by          Int?
+
+  @@index([application_id, deleted_at], map: "idx_appdoc_app")
+  @@index([application_id, requirement_id], map: "idx_appdoc_requirement")
+  @@index([sha256], map: "idx_appdoc_sha")
+}
+
+/// Document checklist per CANONICAL course level
+/// (certification | diploma | ug | pg | doctorate).
+model document_requirement {
+  id               Int       @id @default(autoincrement())
+  course_level     String    @db.VarChar(32)
+  document_type_id Int
+  is_required      Boolean   @default(true)
+  applies_when     String?   @db.VarChar(16)
+  max_files        Int       @default(1) @db.SmallInt
+  help_text        String?   @db.VarChar(255)
+  sort_order       Int       @default(0)
+  created_by       Int?
+  updated_by       Int?
+  deleted_by       Int?
+  created_at       DateTime? @db.DateTime(0)
+  updated_at       DateTime? @db.DateTime(0)
+  deleted_at       DateTime? @db.DateTime(0)
+
+  @@unique([course_level, document_type_id], map: "uq_docreq_level_type")
+}
+
+/// Machine-checkable eligibility rule for a course (1:1 with course.id).
+model course_admission_rule {
+  id                    Int       @id @default(autoincrement())
+  course_id             Int       @unique(map: "uq_course_admission_rule_course")
+  min_qualification     String?   @db.VarChar(16)
+  min_percentage        Decimal?  @db.Decimal(5, 2)
+  min_cgpa              Decimal?  @db.Decimal(4, 2)
+  requires_employment   Boolean   @default(false)
+  min_experience_months Int?      @db.SmallInt
+  notes                 String?   @db.VarChar(500)
+  created_by            Int?
+  updated_by            Int?
+  created_at            DateTime? @db.DateTime(0)
+  updated_at            DateTime? @db.DateTime(0)
+  deleted_at            DateTime? @db.DateTime(0)
+}
+
+/// Tagged courses (M:N): university offers course under its own name.
+model university_course {
+  id                     Int       @id @default(autoincrement())
+  university_id          Int
+  course_id              Int
+  /// NULL = use course.title.
+  university_course_name String?   @db.VarChar(255)
+  university_course_code String?   @db.VarChar(64)
+  status                 Int?      @default(1)
+  source                 String?   @db.VarChar(32)
+  created_by             Int?
+  updated_by             Int?
+  deleted_by             Int?
+  created_at             DateTime? @db.DateTime(0)
+  updated_at             DateTime? @db.DateTime(0)
+  deleted_at             DateTime? @db.DateTime(0)
+
+  @@unique([university_id, course_id], map: "uq_university_course")
+  @@index([course_id], map: "idx_university_course_course")
+}
+
+/// Offerings: university x course open for admission in intake (intake.id).
+model university_course_intake {
+  id            Int       @id @default(autoincrement())
+  university_id Int
+  course_id     Int
+  intake_id     Int
+  status        Int?      @default(1)
+  source        String?   @db.VarChar(32)
+  created_by    Int?
+  updated_by    Int?
+  deleted_by    Int?
+  created_at    DateTime? @db.DateTime(0)
+  updated_at    DateTime? @db.DateTime(0)
+  deleted_at    DateTime? @db.DateTime(0)
+
+  @@unique([university_id, course_id, intake_id], map: "uq_university_course_intake")
+  @@index([intake_id], map: "idx_uci_intake")
+  @@index([course_id], map: "idx_uci_course")
+}
+
+/// Fee structure master (spec 3.4): one row per university x course x intake.
+/// status: draft | active | expired. registration_fee is Decimal(10,2), the same
+/// as application_payment.amount_expected, which snapshots it.
+model fee_structure {
+  id                 Int       @id @default(autoincrement())
+  code               String?   @unique(map: "uq_fee_structure_code") @db.VarChar(32)
+  university_id      Int
+  course_id          Int
+  /// intake.id (a scheduled intake that has a session_id).
+  intake_id          Int
+  status             String    @default("draft") @db.VarChar(16)
+  currency           String    @default("INR") @db.Char(3)
+  registration_fee   Decimal?  @db.Decimal(10, 2)
+  course_fee_basis   String?   @db.VarChar(16)
+  course_fee_amount  Decimal?  @db.Decimal(12, 2)
+  course_fee_periods Int?      @db.SmallInt
+  course_fee_total   Decimal?  @db.Decimal(12, 2)
+  exam_fee           Decimal?  @db.Decimal(12, 2)
+  exam_fee_basis     String?   @db.VarChar(16)
+  other_fees_total   Decimal?  @db.Decimal(12, 2)
+  total_fee          Decimal?  @db.Decimal(12, 2)
+  discount_allowed   Boolean   @default(false)
+  discount_max_pct   Decimal?  @db.Decimal(5, 2)
+  allow_full         Boolean   @default(true)
+  allow_per_year     Boolean   @default(false)
+  allow_per_semester Boolean   @default(false)
+  allow_custom       Boolean   @default(false)
+  copied_from_id     Int?
+  activated_at       DateTime? @db.DateTime(0)
+  activated_by       Int?
+  expired_at         DateTime? @db.DateTime(0)
+  expired_by         Int?
+  notes              String?   @db.Text
+  created_by         Int?
+  updated_by         Int?
+  created_at         DateTime? @db.DateTime(0)
+  updated_at         DateTime? @db.DateTime(0)
+
+  @@unique([university_id, course_id, intake_id], map: "uq_fee_structure_key")
+  @@index([intake_id, status], map: "idx_fee_structure_intake_status")
+  @@index([course_id], map: "idx_fee_structure_course")
+  @@index([status], map: "idx_fee_structure_status")
+}
+
+/// "Other fees" components of a fee structure.
+model fee_structure_item {
+  id               Int       @id @default(autoincrement())
+  fee_structure_id Int
+  fee_type_id      Int?
+  label            String    @db.VarChar(120)
+  amount           Decimal   @db.Decimal(12, 2)
+  basis            String    @default("one_time") @db.VarChar(16)
+  sort_order       Int       @default(0) @db.SmallInt
+  created_by       Int?
+  created_at       DateTime? @db.DateTime(0)
+
+  @@index([fee_structure_id, sort_order], map: "idx_fee_structure_item_parent")
+}
+
+/// Custom instalment schedule (offsets from intake.start_date).
+model fee_structure_instalment {
+  id               Int       @id @default(autoincrement())
+  fee_structure_id Int
+  seq              Int       @db.SmallInt
+  label            String?   @db.VarChar(120)
+  amount           Decimal   @db.Decimal(12, 2)
+  due_offset_days  Int       @default(0)
+  created_by       Int?
+  created_at       DateTime? @db.DateTime(0)
+
+  @@unique([fee_structure_id, seq], map: "uq_fee_structure_instalment_seq")
 }
