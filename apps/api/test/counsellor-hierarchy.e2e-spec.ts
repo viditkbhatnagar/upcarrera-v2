@@ -195,6 +195,29 @@ describe('Counsellor hierarchy (e2e)', () => {
       expect(await legacyRoster(teamBId)).toContain(memberId);
     });
 
+    it('writes the roster as JSON strings, matching the legacy format', async () => {
+      const t = await prisma.sales_team.findUnique({ where: { id: teamBId } });
+      const raw: unknown = JSON.parse(t?.members ?? '[]');
+      expect(Array.isArray(raw)).toBe(true);
+      // Production rows hold `["30","31"]`. Legacy PHP reading this column may
+      // compare strictly, so the shape must not drift to numbers.
+      for (const v of raw as unknown[]) expect(typeof v).toBe('string');
+    });
+
+    it('still reads a roster stored as numbers', async () => {
+      await prisma.sales_team.update({
+        where: { id: teamAId },
+        data: { members: JSON.stringify([memberId]) }, // numbers, the other shape
+      });
+      const res = await request(http)
+        .patch(`/api/consultants/${memberId}/team`)
+        .set(authHeader(token))
+        .send({ team_id: teamBId });
+      expect(res.status).toBeLessThan(400);
+      // moved out of A even though A stored him as a number
+      expect(await legacyRoster(teamAId)).not.toContain(memberId);
+    });
+
     it('keeps a counsellor in exactly one team (spec 2.2)', async () => {
       const inA = (await legacyRoster(teamAId)).filter((id) => id === memberId).length;
       const inB = (await legacyRoster(teamBId)).filter((id) => id === memberId).length;

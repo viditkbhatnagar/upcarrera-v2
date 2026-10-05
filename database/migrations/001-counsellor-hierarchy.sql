@@ -122,23 +122,33 @@ PREPARE s FROM @stmt; EXECUTE s; DEALLOCATE PREPARE s;
 -- ---------------------------------------------------------------------
 -- 4. Backfill users.team_id from the existing sales_team.members JSON.
 --
---    MySQL 8 reads the JSON array directly, so existing memberships are carried
---    over rather than re-entered by hand. A counsellor listed in more than one
---    team lands in the lowest team id; the API prevents that recurring.
+--    The JSON array is read directly, so existing memberships are carried over
+--    rather than re-entered by hand. A counsellor listed in more than one team
+--    lands in the lowest team id; the API prevents that recurring.
 --
 --    sales_team.members is NOT cleared — it remains the legacy read path.
+--
+--    JSON_UNQUOTE IS LOAD-BEARING. Production stores the ids as JSON *strings*
+--    (`["30", "31"]`), not numbers. Extracting with `JSON PATH '$'` therefore
+--    yields `"30"` complete with quotes, and CAST('"30"' AS UNSIGNED) is 0 — so
+--    without the unquote this UPDATE matches nothing, silently leaves every
+--    counsellor with no team, and the whole hierarchy looks broken rather than
+--    unmigrated. JSON_UNQUOTE handles both shapes: `"30"` and a bare 30.
+--
+--    Verified on the live server (read-only) before this ran: the unquoted form
+--    matches 3 member rows, the un-unquoted form matches 0.
 -- ---------------------------------------------------------------------
 UPDATE `users` u
 JOIN (
-  SELECT CAST(jt.user_id AS UNSIGNED) AS user_id, MIN(t.id) AS team_id
+  SELECT CAST(JSON_UNQUOTE(jt.user_id) AS UNSIGNED) AS user_id, MIN(t.id) AS team_id
     FROM `sales_team` t
     JOIN JSON_TABLE(
            CASE WHEN JSON_VALID(t.members) THEN t.members ELSE '[]' END,
            '$[*]' COLUMNS (user_id JSON PATH '$')
          ) jt ON TRUE
    WHERE t.deleted_at IS NULL
-     AND CAST(jt.user_id AS UNSIGNED) > 0
-   GROUP BY CAST(jt.user_id AS UNSIGNED)
+     AND CAST(JSON_UNQUOTE(jt.user_id) AS UNSIGNED) > 0
+   GROUP BY CAST(JSON_UNQUOTE(jt.user_id) AS UNSIGNED)
 ) m ON m.user_id = u.id
    SET u.team_id = m.team_id
  WHERE u.team_id IS NULL;

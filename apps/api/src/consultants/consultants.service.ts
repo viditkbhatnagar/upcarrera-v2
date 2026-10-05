@@ -1274,7 +1274,16 @@ export class ConsultantsService {
       return [
         this.prisma.sales_team.update({
           where: { id: team.id },
-          data: { members: JSON.stringify(next), updated_at: now, updated_by: actorUserId },
+          data: {
+            // Written as JSON STRINGS (`["30","31"]`) to match exactly what the
+            // legacy rows already hold. Reading tolerates both shapes, but the
+            // legacy PHP that also reads this column may compare strictly, so
+            // the safe choice on a shared database is to keep its format rather
+            // than quietly switching it to numbers.
+            members: JSON.stringify(next.map(String)),
+            updated_at: now,
+            updated_by: actorUserId,
+          },
         }),
       ];
     });
