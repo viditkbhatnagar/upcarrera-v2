@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="x-apple-disable-message-reformatting">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light only">
+  <title>Fee verified: {{student_name}} ({{application_id}})</title>
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <style>table,td,p,a,h1{font-family:Georgia,'Times New Roman',serif !important;}</style>
+  <![endif]-->
+  <style>
+    /* Palette
+       Plum (header/footer) #2E1747
+       Royal purple (button)  #5B2A86
+       Gold (accents)         #C9A227
+       Lavender (page bg)     #F3EEF8
+       Ink (body text)        #2A2233
+    */
+    body { margin:0; padding:0; width:100% !important; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table { border-collapse:collapse; mso-table-lspace:0; mso-table-rspace:0; }
+    img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; display:block; }
+    a { color:#5B2A86; }
+    .btn a:hover { background-color:#4A2170 !important; }
+    @media only screen and (max-width:620px) {
+      .container { width:100% !important; }
+      .px { padding-left:24px !important; padding-right:24px !important; }
+      .h1 { font-size:26px !important; line-height:34px !important; }
+      .stack { display:block !important; width:100% !important; }
+      .stack-gap { padding-top:12px !important; }
+    }
+  </style>
+</head>
+<body style="margin:0; padding:0; background-color:#F3EEF8;">
+
+  <!-- Preheader: shows as preview text in the inbox, hidden in the body -->
+  <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:#F3EEF8; opacity:0;">
+    Finance has verified {{fee_amount}} from {{student_name}} for {{course}}.
+    &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F3EEF8;">
+    <tr>
+      <td align="center" style="padding:32px 12px;">
+
+        <table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#FFFFFF; border-radius:10px; overflow:hidden;">
+
+          <!-- ============ HEADER / LOGO ============ -->
+          <tr>
+            <td class="px" style="background-color:#2E1747; padding:28px 40px; border-bottom:3px solid #C9A227;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="left" valign="middle">
+                    <!--
+                      LOGO: replace this whole <table> with your hosted logo, e.g.
+                      <img src="{{logo_url}}" width="160" alt="Upcarrera" style="width:160px; height:auto;">
+                      Use a white or gold version of the logo so it reads on the plum background.
+                    -->
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td valign="middle" style="width:36px; height:36px; background-color:#C9A227; border-radius:8px; text-align:center; font-family:Georgia,'Times New Roman',serif; font-size:22px; line-height:36px; font-weight:bold; color:#2E1747;">u</td>
+                        <td valign="middle" style="padding-left:10px; font-family:Georgia,'Times New Roman',serif; font-size:22px; line-height:36px; color:#FFFFFF; letter-spacing:0.3px;">upcarrera</td>
+                      </tr>
+                    </table>
+                  </td>
+                  <td align="right" valign="middle" style="font-family:Arial,Helvetica,sans-serif; font-size:13px; color:#D9CBEA;">
+                    Application {{application_id}}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- ============ GREETING ============ -->
+          <tr>
+            <td class="px" style="padding:44px 40px 8px 40px;">
+              <p style="margin:0 0 14px 0;">
+                <span style="display:inline-block; padding:5px 12px; background-color:#FBF6E6; border:1px solid #C9A227; border-radius:20px; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:18px; font-weight:bold; color:#2E1747;">&#10003;&nbsp; Fee verified</span>
+              </p>
+              <h1 class="h1" style="margin:0 0 16px 0; font-family:Georgia,'Times New Roman',serif; font-size:28px; line-height:36px; font-weight:normal; color:#2E1747;">
+                {{student_name}}'s payment is confirmed
+              </h1>
+              <p style="margin:0 0 16px 0; font-family:Arial,Helvetica,sans-serif; font-size:16px; line-height:26px; color:#2A2233;">
+                Hi {{counsellor_first_name}}, {{verified_by}} from Finance has verified the fee for one of your applications. You can now let the student know and move the application to the next stage.
+              </p>
+            </td>
+          </tr>
+
+          <!-- ============ AMOUNT HIGHLIGHT ============ -->
+          <tr>
+            <td class="px" style="padding:8px 40px 8px 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#2E1747; border-radius:6px;">
+                <tr>
+                  <td style="padding:18px 22px;">
+                    <p style="margin:0; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:18px; color:#D9CBEA;">Amount verified</p>
+                    <p style="margin:4px 0 0 0; font-family:Georgia,'Times New Roman',serif; font-size:30px; line-height:38px; color:#C9A227;">{{fee_amount}}</p>
+                    <p style="margin:2px 0 0 0; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:18px; color:#D9CBEA;">{{fee_type}}</p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- ============ STUDENT + PAYMENT DETAILS ============ -->
+          <tr>
+            <td class="px" style="padding:8px 40px 8px 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8F4FC; border-left:3px solid #C9A227; border-radius:6px;">
+                <tr>
+                  <td style="padding:16px 22px 14px 22px;">
+                    <p style="margin:0 0 6px 0; font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:18px; font-weight:bold; letter-spacing:1.2px; text-transform:uppercase; color:#A8861A;">Student</p>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Name</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{student_name}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Phone</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{student_phone}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Application ID</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{application_id}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">University</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{university}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Programme</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{course}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Intake</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{intake}}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td class="px" style="padding:8px 40px 8px 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8F4FC; border-left:3px solid #C9A227; border-radius:6px;">
+                <tr>
+                  <td style="padding:16px 22px 14px 22px;">
+                    <p style="margin:0 0 6px 0; font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:18px; font-weight:bold; letter-spacing:1.2px; text-transform:uppercase; color:#A8861A;">Payment</p>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Payment mode</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{payment_mode}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Reference / UTR</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{payment_reference}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Paid on</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{paid_at}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Verified by</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{verified_by}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:130px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Verified on</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{verified_at}}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- ============ CTA BUTTON ============ -->
+          <tr>
+            <td class="px" align="left" style="padding:24px 40px 12px 40px;">
+              <!--[if mso]>
+              <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="{{application_url}}" style="height:52px; v-text-anchor:middle; width:240px;" arcsize="12%" stroke="f" fillcolor="#5B2A86">
+                <w:anchorlock/>
+                <center style="color:#FFFFFF; font-family:Arial,sans-serif; font-size:16px; font-weight:bold;">Open application</center>
+              </v:roundrect>
+              <![endif]-->
+              <!--[if !mso]><!-->
+              <table role="presentation" class="btn" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="border-radius:6px; background-color:#5B2A86; border-bottom:3px solid #C9A227;">
+                    <a href="{{application_url}}" target="_blank" style="display:inline-block; padding:15px 34px; font-family:Arial,Helvetica,sans-serif; font-size:16px; font-weight:bold; color:#FFFFFF; text-decoration:none; border-radius:6px; background-color:#5B2A86;">
+                      Open application
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              <!--<![endif]-->
+            </td>
+          </tr>
+
+          <!-- ============ FINANCE CONTACT ============ -->
+          <tr>
+            <td class="px" style="padding:16px 40px 36px 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #E7DEF1;">
+                <tr>
+                  <td style="padding-top:20px; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:22px; color:#2A2233;">
+                    <strong>Something doesn't match?</strong> If the amount or reference is different from what the student told you, contact Finance before updating the student:
+                    <a href="mailto:{{finance_email}}" style="color:#5B2A86; font-weight:bold; text-decoration:none;">{{finance_email}}</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- ============ FOOTER ============ -->
+          <tr>
+            <td class="px" style="background-color:#2E1747; padding:24px 40px; border-top:3px solid #C9A227;">
+              <p style="margin:0 0 6px 0; font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:18px; color:#D9CBEA;">
+                Internal notification. You received this because you're the counsellor assigned to application {{application_id}}. Please don't forward it to the student, as it contains payment details.
+              </p>
+              <p style="margin:0; font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:18px; color:#A894C2;">
+                &copy; {{year}} Upcarrera. All rights reserved.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

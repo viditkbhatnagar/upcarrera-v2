@@ -439,7 +439,7 @@ function ExportModal({ open, onClose, count }: { open: boolean; onClose: () => v
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => {
-              toast.success(`Export queued as ${format.toUpperCase()}`);
+              toast.error("Export is not available yet — nothing was saved.");
               onClose();
             }}
           >
@@ -478,7 +478,7 @@ function ProfileDrawer({ student, onClose }: { student: SummaryRow | null; onClo
         </div>
         <DialogFooter className="border-t pt-4">
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => toast.success("Statement downloaded")}>
+            <Button variant="outline" onClick={() => toast.error("Statement download is not available yet — nothing was saved.")}>
               <Download className="h-4 w-4" /> Download Statement
             </Button>
             <Button onClick={onClose}>Close</Button>

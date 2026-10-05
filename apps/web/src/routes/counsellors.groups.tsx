@@ -38,11 +38,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  ALL_COUNSELLORS,
-  TEAMS,
-  GROUPS,
-  MANAGERS,
-  TEAM_LEADERS,
 } from "@/lib/counsellors-data";
 
 export const Route = createFileRoute("/counsellors/groups")({
@@ -61,19 +56,25 @@ const STATUS_DOT: Record<GroupStatus, string> = {
   Inactive: "bg-rose-500",
 };
 
-// Synthesize team rows for the (static) Create-Group dialog + manager filter
-// scaffolding. The live Groups table no longer depends on these — it is driven
-// entirely by GET /consultants/groups below.
-const TEAM_DEFS = TEAMS.map((t, i) => {
-  const members = ALL_COUNSELLORS.filter((c) => c.team === t);
-  return {
-    id: `TM-${String(2001 + i).padStart(4, "0")}`,
-    name: `Team ${t}`,
-    group: GROUPS[i % GROUPS.length],
-    members,
-    target: members.reduce((s, m) => s + m.activeTarget, 0),
-  };
-});
+// The Create-Group dialog used to build its team list from the prototype
+// generator (Team Alpha..Echo, each with fabricated members drawn from 64
+// invented counsellors) and its manager list from invented names. None of them
+// exist, so the dialog offered choices that could never be saved (QA G01).
+// Both pickers now read live data; see CreateGroupDialog.
+
+/** Shape returned by GET /sales-teams items[]. */
+interface ApiSalesTeam {
+  id: number;
+  name: string | null;
+  leader_name?: string | null;
+  members_count?: number | null;
+}
+
+/** Shape returned by GET /consultants items[]. */
+interface ApiConsultantOption {
+  id: number;
+  name: string | null;
+}
 
 const EMPTY = "—";
 
@@ -132,7 +133,6 @@ type StatusFilter = GroupStatus | "All";
 function GroupsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
   const [search, setSearch] = useState("");
-  const [managerFilter, setManagerFilter] = useState("All");
   const [page, setPage] = useState(1);
   const [openCreate, setOpenCreate] = useState(false);
   const PAGE_SIZE = 10;
@@ -153,7 +153,6 @@ function GroupsPage() {
   const filtered = useMemo(() => {
     return allGroups.filter((g) => {
       if (statusFilter !== "All" && g.status !== statusFilter) return false;
-      if (managerFilter !== "All" && g.manager !== managerFilter) return false;
       if (search) {
         const s = search.toLowerCase();
         if (
@@ -165,7 +164,7 @@ function GroupsPage() {
       }
       return true;
     });
-  }, [allGroups, statusFilter, search, managerFilter]);
+  }, [allGroups, statusFilter, search]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -185,7 +184,6 @@ function GroupsPage() {
   const resetFilters = () => {
     setStatusFilter("All");
     setSearch("");
-    setManagerFilter("All");
     setPage(1);
   };
 
@@ -270,18 +268,10 @@ function GroupsPage() {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <Select value={managerFilter} onValueChange={setManagerFilter}>
-            <SelectTrigger className="h-9 text-sm">
-              <SelectValue placeholder="Manager" />
-            </SelectTrigger>
-            <SelectContent>
-              {["All", ...MANAGERS].map((m) => (
-                <SelectItem key={m} value={m}>
-                  {m === "All" ? "All Managers" : m}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* Manager filter removed: a counsellor group has no manager column,
+              so every group renders "—" and this dropdown — populated from the
+              prototype names Arjun Rao / Sneha Iyer / ... — could never match a
+              row. It returns with the Group -> Team -> Counsellor hierarchy. */}
           <Select
             value={statusFilter}
             onValueChange={(v) => setStatusFilter(v as StatusFilter)}
@@ -554,22 +544,45 @@ function CreateGroupDialog({
   const [teams, setTeams] = useState<string[]>([]);
   const [teamSearch, setTeamSearch] = useState("");
 
-  // Group Manager pool: managers + team leaders (both are senior counsellors)
+  // Real teams and real counsellors — the dialog must never offer a choice that
+  // does not exist in the database.
+  const { data: teamsData } = useQuery({
+    queryKey: ["sales-teams", "options"],
+    queryFn: () => apiGet<{ items: ApiSalesTeam[] }>("/sales-teams", { limit: 200 }),
+    staleTime: 5 * 60 * 1000,
+  });
+  const { data: consultantsData } = useQuery({
+    queryKey: ["consultants", "options"],
+    queryFn: () =>
+      apiGet<{ items: ApiConsultantOption[] }>("/consultants", { limit: 1000 }),
+    staleTime: 5 * 60 * 1000,
+  });
+
   const managerPool = useMemo(
-    () => Array.from(new Set([...MANAGERS, ...TEAM_LEADERS])),
-    [],
+    () =>
+      (consultantsData?.items ?? [])
+        .map((c) => c.name)
+        .filter((n): n is string => Boolean(n && n.trim()))
+        .sort(),
+    [consultantsData],
   );
 
   const filteredTeams = useMemo(() => {
-    const s = teamSearch.toLowerCase();
-    return TEAM_DEFS.filter(
-      (t) =>
-        !s ||
-        t.name.toLowerCase().includes(s) ||
-        t.id.toLowerCase().includes(s) ||
-        t.group.toLowerCase().includes(s),
-    );
-  }, [teamSearch]);
+    const q = teamSearch.toLowerCase();
+    return (teamsData?.items ?? [])
+      .map((t) => ({
+        id: `TM-${String(t.id).padStart(4, "0")}`,
+        name: t.name?.trim() || `Team #${t.id}`,
+        group: EMPTY,
+        memberCount: t.members_count ?? 0,
+      }))
+      .filter(
+        (t) =>
+          !q ||
+          t.name.toLowerCase().includes(q) ||
+          t.id.toLowerCase().includes(q),
+      );
+  }, [teamsData, teamSearch]);
 
   const toggle = (id: string) =>
     setTeams((prev) =>
@@ -662,7 +675,8 @@ function CreateGroupDialog({
                       <div>
                         <div className="text-sm font-medium text-foreground">{t.name}</div>
                         <div className="text-xs text-muted-foreground">
-                          {t.id} · {t.members.length} counsellors · {t.group}
+                          {t.id} · {t.memberCount}{" "}
+                          {t.memberCount === 1 ? "counsellor" : "counsellors"}
                         </div>
                       </div>
                     </div>
@@ -690,9 +704,16 @@ function CreateGroupDialog({
           >
             Cancel
           </button>
+          {/* There is no counsellor-group table or endpoint yet: `group_courses`
+              is course bundles, and users carries only a free-text `region`.
+              This button used to close the dialog and look like a success. It
+              now says plainly that it cannot save, rather than losing the
+              operator's input silently (QA G01). */}
           <button
-            onClick={() => onOpenChange(false)}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover"
+            type="button"
+            disabled
+            title="Groups cannot be saved yet — the counsellor-group entity does not exist in the database"
+            className="inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-primary/40 px-4 py-2 text-sm font-semibold text-primary-foreground"
           >
             <Plus className="h-4 w-4" />
             Create Group

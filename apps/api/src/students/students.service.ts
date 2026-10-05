@@ -5,6 +5,7 @@ import {
   NotImplementedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateStudentDto } from './dto/create-student.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
@@ -62,6 +63,10 @@ const ADMISSION_STATUS_ORDER = [
   'Passed Out',
   'Dropout',
   'Cancelled',
+  // Rows whose admission_status is null or an unmapped code. Always present (at
+  // 0 when clean) so the breakdown reconciles with `total` by construction;
+  // clients should hide the bucket when it is zero.
+  'Unknown',
 ] as const;
 
 /** Maps an admission_status Int code to its human label ('Unknown' when unmapped). */
@@ -119,8 +124,17 @@ export class StudentsService {
     const limit = query.limit ?? DEFAULT_LIMIT;
     const skip = (page - 1) * limit;
 
-    const studentIdFilter = await this.resolveEnrolmentStudentIds(query);
-    // An enrolment filter was requested but matched no enrolments -> empty page.
+    const enrolmentIds = await this.resolveEnrolmentStudentIds(query);
+    const searchIds = await this.resolveSearchStudentIds(query.search);
+
+    // Both narrow by student_id, so they must INTERSECT — letting one overwrite
+    // the other would silently widen a filtered list.
+    const studentIdFilter =
+      enrolmentIds !== undefined && searchIds !== undefined
+        ? enrolmentIds.filter((id) => searchIds.includes(id))
+        : (enrolmentIds ?? searchIds);
+
+    // A filter was requested but matched nothing -> empty page.
     if (studentIdFilter !== undefined && studentIdFilter.length === 0) {
       return {
         items: [],
@@ -322,12 +336,12 @@ export class StudentsService {
     for (const g of groups) {
       const n = g._count._all;
       total += n;
+      // Every row lands in a bucket, so the cards always sum to `total`. Rows
+      // whose admission_status is null or an unmapped code fold into 'Unknown'
+      // rather than vanishing — previously they counted toward the total only,
+      // which is why the cards added up to 1,526 against a total of 1,541 (QA ST03).
       const label = admissionStatusLabel(g.admission_status);
-      // Only fold mapped labels into the keyed buckets; unknown codes still
-      // count toward `total` but never invent a card.
-      if (label in byStatus) {
-        byStatus[label] += n;
-      }
+      byStatus[label] = (byStatus[label] ?? 0) + n;
     }
 
     return { total, by_status: byStatus };
@@ -349,6 +363,44 @@ export class StudentsService {
    * filter was supplied (so the caller leaves student_id unconstrained), or a
    * possibly-empty id list otherwise.
    */
+  /**
+   * Resolve a free-text search to the set of `students.student_id` values it matches.
+   *
+   * A student's name, email and phone live on the linked `users` row, not on
+   * `students`, so the text match runs there and comes back as a student_id set
+   * the caller can intersect with its other filters. The printed id (`STU-1688`,
+   * which is the student_id) is matched directly so a user can paste what they see.
+   *
+   * Returns undefined when no search was supplied — meaning "do not filter" —
+   * which is deliberately different from an empty array, meaning "matched nothing".
+   */
+  private async resolveSearchStudentIds(
+    search: string | undefined,
+  ): Promise<number[] | undefined> {
+    const term = search?.trim();
+    if (!term) return undefined;
+
+    const matched = await this.prisma.users.findMany({
+      where: {
+        deleted_at: null,
+        OR: [
+          { name: { contains: term } },
+          { email: { contains: term } },
+          { phone: { contains: term } },
+        ],
+      },
+      select: { id: true },
+    });
+
+    const ids = new Set(matched.map((u) => u.id));
+
+    // `STU-1688` / `1688` — the printed id is the student_id itself.
+    const numeric = Number(term.replace(/^stu[-\s]*/i, ''));
+    if (Number.isInteger(numeric) && numeric > 0) ids.add(numeric);
+
+    return [...ids];
+  }
+
   private async resolveEnrolmentStudentIds(
     query: ListStudentsDto,
   ): Promise<number[] | undefined> {
@@ -746,14 +798,86 @@ export class StudentsService {
     });
   }
 
+  /**
+   * Build the OR clause for the applications free-text search.
+   *
+   * The list's visible id falls through custom_application_id -> enrollment_id ->
+   * `APP-{application_id}` (see students.applications.index.tsx), so a search has
+   * to cover all three or a counsellor typing the id they can see finds nothing.
+   * A bare number, or one behind an `APP-` prefix, is also matched against the
+   * primary key.
+   */
+  private applicationSearchFilter(search: string | undefined) {
+    const term = search?.trim();
+    if (!term) return undefined;
+
+    const or: Prisma.applicationsWhereInput[] = [
+      { name: { contains: term } },
+      { email: { contains: term } },
+      { phone: { contains: term } },
+      { custom_application_id: { contains: term } },
+      { enrollment_id: { contains: term } },
+    ];
+
+    const numeric = Number(term.replace(/^app[-\s]*/i, ''));
+    if (Number.isInteger(numeric) && numeric > 0) {
+      or.push({ application_id: numeric });
+    }
+
+    return { OR: or };
+  }
+
+  /**
+   * Stage counts across the WHOLE filtered set, not just the page being returned.
+   *
+   * The list previously counted the ten rows on screen, so the pipeline cards read
+   * "New Lead 8 (80%)" and changed on every page (QA AP06).
+   *
+   * Only three stages are derivable from the data today — an application row
+   * carries just is_converted / is_archived / status, which is the same signal
+   * `applicationStatusLabel` folds and the same mapping the client applies. The
+   * remaining pipeline stages (Form Pending, Registration Fee Pending/Paid, Admin
+   * Verification Pending) have no column behind them and are reported as 0 rather
+   * than guessed; they arrive with the Phase 1 stage engine.
+   */
+  private async applicationStageCounts(where: Prisma.applicationsWhereInput) {
+    const groups = await this.prisma.applications.groupBy({
+      by: ['is_converted', 'is_archived', 'status'],
+      where,
+      _count: { _all: true },
+    });
+
+    const counts = {
+      'New Lead': 0,
+      'Form Pending': 0,
+      'Registration Fee Pending': 0,
+      'Registration Fee Paid': 0,
+      'Admin Verification Pending': 0,
+      Enrolled: 0,
+      Rejected: 0,
+    };
+
+    for (const g of groups) {
+      const n = g._count._all;
+      if (g.is_converted === 1) counts.Enrolled += n;
+      else if (g.is_archived || g.status === false) counts.Rejected += n;
+      else counts['New Lead'] += n;
+    }
+
+    return counts;
+  }
+
   async listApplications(query: ListApplicationsDto) {
     const page = query.page ?? DEFAULT_PAGE;
     const limit = query.limit ?? DEFAULT_LIMIT;
     const skip = (page - 1) * limit;
 
-    const where = { deleted_at: null };
+    const where: Prisma.applicationsWhereInput = {
+      deleted_at: null,
+      ...this.applicationSearchFilter(query.search),
+    };
 
-    const [rows, total] = await Promise.all([
+    const [rows, total, counts] = await Promise.all([
       this.prisma.applications.findMany({
         where,
         skip,
@@ -761,11 +885,14 @@ export class StudentsService {
         orderBy: { application_id: 'desc' },
       }),
       this.prisma.applications.count({ where }),
+      // Computed over the same filtered set minus pagination, so the pipeline
+      // cards always reconcile with the rows the list is reporting.
+      this.applicationStageCounts(where),
     ]);
 
     const items = await this.decorateApplications(rows);
 
-    return { items, total, page, limit };
+    return { items, total, page, limit, counts };
   }
 
   // GET /applications/:id

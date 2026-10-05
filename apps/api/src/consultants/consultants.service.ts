@@ -9,6 +9,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateConsultantDto } from './dto/create-consultant.dto';
 import { UpdateConsultantDto } from './dto/update-consultant.dto';
 import { ListConsultantsDto } from './dto/list-consultants.dto';
+import {
+  AssignTeamDto,
+  CreateCounsellorGroupDto,
+  UpdateCounsellorGroupDto,
+} from './dto/counsellor-group.dto';
 import { ListAdmissionsDto } from './dto/list-admissions.dto';
 import { ListTargetsDto } from './dto/list-targets.dto';
 import { CreateTargetDto, UpdateTargetDto } from './dto/create-target.dto';
@@ -96,11 +101,93 @@ export class ConsultantsService {
     ]);
 
     return {
-      items: items.map((u) => this.stripSecrets(u)),
+      items: await this.decorateHierarchy(items.map((u) => this.stripSecrets(u))),
       total,
       page: pg.page,
       limit: pg.limit,
     };
+  }
+
+  /**
+   * Resolve each counsellor's place in the Group -> Team -> Counsellor chain.
+   *
+   * Before migration 001 there was nothing to resolve: team membership existed
+   * only inside `sales_team.members` (a JSON blob, readable team -> member but
+   * never member -> team), there was no group table at all, and the list screen
+   * surfaced "—" for Team, Team Leader, Group and Manager on every row (QA C05).
+   * `users.team_id` now carries the link, so the chain can be walked.
+   *
+   * Three batched queries total, whatever the row count — teams, then groups,
+   * then the leader/manager names. No per-row lookups.
+   *
+   * Null is returned for anything genuinely unset rather than a placeholder, so
+   * the caller can tell "no team" from "team with no leader".
+   */
+  private async decorateHierarchy<
+    T extends { id: number; team_id?: number | null },
+  >(users: T[]) {
+    const teamIds = [
+      ...new Set(users.map((u) => u.team_id).filter((id): id is number => !!id)),
+    ];
+
+    const teams = teamIds.length
+      ? await this.prisma.sales_team.findMany({
+          where: { id: { in: teamIds }, deleted_at: null },
+          select: { id: true, name: true, leader: true, group_id: true },
+        })
+      : [];
+    const teamById = new Map(teams.map((t) => [t.id, t]));
+
+    const groupIds = [
+      ...new Set(teams.map((t) => t.group_id).filter((id): id is number => !!id)),
+    ];
+    const groups = groupIds.length
+      ? await this.prisma.counsellor_group.findMany({
+          where: { id: { in: groupIds }, deleted_at: null },
+          select: { id: true, code: true, name: true, manager_id: true },
+        })
+      : [];
+    const groupById = new Map(groups.map((g) => [g.id, g]));
+
+    // sales_team.leader is a VarChar holding a users.id — the reason the Teams
+    // screen rendered "30" and "31" as leader names (QA T03).
+    const personIds = [
+      ...new Set(
+        [
+          ...teams.map((t) => Number(t.leader)),
+          ...groups.map((g) => g.manager_id ?? NaN),
+        ].filter((n) => Number.isInteger(n) && n > 0),
+      ),
+    ];
+    const people = personIds.length
+      ? await this.prisma.users.findMany({
+          where: { id: { in: personIds }, deleted_at: null },
+          select: { id: true, name: true },
+        })
+      : [];
+    const personById = new Map(people.map((p) => [p.id, p.name]));
+
+    return users.map((u) => {
+      const team = u.team_id ? teamById.get(u.team_id) : undefined;
+      const group = team?.group_id ? groupById.get(team.group_id) : undefined;
+      const leaderId = Number(team?.leader);
+
+      return {
+        ...u,
+        team_name: team?.name ?? null,
+        team_leader_id: Number.isInteger(leaderId) && leaderId > 0 ? leaderId : null,
+        team_leader_name: Number.isInteger(leaderId)
+          ? (personById.get(leaderId) ?? null)
+          : null,
+        group_id: group?.id ?? null,
+        group_code: group?.code ?? null,
+        group_name: group?.name ?? null,
+        manager_id: group?.manager_id ?? null,
+        manager_name: group?.manager_id
+          ? (personById.get(group.manager_id) ?? null)
+          : null,
+      };
+    });
   }
 
   /**
@@ -110,34 +197,169 @@ export class ConsultantsService {
    * total_teams is null (the UI renders "—"); manager/target likewise have no
    * source. A null/blank region is surfaced as "Unassigned".
    */
+  /**
+   * GET /consultants/groups — the real counsellor groups.
+   *
+   * This used to group users by the free-text `region` column, which is empty
+   * for every consultant, so it returned a single invented "Unassigned" bucket
+   * holding all 35 counsellors with no manager and no team count (QA G02).
+   * Migration 001 added the `counsellor_group` table, so this now reports what
+   * is actually stored, with live counts rolled up through the teams.
+   */
   async groups() {
-    const grouped = await this.prisma.users.groupBy({
-      by: ['region'],
-      where: { role_id: CONSULTANT_ROLE_ID, deleted_at: null },
+    const [groups, teams] = await Promise.all([
+      this.prisma.counsellor_group.findMany({
+        where: { deleted_at: null },
+        orderBy: { id: 'asc' },
+      }),
+      this.prisma.sales_team.findMany({
+        where: { deleted_at: null },
+        select: { id: true, group_id: true },
+      }),
+    ]);
+
+    const managerIds = [
+      ...new Set(groups.map((g) => g.manager_id).filter((id): id is number => !!id)),
+    ];
+    const managers = managerIds.length
+      ? await this.prisma.users.findMany({
+          where: { id: { in: managerIds }, deleted_at: null },
+          select: { id: true, name: true },
+        })
+      : [];
+    const managerById = new Map(managers.map((m) => [m.id, m.name]));
+
+    // Counts are derived from the live membership rather than stored, so they
+    // cannot drift from reality the way a typed-in total would.
+    const teamsByGroup = new Map<number, number[]>();
+    for (const t of teams) {
+      if (t.group_id == null) continue;
+      teamsByGroup.set(t.group_id, [...(teamsByGroup.get(t.group_id) ?? []), t.id]);
+    }
+
+    const counsellorsByTeam = await this.prisma.users.groupBy({
+      by: ['team_id'],
+      where: { role_id: CONSULTANT_ROLE_ID, deleted_at: null, team_id: { not: null } },
       _count: { _all: true },
     });
+    const countByTeam = new Map(
+      counsellorsByTeam.map((r) => [r.team_id as number, r._count._all]),
+    );
 
-    const items = grouped
-      .map((g) => {
-        const region = (g.region ?? '').trim();
-        return {
-          id: region || 'unassigned',
-          name: region || 'Unassigned',
-          region: region || null,
-          total_counsellors: g._count._all,
-          total_teams: null as number | null,
-          manager: null as string | null,
-          status: 1,
-        };
-      })
-      .sort((a, b) => b.total_counsellors - a.total_counsellors);
+    const items = groups.map((g) => {
+      const teamIds = teamsByGroup.get(g.id) ?? [];
+      return {
+        id: g.id,
+        code: g.code,
+        name: g.name,
+        manager_id: g.manager_id,
+        manager: g.manager_id ? (managerById.get(g.manager_id) ?? null) : null,
+        total_teams: teamIds.length,
+        total_counsellors: teamIds.reduce((sum, id) => sum + (countByTeam.get(id) ?? 0), 0),
+        status: g.status ?? 1,
+      };
+    });
+
+    // Counsellors in no team at all belong to no group. Reported separately so
+    // the screen can show them honestly instead of inventing a bucket.
+    const unassigned = await this.prisma.users.count({
+      where: { role_id: CONSULTANT_ROLE_ID, deleted_at: null, team_id: null },
+    });
 
     return {
       items,
       total: items.length,
       total_counsellors: items.reduce((s, g) => s + g.total_counsellors, 0),
+      unassigned_counsellors: unassigned,
     };
   }
+
+  /** POST /consultants/groups */
+  async createGroup(dto: CreateCounsellorGroupDto, actorUserId: number) {
+    await this.assertGroupCodeFree(dto.code);
+    if (dto.manager_id !== undefined) await this.assertUserExists(dto.manager_id);
+
+    const now = new Date();
+    return this.prisma.counsellor_group.create({
+      data: {
+        code: dto.code ?? null,
+        name: dto.name,
+        manager_id: dto.manager_id ?? null,
+        status: dto.status ?? 1,
+        created_by: actorUserId,
+        created_at: now,
+        updated_at: now,
+      },
+    });
+  }
+
+  /** PATCH /consultants/groups/:id */
+  async updateGroup(id: number, dto: UpdateCounsellorGroupDto, actorUserId: number) {
+    const existing = await this.prisma.counsellor_group.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!existing) throw new NotFoundException('Counsellor group not found!');
+
+    if (dto.code !== undefined && dto.code !== existing.code) {
+      await this.assertGroupCodeFree(dto.code);
+    }
+    if (dto.manager_id !== undefined && dto.manager_id !== null) {
+      await this.assertUserExists(dto.manager_id);
+    }
+
+    return this.prisma.counsellor_group.update({
+      where: { id },
+      data: {
+        ...(dto.code !== undefined ? { code: dto.code } : {}),
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.manager_id !== undefined ? { manager_id: dto.manager_id } : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        updated_by: actorUserId,
+        updated_at: new Date(),
+      },
+    });
+  }
+
+  /** DELETE /consultants/groups/:id — soft delete, and orphan its teams. */
+  async removeGroup(id: number, actorUserId: number) {
+    const existing = await this.prisma.counsellor_group.findFirst({
+      where: { id, deleted_at: null },
+    });
+    if (!existing) throw new NotFoundException('Counsellor group not found!');
+
+    const now = new Date();
+    await this.prisma.$transaction([
+      // Teams must not keep pointing at a deleted group, or the hierarchy walk
+      // would resolve a group that is gone.
+      this.prisma.sales_team.updateMany({
+        where: { group_id: id },
+        data: { group_id: null, updated_at: now },
+      }),
+      this.prisma.counsellor_group.update({
+        where: { id },
+        data: { deleted_at: now, deleted_by: actorUserId },
+      }),
+    ]);
+
+    return { id };
+  }
+
+  /** Group codes are the operator-facing identifier, so they must be unique. */
+  private async assertGroupCodeFree(code: string | null | undefined) {
+    if (!code) return;
+    const clash = await this.prisma.counsellor_group.findFirst({
+      where: { code, deleted_at: null },
+    });
+    if (clash) throw new ConflictException('A group with this code already exists');
+  }
+
+  private async assertUserExists(userId: number) {
+    const user = await this.prisma.users.findFirst({
+      where: { id: userId, deleted_at: null },
+    });
+    if (!user) throw new NotFoundException('User not found!');
+  }
+
 
   /** Re-validate a consultant exists (role_id=6, not soft-deleted) or 404. */
   private async getConsultantOrThrow(id: number) {
@@ -1005,4 +1227,107 @@ export class ConsultantsService {
       return [];
     }
   }
+  /**
+   * PATCH /consultants/:id/team — move a counsellor to another team.
+   *
+   * Writes BOTH sides on purpose. `users.team_id` is the new source of truth,
+   * but `sales_team.members` (a JSON array of user ids) is still read by legacy
+   * PHP and possibly by the LMS, which shares this database. Updating only the
+   * new column would leave those readers seeing stale rosters, so both are kept
+   * in step inside one transaction until the legacy path is retired.
+   *
+   * A counsellor belongs to exactly one team (spec 2.2), so they are removed
+   * from every other team's member list as part of the move.
+   */
+  async assignTeam(consultantId: number, dto: AssignTeamDto, actorUserId: number) {
+    const consultant = await this.getConsultantOrThrow(consultantId);
+
+    const targetTeamId = dto.team_id ?? null;
+    if (targetTeamId !== null) {
+      const team = await this.prisma.sales_team.findFirst({
+        where: { id: targetTeamId, deleted_at: null },
+      });
+      if (!team) throw new NotFoundException('Sales Team not found!');
+    }
+    if (dto.reports_to !== undefined && dto.reports_to !== null) {
+      await this.assertUserExists(dto.reports_to);
+    }
+
+    // Every team whose JSON roster mentions this user, so stale entries can be
+    // stripped. The blob cannot be queried by member, so they are filtered here.
+    const allTeams = await this.prisma.sales_team.findMany({
+      where: { deleted_at: null },
+      select: { id: true, members: true },
+    });
+
+    const now = new Date();
+    const rosterWrites = allTeams.flatMap((team) => {
+      const ids = this.parseMemberIdList(team.members);
+      const shouldContain = team.id === targetTeamId;
+      const contains = ids.includes(consultantId);
+      if (shouldContain === contains) return [];
+
+      const next = shouldContain
+        ? [...ids, consultantId]
+        : ids.filter((id) => id !== consultantId);
+
+      return [
+        this.prisma.sales_team.update({
+          where: { id: team.id },
+          data: { members: JSON.stringify(next), updated_at: now, updated_by: actorUserId },
+        }),
+      ];
+    });
+
+    await this.prisma.$transaction([
+      this.prisma.users.update({
+        where: { id: consultant.id },
+        data: {
+          team_id: targetTeamId,
+          ...(dto.reports_to !== undefined ? { reports_to: dto.reports_to } : {}),
+          updated_by: actorUserId,
+          updated_at: now,
+        },
+      }),
+      ...rosterWrites,
+    ]);
+
+    const [decorated] = await this.decorateHierarchy([
+      this.stripSecrets(await this.getConsultantOrThrow(consultantId)),
+    ]);
+    return decorated;
+  }
+
+  /** PATCH /consultants/teams/:id/group — put a team under a group. */
+  async assignTeamGroup(teamId: number, groupId: number | null, actorUserId: number) {
+    const team = await this.prisma.sales_team.findFirst({
+      where: { id: teamId, deleted_at: null },
+    });
+    if (!team) throw new NotFoundException('Sales Team not found!');
+
+    if (groupId !== null) {
+      const group = await this.prisma.counsellor_group.findFirst({
+        where: { id: groupId, deleted_at: null },
+      });
+      if (!group) throw new NotFoundException('Counsellor group not found!');
+    }
+
+    return this.prisma.sales_team.update({
+      where: { id: teamId },
+      data: { group_id: groupId, updated_by: actorUserId, updated_at: new Date() },
+    });
+  }
+
+  /** Parse the legacy sales_team.members JSON into numeric ids, tolerating junk. */
+  private parseMemberIdList(members: string | null): number[] {
+    if (!members) return [];
+    try {
+      const parsed: unknown = JSON.parse(members);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map((m) => Number(m)).filter((n) => Number.isInteger(n) && n > 0);
+    } catch {
+      return [];
+    }
+  }
+
 }

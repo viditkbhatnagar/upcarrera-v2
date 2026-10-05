@@ -57,6 +57,22 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
+/**
+ * The subset of the `universities` row the Edit form writes back, carried
+ * verbatim: no trim, no `|| fallback`, no normalisation.
+ */
+type RawUniversity = {
+  title: string | null;
+  category: string | null;
+  website: string | null;
+  email: string | null;
+  phone: string | null;
+  country_id: string | null;
+  state: string | null;
+  address: string | null;
+  status: string | null;
+};
+
 type UniRow = {
   code: string;
   name: string;
@@ -75,6 +91,17 @@ type UniRow = {
   status: "Active" | "Inactive";
   initials: string;
   color: string;
+  /**
+   * ---- Raw server values, carried alongside the coerced display values ----
+   *
+   * Everything above is COERCED for rendering: a NULL title shows as
+   * `University #28`, a NULL/unknown category shows as "Private University",
+   * a missing field shows as "—". That is fine for a profile card; it is data
+   * loss the moment it is fed back into a PATCH. The Edit dialog therefore
+   * seeds itself from `raw`, never from the display fields, so that opening
+   * Edit and saving cannot stamp a derived default over a NULL column.
+   */
+  raw: RawUniversity;
 };
 
 const CATEGORY_STYLE: Record<string, string> = {
@@ -177,10 +204,22 @@ function mapType(): UniRow["type"] {
   return "Type 1 – Student Pays University";
 }
 
-// status is a numeric/string flag where 1 (or "1"/"Active") means active.
+/**
+ * Legacy `status` is CHAR(1): "1"/Active, "0"/Inactive.
+ *
+ * This used to collapse NULL to "Inactive" while the list page
+ * (universities.universities.tsx `deriveStatus`) collapsed it to "Active", so
+ * the same university read as Active in the table and Inactive on its own
+ * profile. They now agree on "Active", matching the list page: the legacy app
+ * treats a row as live unless it is explicitly switched off, and the list is
+ * the screen operators filter on. Either way this is DISPLAY ONLY — the Edit
+ * form seeds its Status select from `raw.status` via `columnToStatus`, which
+ * maps NULL to "" ("not set") and never to a guess.
+ */
 function mapStatus(status: number | string | null): UniRow["status"] {
-  const s = String(status ?? "").toLowerCase();
-  return s === "1" || s === "active" || s === "true" ? "Active" : "Inactive";
+  const s = String(status ?? "").toLowerCase().trim();
+  if (s === "0" || s === "inactive" || s === "false") return "Inactive";
+  return "Active";
 }
 
 function mapApiUniversity(u: ApiUniversity): UniRow {
@@ -210,6 +249,20 @@ function mapApiUniversity(u: ApiUniversity): UniRow {
     status: mapStatus(u.status),
     initials: deriveInitials(name),
     color: pickColor(name),
+    // Verbatim. This is what the Edit form seeds from and what the "did the
+    // user change it?" diff compares against. See the UniRow.raw comment.
+    raw: {
+      title: u.title ?? null,
+      category: u.category ?? null,
+      website: u.website ?? null,
+      email: u.email ?? null,
+      phone: u.phone ?? null,
+      country_id: u.country_id ?? null,
+      state: u.state ?? null,
+      address: u.address ?? null,
+      status:
+        u.status === null || u.status === undefined ? null : String(u.status),
+    },
   };
 }
 
@@ -374,6 +427,17 @@ function UniversityProfilePage() {
             status: "Inactive",
             initials: "U",
             color: AVATAR_COLORS[0],
+            raw: {
+              title: null,
+              category: null,
+              website: null,
+              email: null,
+              phone: null,
+              country_id: null,
+              state: null,
+              address: null,
+              status: null,
+            },
           },
     [apiUni, code],
   );
@@ -470,17 +534,25 @@ function UniversityProfilePage() {
     });
   };
 
+  // There is no fee-structure API yet (QA FS01/FS02): this screen reads course
+  // rows and renders them as fee structures, and nothing here can persist. These
+  // handlers used to claim success anyway. That went unnoticed only because
+  // <Toaster /> was never mounted, so no toast in the app rendered at all — now
+  // that it is mounted, a fabricated "Updated" would be shown to the operator.
+  // Tell the truth instead: the dialog closes, and the message says why nothing
+  // was saved.
+  const FEE_NOT_PERSISTED =
+    "Fee structures can't be saved yet — there is no fee-structure API. Nothing was changed.";
+
   const saveEditFee = () => {
-    // Semester rows have no write endpoint; the edit dialog stays local.
     setEditFee(null);
     setEditFeeDraft(null);
-    toast.success("Fee Structure Updated");
+    toast.error(FEE_NOT_PERSISTED);
   };
 
   const deleteFee = () => {
-    // No delete endpoint for semesters; close the dialog only.
     setViewFee(null);
-    toast.success("Fee Structure Deleted");
+    toast.error(FEE_NOT_PERSISTED);
   };
 
   const INTAKES = useMemo(
@@ -569,7 +641,7 @@ function UniversityProfilePage() {
       total: totalFee,
     });
     setFeeStatus(activate ? "Active" : "Draft");
-    toast.success("Fee Structure Created Successfully");
+    toast.error(FEE_NOT_PERSISTED);
   };
 
   // The Tag-Course dialog has no backing write endpoint (no university↔course
@@ -612,12 +684,16 @@ function UniversityProfilePage() {
     [profile],
   );
 
-  // Edit University -> PATCH /universities/:id.
+  // Edit University -> PATCH /universities/:id. The body is a PARTIAL: only
+  // the columns the operator actually changed are present (UpdateUniversityDto
+  // is a PartialType, so omitted columns are left alone server-side).
   const editMut = useMutation({
-    mutationFn: (body: Partial<ApiUniversity>) =>
+    mutationFn: (body: Partial<UniversityPayload>) =>
       apiPatch(`/universities/${code}`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["university", code] });
+      // The list page reads the same rows; keep it from showing stale values.
+      qc.invalidateQueries({ queryKey: ["universities"] });
       toast.success("University updated");
       setEditUniversityOpen(false);
     },
@@ -1152,27 +1228,19 @@ function UniversityProfilePage() {
         </TabsContent>
       </Tabs>
 
-      <EditUniversityDialog
-        open={editUniversityOpen}
-        university={profile}
-        saving={editMut.isPending}
-        onClose={() => setEditUniversityOpen(false)}
-        onSave={(form) => {
-          // Map the new design's form fields back onto the snake_case
-          // UpdateUniversityDto columns the API understands.
-          editMut.mutate({
-            title: form.name.trim(),
-            category: form.category.trim(),
-            website: form.website.trim(),
-            email: form.email.trim(),
-            phone: form.phone.trim(),
-            country_id: form.country.trim(),
-            state: form.state.trim(),
-            address: form.address.trim() || form.city.trim(),
-            status: form.status === "Active" ? "1" : "0",
-          });
-        }}
-      />
+      {editUniversityOpen && (
+        <EditUniversityDialog
+          // Mounted only while open and keyed by row id, so every open
+          // re-snapshots the raw seed values the diff compares against.
+          key={profile.code}
+          university={profile}
+          saving={editMut.isPending}
+          onClose={() => setEditUniversityOpen(false)}
+          // The body arrives already diffed against the seed — untouched
+          // columns are absent, so there is nothing here to re-derive.
+          onSave={(body) => editMut.mutate(body)}
+        />
+      )}
 
       {/* Tag Course Dialog */}
       <Dialog open={tagCourseOpen} onOpenChange={setTagCourseOpen}>
@@ -1299,14 +1367,19 @@ function UniversityProfilePage() {
 
           {feeSuccess ? (
             <div className="space-y-4 py-4">
-              <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                <CheckCircle2 className="h-6 w-6 text-emerald-600" />
+              {/* Not a success panel: nothing was written. There is no
+                  fee-structure API (QA FS01/FS02), so this is a preview of what
+                  WOULD be created. It used to claim "has been saved". */}
+              <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <AlertTriangle className="h-6 w-6 text-amber-600" />
                 <div>
-                  <div className="text-sm font-semibold text-emerald-800">
-                    Fee Structure Created Successfully
+                  <div className="text-sm font-semibold text-amber-900">
+                    Preview only — not saved
                   </div>
-                  <div className="text-xs text-emerald-700">
-                    The fee structure has been saved.
+                  <div className="text-xs text-amber-800">
+                    Fee structures cannot be stored yet: the fee-structure API
+                    does not exist. Nothing below has been written to the
+                    database.
                   </div>
                 </div>
               </div>
@@ -2041,120 +2114,234 @@ const CATEGORIES = [
   "International University",
 ];
 
+/* ---------------- University edit form: shape, seed, payload, diff ----------------
+ *
+ * Deliberately mirrors apps/web/src/routes/universities.universities.tsx
+ * (`seedUniversityForm` / `toUniversityPayload` / `diffUniversityPayload`) so
+ * the list page and this profile page cannot drift on what they write back.
+ *
+ * Only the columns `UpdateUniversityDto` actually accepts live in this shape.
+ * Fields rendered by the dialog but ABSENT here, because the schema has no
+ * column for them and so they must never reach a PATCH body:
+ *   - University Code -> derived from `id`, read-only
+ *   - University Type -> no payer-type column on `model university`
+ *   - City            -> no column; the legacy app folds it into `address`
+ */
+type UniversityForm = {
+  name: string;
+  category: string;
+  website: string;
+  email: string;
+  phone: string;
+  country: string;
+  state: string;
+  address: string;
+  status: string;
+};
+
+/** "Active"/"Inactive" -> the CHAR(1) column. Anything else passes through. */
+function statusToColumn(status: string): string {
+  if (status === "Active") return "1";
+  if (status === "Inactive") return "0";
+  return status.trim();
+}
+
+/** Inverse of `statusToColumn`, for seeding the form from the stored value. */
+function columnToStatus(raw: string | null): string {
+  const v = (raw ?? "").trim();
+  if (v === "") return ""; // NULL / empty — "not set", NOT a guess either way
+  if (v === "1") return "Active";
+  if (v === "0") return "Inactive";
+  return v; // unrecognised: surfaced verbatim as an extra Select option
+}
+
+/** Map the form onto the snake_case columns UpdateUniversityDto accepts. */
+function toUniversityPayload(form: UniversityForm) {
+  return {
+    title: form.name.trim(),
+    category: form.category.trim(),
+    website: form.website.trim(),
+    email: form.email.trim(),
+    phone: form.phone.trim(),
+    // Legacy free-form Text column — the list page writes it the same way.
+    country_id: form.country.trim(),
+    state: form.state.trim(),
+    // `address` is written from the Address field alone. It used to fall back
+    // to the City field, but `UniRow.city` is itself DERIVED from `address`,
+    // so that path wrote a column back from its own display derivative.
+    address: form.address.trim(),
+    status: statusToColumn(form.status),
+  };
+}
+
+type UniversityPayload = ReturnType<typeof toUniversityPayload>;
+
+/**
+ * Seed the Edit form from the RAW server row — never from the display row.
+ *
+ * `UniRow.name`/`.category`/`.status`/`.country`/`.city`/`.address` are all
+ * coercions (`University #28`, "Private University", "Active", "—"). Seeding
+ * from them and PATCHing back is exactly what rewrites master data, so none of
+ * them are read here.
+ */
+function seedUniversityForm(raw: RawUniversity): UniversityForm {
+  return {
+    name: raw.title ?? "",
+    category: raw.category ?? "",
+    website: raw.website ?? "",
+    email: raw.email ?? "",
+    phone: raw.phone ?? "",
+    country: raw.country_id ?? "",
+    state: raw.state ?? "",
+    address: raw.address ?? "",
+    status: columnToStatus(raw.status),
+  };
+}
+
+/** The form fields the operator actually edited, compared trim-insensitively. */
+function changedFields(
+  seeded: UniversityForm,
+  current: UniversityForm,
+): (keyof UniversityForm)[] {
+  return (Object.keys(current) as (keyof UniversityForm)[]).filter(
+    (k) => current[k].trim() !== seeded[k].trim(),
+  );
+}
+
+/**
+ * Build the PATCH body by diffing the submitted form against the values it was
+ * seeded with, omitting every untouched column.
+ *
+ * This is the real safety net, independent of the seeding: a column the
+ * operator never touched is simply not in the request, so the server cannot
+ * overwrite it — not with a derived default, not with a trimmed variant, not
+ * with anything. Keys are omitted entirely; no `undefined` is sent.
+ */
+function diffUniversityPayload(
+  seeded: UniversityForm,
+  current: UniversityForm,
+): Partial<UniversityPayload> {
+  const before = toUniversityPayload(seeded) as Record<string, string>;
+  const after = toUniversityPayload(current) as Record<string, string>;
+  const body: Record<string, string> = {};
+  for (const column of Object.keys(after)) {
+    if (after[column] !== before[column]) body[column] = after[column];
+  }
+  return body as Partial<UniversityPayload>;
+}
+
+/**
+ * A stored value that is not one of the known options has to be offered as an
+ * extra option, otherwise the Select renders its placeholder and the operator
+ * cannot tell a real stored value from an empty column.
+ *
+ * The comparison is exact, not trimmed: a padded `"Private University "` is
+ * not byte-equal to any SelectItem, so it gets its own option rather than
+ * silently rendering as "nothing selected".
+ */
+function extraSelectOptions(
+  value: string,
+  known: readonly string[],
+): string[] {
+  if (!value.trim() || known.includes(value)) return [];
+  return [value];
+}
+
+const STATUS_OPTIONS = ["Active", "Inactive"] as const;
+
+function validateUniversityForm(form: UniversityForm): Record<string, string> {
+  const next: Record<string, string> = {};
+  if (!form.name.trim()) next.name = "University name is required";
+  if (!form.category.trim()) next.category = "University category is required";
+  if (!form.country.trim()) next.country = "Country is required";
+  if (!form.state.trim()) next.state = "State is required";
+  if (form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))
+    next.email = "Invalid email address";
+  if (
+    form.website.trim() &&
+    !/^(https?:\/\/)?[^\s$.?#].[^\s]*$/i.test(form.website.trim())
+  )
+    next.website = "Invalid website URL";
+  return next;
+}
+
 function EditUniversityDialog({
-  open,
   university,
   saving,
   onClose,
   onSave,
 }: {
-  open: boolean;
   university: UniRow;
   saving?: boolean;
   onClose: () => void;
-  onSave: (updated: UniRow) => void;
+  /** Receives an already-diffed PARTIAL body: untouched columns are absent. */
+  onSave: (body: Partial<UniversityPayload>) => void;
 }) {
-  const [form, setForm] = useState({
-    code: university.code,
-    name: university.name,
-    type: university.type,
-    category: university.category,
-    website: university.website === "—" ? "" : university.website,
-    email: university.email === "—" ? "" : university.email,
-    phone: university.phone === "—" ? "" : university.phone,
-    country: university.country === "—" ? "" : university.country,
-    state: university.state === "—" ? "" : university.state,
-    city: university.city === "—" ? "" : university.city,
-    address: university.address === "—" ? "" : university.address,
-    status: university.status,
-  });
-
+  /*
+   * Captured ONCE when the dialog mounts, from the raw server row. The lazy
+   * `useState` initialiser keeps the snapshot stable for the lifetime of the
+   * dialog (a background refetch cannot move it underneath the operator), so
+   * the diff below always compares against what the form was opened with. The
+   * call site mounts this only while open and keys it by row id, so every open
+   * re-snapshots.
+   */
+  const [seeded] = useState<UniversityForm>(() =>
+    seedUniversityForm(university.raw),
+  );
+  const [form, setForm] = useState<UniversityForm>(seeded);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Re-seed the form whenever the dialog is (re)opened for this university.
-  const [seededKey, setSeededKey] = useState<string | null>(null);
-  if (open && seededKey !== university.code) {
-    setSeededKey(university.code);
-    setForm({
-      code: university.code,
-      name: university.name,
-      type: university.type,
-      category: university.category,
-      website: university.website === "—" ? "" : university.website,
-      email: university.email === "—" ? "" : university.email,
-      phone: university.phone === "—" ? "" : university.phone,
-      country: university.country === "—" ? "" : university.country,
-      state: university.state === "—" ? "" : university.state,
-      city: university.city === "—" ? "" : university.city,
-      address: university.address === "—" ? "" : university.address,
-      status: university.status,
-    });
-    setErrors({});
-  }
-  if (!open && seededKey !== null) {
-    setSeededKey(null);
-  }
+  /*
+   * University Type has no column on `model university`; it is a display-only
+   * control and is kept out of `form` so it can never reach a PATCH body.
+   */
+  const [type, setType] = useState<UniRow["type"]>(university.type);
 
-  const update = (field: keyof typeof form, value: string) => {
+  // Stored values outside the standard option sets, surfaced as extra options
+  // so the operator sees what is really in the column instead of a blank.
+  const extraCategories = extraSelectOptions(seeded.category, CATEGORIES);
+  const extraStatuses = extraSelectOptions(seeded.status, STATUS_OPTIONS);
+
+  const update = <K extends keyof UniversityForm>(
+    field: K,
+    value: UniversityForm[K],
+  ) => {
     setForm((prev) => ({ ...prev, [field]: value }));
-    if (errors[field]) {
-      setErrors((prev) => {
-        const next = { ...prev };
-        delete next[field];
-        return next;
-      });
-    }
-  };
-
-  const validate = () => {
-    const next: Record<string, string> = {};
-    if (!form.name.trim()) next.name = "University name is required";
-    if (!form.code.trim()) next.code = "University code is required";
-    if (!form.type) next.type = "University type is required";
-    if (!form.category) next.category = "University category is required";
-    if (!form.country.trim()) next.country = "Country is required";
-    if (!form.state.trim()) next.state = "State is required";
-    if (!form.city.trim()) next.city = "City is required";
-    if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
-      next.email = "Invalid email address";
-    if (form.website && !/^(https?:\/\/)?[^\s$.?#].[^\s]*$/i.test(form.website))
-      next.website = "Invalid website URL";
-    setErrors(next);
-    return Object.keys(next).length === 0;
+    setErrors((prev) => {
+      if (!prev[field as string]) return prev;
+      const next = { ...prev };
+      delete next[field as string];
+      return next;
+    });
   };
 
   const save = () => {
-    if (!validate()) return;
+    const touched = changedFields(seeded, form);
 
-    const initials =
-      form.name
-        .split(/\s+/)
-        .filter(
-          (word) => word && !/^(University|College|Institute|of|the|and|&)$/i.test(word),
-        )
-        .map((word) => word[0]?.toUpperCase())
-        .slice(0, 2)
-        .join("") || university.initials;
+    // Nothing was edited: send nothing. A no-op PATCH is exactly how derived
+    // defaults used to get written over real NULLs.
+    if (touched.length === 0) {
+      toast.info("No changes to save");
+      onClose();
+      return;
+    }
 
-    const location = `${form.city.trim()}, ${form.state.trim()}`;
+    /*
+     * Validate only what the operator touched. The required-field rules exist
+     * to stop them SUBMITTING a blank, not to force them to invent a value for
+     * a column that is NULL today, that they are not editing, and that the
+     * PATCH will not include anyway.
+     */
+    const all = validateUniversityForm(form);
+    const next = Object.fromEntries(
+      Object.entries(all).filter(([field]) =>
+        touched.includes(field as keyof UniversityForm),
+      ),
+    );
+    setErrors(next);
+    if (Object.keys(next).length > 0) return;
 
-    onSave({
-      ...university,
-      code: form.code.trim() || university.code,
-      name: form.name.trim() || university.name,
-      type: form.type as UniRow["type"],
-      category: form.category,
-      website: form.website.trim(),
-      email: form.email.trim(),
-      phone: form.phone.trim(),
-      country: form.country.trim(),
-      state: form.state.trim(),
-      city: form.city.trim(),
-      address: form.address.trim(),
-      location,
-      status: form.status as UniRow["status"],
-      initials,
-    });
+    onSave(diffUniversityPayload(seeded, form));
   };
 
   const SectionTitle = ({ children }: { children: React.ReactNode }) => (
@@ -2168,15 +2355,18 @@ function EditUniversityDialog({
 
   return (
     <Dialog
-      open={open}
+      open
       onOpenChange={(nextOpen) => {
-        if (!nextOpen) onClose();
+        if (!nextOpen && !saving) onClose();
       }}
     >
       <DialogContent className="max-w-3xl p-0 overflow-hidden max-h-[85vh]">
         <DialogHeader className="px-6 pt-6 pb-0">
           <DialogTitle className="text-xl font-semibold">Edit University</DialogTitle>
-          <DialogDescription>Update this university profile.</DialogDescription>
+          <DialogDescription>
+            Update this university profile. Only the fields you edit are saved —
+            everything you leave alone is left exactly as stored.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
@@ -2195,33 +2385,35 @@ function EditUniversityDialog({
                 className={cn(errors.name && "border-red-400 focus-visible:ring-red-300")}
               />
               {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+              {!form.name.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  No name is stored for this university — the heading above
+                  shows “{university.name}”, which is derived from the record
+                  id, not something the database holds.
+                </p>
+              )}
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="profile-edit-uni-code">
-                University Code <span className="text-accent">*</span>
-              </Label>
+              <Label htmlFor="profile-edit-uni-code">University Code</Label>
               <Input
                 id="profile-edit-uni-code"
-                className={cn(
-                  "font-mono",
-                  errors.code && "border-red-400 focus-visible:ring-red-300",
-                )}
-                value={form.code}
-                onChange={(e) => update("code", e.target.value)}
+                className="font-mono"
+                value={university.code}
                 readOnly
               />
-              {errors.code && <p className="text-xs text-red-500">{errors.code}</p>}
+              <p className="text-xs text-muted-foreground">
+                Derived from the record id — not a stored column.
+              </p>
             </div>
 
             <div className="space-y-1.5">
-              <Label>
-                University Type <span className="text-accent">*</span>
-              </Label>
-              <Select value={form.type} onValueChange={(v) => update("type", v)}>
-                <SelectTrigger
-                  className={cn(errors.type && "border-red-400 focus:ring-red-300")}
-                >
+              <Label>University Type</Label>
+              <Select
+                value={type}
+                onValueChange={(v) => setType(v as UniRow["type"])}
+              >
+                <SelectTrigger>
                   <SelectValue placeholder="Select type" />
                 </SelectTrigger>
                 <SelectContent>
@@ -2233,7 +2425,9 @@ function EditUniversityDialog({
                   </SelectItem>
                 </SelectContent>
               </Select>
-              {errors.type && <p className="text-xs text-red-500">{errors.type}</p>}
+              <p className="text-xs text-muted-foreground">
+                Display only — there is no payer-type column to save this to.
+              </p>
             </div>
 
             <div className="space-y-1.5">
@@ -2252,10 +2446,28 @@ function EditUniversityDialog({
                       {c}
                     </SelectItem>
                   ))}
+                  {extraCategories.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               {errors.category && (
                 <p className="text-xs text-red-500">{errors.category}</p>
+              )}
+              {extraCategories.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  “{extraCategories[0]}” is the value currently stored for this
+                  university. It is not one of the standard categories — it is
+                  kept as-is unless you pick a different one.
+                </p>
+              )}
+              {!form.category.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  No category is stored for this university. The badge on the
+                  profile shows a default, not a stored value.
+                </p>
               )}
             </div>
 
@@ -2263,13 +2475,35 @@ function EditUniversityDialog({
               <Label>Status</Label>
               <Select value={form.status} onValueChange={(v) => update("status", v)}>
                 <SelectTrigger>
-                  <SelectValue />
+                  {/* The placeholder is what a NULL `status` looks like. It
+                      used to render as a definite Active/Inactive — a claim
+                      the database never made. */}
+                  <SelectValue placeholder="Not set" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Active">Active</SelectItem>
-                  <SelectItem value="Inactive">Inactive</SelectItem>
+                  {STATUS_OPTIONS.map((o) => (
+                    <SelectItem key={o} value={o}>
+                      {o}
+                    </SelectItem>
+                  ))}
+                  {extraStatuses.map((o) => (
+                    <SelectItem key={o} value={o}>
+                      {o}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+              {extraStatuses.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  “{extraStatuses[0]}” is the value currently stored. It is kept
+                  as-is unless you pick a different one.
+                </p>
+              )}
+              {!form.status.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  No status is stored for this university.
+                </p>
+              )}
             </div>
           </div>
 
@@ -2332,7 +2566,7 @@ function EditUniversityDialog({
           </div>
 
           {/* Location */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-4">
             <SectionTitle>Location</SectionTitle>
 
             <div className="space-y-1.5">
@@ -2365,29 +2599,21 @@ function EditUniversityDialog({
               {errors.state && <p className="text-xs text-red-500">{errors.state}</p>}
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="profile-edit-uni-city">
-                City <span className="text-accent">*</span>
-              </Label>
-              <Input
-                id="profile-edit-uni-city"
-                placeholder="Noida"
-                value={form.city}
-                onChange={(e) => update("city", e.target.value)}
-                className={cn(errors.city && "border-red-400 focus-visible:ring-red-300")}
-              />
-              {errors.city && <p className="text-xs text-red-500">{errors.city}</p>}
-            </div>
-
-            <div className="space-y-1.5 sm:col-span-3">
+            <div className="space-y-1.5 sm:col-span-2">
               <Label htmlFor="profile-edit-uni-address">Full Address</Label>
               <Textarea
                 id="profile-edit-uni-address"
-                placeholder="Enter complete postal address"
+                placeholder="Enter complete postal address, including city"
                 rows={3}
                 value={form.address}
                 onChange={(e) => update("address", e.target.value)}
               />
+              {/* The City input that used to sit here was removed: the schema
+                  has no City column, the profile's City row is derived FROM
+                  `address`, and the old save wrote `address` back from it. */}
+              <p className="text-xs text-muted-foreground">
+                The schema has no separate City column — include the city here.
+              </p>
             </div>
           </div>
         </div>

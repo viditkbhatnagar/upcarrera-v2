@@ -237,7 +237,7 @@ export class SalesService {
     ]);
 
     return {
-      items: items.map((t) => this.withParsedMembers(t)),
+      items: await this.decorateTeams(items),
       total,
       page: pg.page,
       limit: pg.limit,
@@ -251,7 +251,8 @@ export class SalesService {
     if (!team) {
       throw new NotFoundException('Sales Team not found!');
     }
-    return this.withParsedMembers(team);
+    const [decorated] = await this.decorateTeams([team]);
+    return decorated;
   }
 
   /** Port of Sales::add — members[] is stored as a JSON string. */
@@ -495,6 +496,64 @@ export class SalesService {
   /** Return a team row with `members` replaced by the parsed array. */
   private withParsedMembers<T extends { members: string | null }>(team: T) {
     return { ...team, members: this.safeParseMembers(team.members) };
+  }
+
+  /**
+   * Resolve the user ids a team carries into display names.
+   *
+   * `sales_team.leader` is a VarChar holding a users.id, and `members` is a JSON
+   * array of users.id — so both render as bare numbers ("30", "31") unless they
+   * are joined. There is no FK to lean on (the schema is an introspection of the
+   * legacy database and declares no relations), so the join is done here.
+   *
+   * Every id across every team is resolved in ONE query. The per-row lookup in
+   * `insights()` is an N+1 and should not be copied.
+   *
+   * Adds `leader_name` and `members_details` without altering `leader` or
+   * `members`, so existing callers are unaffected.
+   */
+  private async decorateTeams<
+    T extends { leader: string | null; members: string | null },
+  >(teams: T[]) {
+    const memberIdsByTeam = teams.map((t) => this.parseMemberIds(t.members));
+    const leaderIds = teams
+      .map((t) => Number(t.leader))
+      .filter((n) => Number.isInteger(n) && n > 0);
+
+    const allIds = [...new Set([...leaderIds, ...memberIdsByTeam.flat()])];
+
+    const users = allIds.length
+      ? await this.prisma.users.findMany({
+          where: { id: { in: allIds }, deleted_at: null },
+          select: { id: true, name: true, email: true, phone: true },
+        })
+      : [];
+    const byId = new Map(users.map((u) => [u.id, u]));
+
+    return teams.map((team, i) => {
+      const memberIds = memberIdsByTeam[i];
+      const leaderId = Number(team.leader);
+      const leader = Number.isInteger(leaderId) ? byId.get(leaderId) : undefined;
+
+      return {
+        ...team,
+        members: memberIds,
+        // Null rather than the raw id when the user is missing or soft-deleted —
+        // the caller can then fall back deliberately instead of printing "30".
+        leader_name: leader?.name ?? null,
+        members_details: memberIds.map((id) => {
+          const u = byId.get(id);
+          return {
+            id,
+            name: u?.name ?? null,
+            email: u?.email ?? null,
+            phone: u?.phone ?? null,
+          };
+        }),
+        // Counted from the resolved ids, so it cannot disagree with the roster.
+        members_count: memberIds.length,
+      };
+    });
   }
 
   /**

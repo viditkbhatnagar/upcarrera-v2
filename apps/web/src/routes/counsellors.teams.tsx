@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { toast } from "sonner";
 import {
   Download,
   Plus,
@@ -37,10 +38,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  GROUPS,
-  TEAM_LEADERS,
-} from "@/lib/counsellors-data";
 
 export const Route = createFileRoute("/counsellors/teams")({
   head: () => ({ meta: [{ title: "Teams — upCarrera" }] }),
@@ -92,8 +89,7 @@ interface SalesTeamsResponse {
 interface ApiConsultant {
   id: number;
   name?: string | null;
-  code?: number | null;
-  highest_qualification?: string | null;
+  email?: string | null;
 }
 
 interface ConsultantsResponse {
@@ -128,13 +124,38 @@ function mapApiTeam(t: ApiSalesTeam): TeamRow {
   };
 }
 
-/** Map a live consultant into the {empId,name,designation} the picker reads. */
+/**
+ * Map a live consultant into the {id, empId, name, email} the pickers read.
+ *
+ * `id` is the real users.id: sales_team.members is a JSON array of numeric user
+ * ids (SalesService.parseMemberIds coerces them back with Number()), and
+ * sales_team.leader is a VarChar(10) holding one such id — so both pickers must
+ * carry the id, not a display string.
+ *
+ * There is deliberately NO `designation`: `users` has no designation column.
+ * The old picker showed users.highest_qualification ("Degree", "MA", "UG") in
+ * that slot, which reads as a job title and is not one. The email is a real
+ * field, so the secondary line shows that instead.
+ */
 function mapApiCounsellorOption(c: ApiConsultant) {
   return {
-    empId: c.code != null ? `UC-${c.code}` : `UC-${c.id}`,
+    id: c.id,
+    // See counsellors.counsellors.tsx: users.code is the phone dial code, so
+    // deriving the display id from it labelled every counsellor "UC-91".
+    empId: `UC-${c.id}`,
     name: c.name && c.name.trim() !== "" ? c.name : EMPTY,
-    designation: asText(c.highest_qualification),
+    email: asText(c.email),
   };
+}
+
+type CounsellorOption = ReturnType<typeof mapApiCounsellorOption>;
+
+/** Request body for POST /sales-teams (CreateSalesTeamDto). */
+interface CreateTeamBody {
+  name: string;
+  leader?: string;
+  members: number[];
+  status: number;
 }
 
 type StatusFilter = TeamStatus | "All";
@@ -160,7 +181,6 @@ function TeamsPage() {
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
   const [search, setSearch] = useState("");
-  const [groupFilter, setGroupFilter] = useState("All");
   const [page, setPage] = useState(1);
   const [openCreate, setOpenCreate] = useState(false);
   const PAGE_SIZE = 10;
@@ -168,7 +188,6 @@ function TeamsPage() {
   const filtered = useMemo(() => {
     return ALL_TEAMS.filter((t) => {
       if (statusFilter !== "All" && t.status !== statusFilter) return false;
-      if (groupFilter !== "All" && t.group !== groupFilter) return false;
       if (search) {
         const s = search.toLowerCase();
         if (
@@ -180,7 +199,7 @@ function TeamsPage() {
       }
       return true;
     });
-  }, [ALL_TEAMS, statusFilter, search, groupFilter]);
+  }, [ALL_TEAMS, statusFilter, search]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -199,7 +218,6 @@ function TeamsPage() {
   const resetFilters = () => {
     setStatusFilter("All");
     setSearch("");
-    setGroupFilter("All");
     setPage(1);
   };
 
@@ -274,7 +292,9 @@ function TeamsPage() {
 
       {/* Filters */}
       <div className="rounded-2xl border border-border bg-surface p-4 shadow-card">
-        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+        {/* No Group filter: sales_team has no group column (every row's group is
+            "—"), so filtering by one could only ever return zero teams. */}
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -284,18 +304,6 @@ function TeamsPage() {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <Select value={groupFilter} onValueChange={setGroupFilter}>
-            <SelectTrigger className="h-9 text-sm">
-              <SelectValue placeholder="Group" />
-            </SelectTrigger>
-            <SelectContent>
-              {["All", ...GROUPS].map((g) => (
-                <SelectItem key={g} value={g}>
-                  {g === "All" ? "All Groups" : g}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
           <Select
             value={statusFilter}
             onValueChange={(v) => setStatusFilter(v as StatusFilter)}
@@ -552,42 +560,81 @@ function CreateTeamDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
-  const { data: teamsData } = useQuery({
-    queryKey: ["sales-teams", "list"],
-    queryFn: () => apiGet<SalesTeamsResponse>("/sales-teams", { limit: 1000 }),
-  });
-  const { data: consultantsData } = useQuery({
+  const qc = useQueryClient();
+  const { data: consultantsData, isLoading: consultantsLoading } = useQuery({
     queryKey: ["consultants", "list"],
     queryFn: () => apiGet<ConsultantsResponse>("/consultants", { limit: 1000 }),
   });
 
-  const teamCount = teamsData?.total ?? 0;
-  const allCounsellors = useMemo(
+  const allCounsellors = useMemo<CounsellorOption[]>(
     () => (consultantsData?.items ?? []).map(mapApiCounsellorOption),
     [consultantsData],
   );
 
-  const autoCode = useMemo(
-    () => `TM-${String(2000 + teamCount + 1).padStart(4, "0")}`,
-    [teamCount],
-  );
-  const [members, setMembers] = useState<string[]>([]);
+  const [name, setName] = useState("");
+  // `leader` holds the users.id as a string: sales_team.leader is a VarChar(10)
+  // id column, not a display name (CreateSalesTeamDto enforces @MaxLength(10)).
+  const [leader, setLeader] = useState("");
+  const [status, setStatus] = useState<TeamStatus>("Active");
+  // Numeric users.id values — what SalesService.parseMemberIds expects back.
+  const [members, setMembers] = useState<number[]>([]);
   const [memberSearch, setMemberSearch] = useState("");
+
+  // Start every open from a clean slate so a cancelled draft never leaks into
+  // the next team.
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setLeader("");
+    setStatus("Active");
+    setMembers([]);
+    setMemberSearch("");
+  }, [open]);
 
   const filteredMembers = useMemo(() => {
     const s = memberSearch.toLowerCase();
-    return allCounsellors.filter(
-      (c) =>
-        !s ||
-        c.name.toLowerCase().includes(s) ||
-        c.empId.toLowerCase().includes(s),
-    ).slice(0, 30);
+    return allCounsellors
+      .filter(
+        (c) =>
+          !s ||
+          c.name.toLowerCase().includes(s) ||
+          c.empId.toLowerCase().includes(s) ||
+          c.email.toLowerCase().includes(s),
+      )
+      .slice(0, 30);
   }, [allCounsellors, memberSearch]);
 
-  const toggle = (id: string) =>
+  const toggle = (id: number) =>
     setMembers((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
+
+  // POST /sales-teams. The list query is the single source of truth — it is
+  // invalidated on success and the new row arrives from the server. Nothing is
+  // appended locally, and the toast only fires once the API has confirmed.
+  const createMut = useMutation({
+    mutationFn: (body: CreateTeamBody) => apiPost("/sales-teams", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-teams"] });
+      toast.success("Team created");
+      onOpenChange(false);
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
+
+  const trimmedName = name.trim();
+  const canSubmit = trimmedName !== "" && !createMut.isPending;
+
+  const submit = () => {
+    if (!canSubmit) return;
+    createMut.mutate({
+      name: trimmedName,
+      ...(leader ? { leader } : {}),
+      members,
+      status: status === "Active" ? 1 : 0,
+    });
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -599,38 +646,34 @@ function CreateTeamDialog({
           </p>
         </DialogHeader>
 
+        {/* "Team Code" and "Parent Group" were removed: sales_team has no column
+            for either, so both could only ever be dropped silently on save. */}
         <div className="space-y-5 py-2">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Team Name">
-              <Input placeholder="e.g. Team Phoenix" />
-            </Field>
-            <Field label="Team Code">
-              <Input value={autoCode} readOnly className="bg-muted/40 font-mono" />
+              <Input
+                placeholder="e.g. Team Phoenix"
+                value={name}
+                maxLength={160}
+                onChange={(e) => setName(e.target.value)}
+              />
             </Field>
 
             <Field label="Team Leader">
-              <Select>
+              <Select value={leader} onValueChange={setLeader}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Pick from counsellors" />
+                  <SelectValue
+                    placeholder={
+                      consultantsLoading
+                        ? "Loading counsellors…"
+                        : "Pick from counsellors"
+                    }
+                  />
                 </SelectTrigger>
                 <SelectContent>
-                  {TEAM_LEADERS.map((l) => (
-                    <SelectItem key={l} value={l}>
-                      {l}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label="Parent Group">
-              <Select>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select group" />
-                </SelectTrigger>
-                <SelectContent>
-                  {GROUPS.map((g) => (
-                    <SelectItem key={g} value={g}>
-                      {g}
+                  {allCounsellors.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      {c.name} · {c.empId}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -638,7 +681,10 @@ function CreateTeamDialog({
             </Field>
 
             <Field label="Status">
-              <Select defaultValue="Active">
+              <Select
+                value={status}
+                onValueChange={(v) => setStatus(v as TeamStatus)}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select status" />
                 </SelectTrigger>
@@ -670,13 +716,20 @@ function CreateTeamDialog({
               />
             </div>
             <div className="max-h-60 overflow-y-auto rounded-xl border border-border bg-background/40 scrollbar-thin">
+              {filteredMembers.length === 0 && (
+                <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+                  {consultantsLoading
+                    ? "Loading counsellors…"
+                    : "No counsellors match this search."}
+                </div>
+              )}
               {filteredMembers.map((c) => {
-                const checked = members.includes(c.empId);
+                const checked = members.includes(c.id);
                 return (
                   <button
-                    key={c.empId}
+                    key={c.id}
                     type="button"
-                    onClick={() => toggle(c.empId)}
+                    onClick={() => toggle(c.id)}
                     className={cn(
                       "flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-left text-sm last:border-0 hover:bg-muted/50",
                       checked && "bg-primary/5",
@@ -692,8 +745,11 @@ function CreateTeamDialog({
                       </div>
                       <div>
                         <div className="text-sm font-medium text-foreground">{c.name}</div>
+                        {/* `users` has no designation column — the old picker
+                            showed highest_qualification here, which reads as a
+                            job title. The email is real, so show that. */}
                         <div className="text-xs text-muted-foreground">
-                          {c.empId} · {c.designation}
+                          {c.empId} · {c.email}
                         </div>
                       </div>
                     </div>
@@ -714,19 +770,35 @@ function CreateTeamDialog({
           </div>
         </div>
 
+        {createMut.isError && (
+          <p className="text-sm text-rose-600">
+            {createMut.error instanceof ApiError
+              ? createMut.error.message
+              : "Couldn’t create the team. Please try again."}
+          </p>
+        )}
+
         <DialogFooter className="gap-2">
           <button
+            type="button"
             onClick={() => onOpenChange(false)}
-            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+            disabled={createMut.isPending}
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted disabled:opacity-50"
           >
             Cancel
           </button>
           <button
-            onClick={() => onOpenChange(false)}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover"
+            type="button"
+            onClick={submit}
+            disabled={!canSubmit}
+            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Plus className="h-4 w-4" />
-            Create Team
+            {createMut.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}
+            {createMut.isPending ? "Creating…" : "Create Team"}
           </button>
         </DialogFooter>
       </DialogContent>

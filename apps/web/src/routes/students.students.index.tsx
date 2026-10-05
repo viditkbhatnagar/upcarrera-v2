@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
   Download,
   Search,
@@ -171,17 +172,33 @@ function StudentsPage() {
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
 
-  // Live students list. The API supports server-side page/limit + admission_status.
-  // The remaining text filters (name / id / phone) refine the fetched page
-  // client-side over the real decorated values.
+  // The text filters are answered by the server so they reach every student, not
+  // just the twelve rows on screen — searching page 1 for a student on page 2 used
+  // to return nothing (QA ST02). GET /students?search= matches name, email, phone
+  // and the printed STU-<id>, so one term serves all three boxes; the most
+  // specific one wins, and it ANDs with the status filter server-side.
+  const serverSearch = stuId.trim() || phone.trim() || search.trim();
+  const debouncedSearch = useDebouncedValue(serverSearch);
+
+  // A narrowed result set has its own page 1.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch]);
+
   const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: ["students", "list", { page, limit: PAGE_SIZE, statusFilter }],
+    queryKey: [
+      "students",
+      "list",
+      { page, limit: PAGE_SIZE, statusFilter, search: debouncedSearch },
+    ],
     queryFn: () =>
       apiGet<StudentsListResponse>("/students", {
         page,
         limit: PAGE_SIZE,
         admission_status: statusFilter === "All" ? undefined : STATUS_TO_CODE[statusFilter],
+        ...(debouncedSearch ? { search: debouncedSearch } : {}),
       }),
+    placeholderData: (prev) => prev,
   });
 
   const apiTotal = data?.total ?? 0;
@@ -322,7 +339,7 @@ function StudentsPage() {
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <CalendarDays className="h-3.5 w-3.5" />
-            Status filter runs server-side · name / ID / phone refine the page
+            Status, name, ID and phone all filter server-side across every student
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button

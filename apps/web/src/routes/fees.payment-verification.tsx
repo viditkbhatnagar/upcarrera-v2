@@ -285,7 +285,7 @@ function PaymentVerification() {
       ...prev,
       [id]: { status: "Verified", verifiedBy: EMPTY, verificationDate: today },
     }));
-    toast.success(`Payment ${verifyOpen.receiptNo} verified (local view only).`);
+    toast.warning(`Payment ${verifyOpen.receiptNo} marked verified in this view only — there is no fee-verification endpoint, so nothing was saved.`);
     setVerifyOpen(null);
   };
 
@@ -300,7 +300,7 @@ function PaymentVerification() {
       ...prev,
       [id]: { status: "Rejected", rejectionReason: rejection.reason, remarks: rejection.remarks },
     }));
-    toast.success(`Payment ${rejectOpen.receiptNo} rejected (local view only).`);
+    toast.warning(`Payment ${rejectOpen.receiptNo} marked rejected in this view only — there is no fee-verification endpoint, so nothing was saved.`);
     setRejectOpen(null);
     setRejection({ reason: "", remarks: "" });
   };
@@ -314,7 +314,7 @@ function PaymentVerification() {
     a.download = `${p.receiptNo}.pdf`;
     a.click();
     URL.revokeObjectURL(url);
-    toast.success("Receipt downloaded");
+    toast.error("Receipt download is not available yet — nothing was saved.");
   };
 
   return (
@@ -800,7 +800,7 @@ function PaymentVerification() {
             </Button>
             <Button
               onClick={() => {
-                toast.success("Export started. File will download shortly.");
+                toast.error("Export is not available yet — nothing was saved.");
                 setExportOpen(false);
               }}
             >

@@ -45,7 +45,10 @@ const items: NavItem[] = [
     to: "/students",
     label: "Student Management",
     icon: GraduationCap,
-    badge: "248",
+    // Badge removed: it was hard-coded to "248" against 844 applications and
+    // 1,541 students (QA AP11). A raw total is noise on a nav item anyway — the
+    // badge worth having is "items awaiting your action", which needs the Phase 1
+    // stage engine to exist first.
     children: [
       { to: "/students/applications", label: "Applications", icon: FileText },
       { to: "/students/students", label: "Students", icon: Users },
@@ -86,7 +89,9 @@ const items: NavItem[] = [
     ],
   },
   { to: "/commissions", label: "Commission Management", icon: TrendingUp },
-  { to: "/support", label: "Student Support", icon: Headphones, badge: "12" },
+  // Badge removed for the same reason as Student Management above: "12" was a
+  // hard-coded prototype value, not a live count.
+  { to: "/support", label: "Student Support", icon: Headphones },
   { to: "/calls", label: "Call History", icon: PhoneCall },
   {
     to: "/counsellors",

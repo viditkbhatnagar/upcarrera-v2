@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import {
   Plus,
   Download,
@@ -180,6 +181,8 @@ interface ApplicationsListResponse {
   total: number;
   page: number;
   limit: number;
+  /** Stage totals across the whole filtered set, computed server-side. */
+  counts?: Partial<Record<AppStatus, number>>;
 }
 
 function asText(value: string | null | undefined): string {
@@ -264,12 +267,29 @@ function ApplicationsPage() {
   const [leadOpen, setLeadOpen] = useState(false);
   const PAGE_SIZE = 10;
 
-  // Live applications list. The API paginates server-side (page/limit). The page's
-  // text + dropdown filters refine the fetched page client-side over real values.
+  // The three free-text filters are answered by the server so they reach every
+  // application, not just the ten rows on screen — searching page 1 for a record
+  // on page 2 used to return nothing (QA AP07). GET /applications?search= matches
+  // name, email, phone, the custom/enrolment id and the numeric application id,
+  // so one term covers all three boxes; the most specific one wins.
+  const serverSearch = appId.trim() || phone.trim() || search.trim();
+  const debouncedSearch = useDebouncedValue(serverSearch);
+
+  // A narrowed result set has its own page 1 — otherwise searching while on page 4
+  // asks the server for page 4 of two results and shows an empty table.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch]);
+
   const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: ["applications", "list", { page, limit: PAGE_SIZE }],
+    queryKey: ["applications", "list", { page, limit: PAGE_SIZE, search: debouncedSearch }],
     queryFn: () =>
-      apiGet<ApplicationsListResponse>("/applications", { page, limit: PAGE_SIZE }),
+      apiGet<ApplicationsListResponse>("/applications", {
+        page,
+        limit: PAGE_SIZE,
+        ...(debouncedSearch ? { search: debouncedSearch } : {}),
+      }),
+    placeholderData: (prev) => prev,
   });
 
   const apiTotal = data?.total ?? 0;
@@ -296,6 +316,9 @@ function ApplicationsPage() {
   const currentPage = Math.min(page, totalPages);
   const pageRows = filtered;
 
+  // Stage totals come from the server across the whole filtered set. Counting the
+  // fetched page instead made the cards read "New Lead 8 (80%)" off ten visible
+  // rows and change on every page (QA AP06).
   const counts = useMemo(() => {
     const map: Record<AppStatus, number> = {
       "New Lead": 0,
@@ -306,9 +329,11 @@ function ApplicationsPage() {
       Enrolled: 0,
       Rejected: 0,
     };
-    allRows.forEach((a) => (map[a.status] += 1));
+    for (const [stage, n] of Object.entries(data?.counts ?? {})) {
+      if (stage in map) map[stage as AppStatus] = n ?? 0;
+    }
     return map;
-  }, [allRows]);
+  }, [data]);
 
   const toggleAll = () => {
     if (pageRows.every((r) => selected.has(r.id))) {

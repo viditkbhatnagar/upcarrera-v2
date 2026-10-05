@@ -37,13 +37,25 @@ import {
 } from "recharts";
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import {
-  STATUS_DOT,
-  STATUS_STYLES,
-  type Counsellor,
-} from "@/lib/counsellors-data";
+
+const EMPTY = "—";
 
 type TeamStatus = "Active" | "Inactive";
+
+/**
+ * A resolved team member. Deliberately narrow: these are exactly the fields
+ * GET /sales-teams/:id returns per member (`members_details`). This page used
+ * to type members as the mock `Counsellor`, which carries designation / group /
+ * manager / target / achieved — none of which has a source for a team member,
+ * so every one of them had to be faked to satisfy the type.
+ */
+interface TeamMember {
+  id: number;
+  empId: string;
+  name: string;
+  email: string;
+  phone: string;
+}
 
 interface TeamRecord {
   id: string;
@@ -53,7 +65,7 @@ interface TeamRecord {
   group: string;
   status: TeamStatus;
   createdDate: string;
-  members: Counsellor[];
+  members: TeamMember[];
   memberCount: number;
 }
 
@@ -67,11 +79,27 @@ interface TeamRecord {
 // activity history. Those sections therefore render honestly empty (member
 // count comes from members.length; leader/group fall back to "—") rather than
 // fabricating data.
+//
+// The members ARE resolvable, though: SalesService.decorateTeams joins the
+// member ids (and the leader id) against `users` in ONE query and returns
+// `members_details` — one entry per member id, with null name/email/phone when
+// the user is missing or soft-deleted. That is the roster source below, so the
+// page no longer has to pull the whole consultants list to resolve names.
+interface ApiMemberDetail {
+  id: number;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
 interface ApiTeam {
   id: number | string;
   name: string | null;
   leader: string | null;
   members: unknown[] | null;
+  /** Added by SalesService.decorateTeams; absent on older API builds. */
+  members_details?: ApiMemberDetail[] | null;
+  leader_name?: string | null;
   university_id: string | null;
   course_id: string | null;
   status: number | string | null;
@@ -92,22 +120,63 @@ function parseTeamId(teamId: string): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
+function asText(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
+}
+
+/** sales_team.members holds users.id values — tolerate number OR string JSON. */
+function parseMemberIds(members: unknown[] | null): number[] {
+  if (!Array.isArray(members)) return [];
+  return members.map((m) => Number(m)).filter((n) => Number.isFinite(n));
+}
+
+/**
+ * Build the roster.
+ *
+ * Prefer `members_details` (resolved server-side). Fall back to the raw id
+ * array so an older API build still renders one row per member rather than an
+ * empty table under a non-zero count.
+ *
+ * Either way there is exactly one row per member id, so the header count and
+ * the table can never disagree — which is what produced the old
+ * "1 counsellors" / "Member details are not available" contradiction. An id
+ * whose user no longer exists resolves to a row with blank details, not a
+ * missing row.
+ */
+function buildMembers(t: ApiTeam): TeamMember[] {
+  const details = Array.isArray(t.members_details)
+    ? t.members_details
+    : parseMemberIds(t.members).map((id) => ({
+        id,
+        name: null,
+        email: null,
+        phone: null,
+      }));
+
+  return details.map((m) => ({
+    id: m.id,
+    // users.id is the only unique key on the row (users.code is the phone dial
+    // code) — matches counsellors.counsellors.tsx.
+    empId: `UC-${m.id}`,
+    name: m.name && m.name.trim() !== "" ? m.name : EMPTY,
+    email: asText(m.email),
+    phone: asText(m.phone),
+  }));
+}
+
 // Map a raw sales_team row into the TeamRecord shape the existing JSX renders.
 function mapApiTeam(t: ApiTeam, routeId: string): TeamRecord {
-  const memberCount = Array.isArray(t.members) ? t.members.length : 0;
+  const members = buildMembers(t);
   return {
     id: routeId.toUpperCase(),
     name: t.name?.trim() || `Team #${t.id}`,
     shortName: t.name?.trim() || `#${t.id}`,
-    leader: t.leader?.trim() || "—",
-    group: "—",
+    leader: t.leader?.trim() || EMPTY,
+    group: EMPTY,
     status: mapTeamStatus(t.status),
     createdDate: t.created_at ?? "",
-    // The endpoint returns member IDs only, not enriched counsellor objects.
-    // We keep an empty members list (count is preserved via memberCount) so the
-    // design's member/target/performance tables show honest empty states.
-    members: [],
-    memberCount,
+    members,
+    memberCount: members.length,
   };
 }
 
@@ -153,10 +222,11 @@ export const Route = createFileRoute("/counsellors/team-profile/$teamId")({
 /* ---------------- Derived data ---------------- */
 
 // Everything below is derived strictly from the team's real members. The
-// GET /sales-teams/:id endpoint returns member IDs only (not enriched
-// counsellor rows) and has no application / student / activity history, so the
-// member-backed aggregates resolve to 0 and the unbacked collections stay
-// empty — the design then shows honest empty states instead of fabricated rows.
+// members themselves are now resolved (id -> consultant), but `users` carries
+// no target/achieved columns and GET /sales-teams/:id has no application /
+// student / activity history, so those aggregates resolve to 0 and the
+// unbacked collections stay empty — the design then shows honest empty states
+// instead of fabricated rows.
 type ApplicationRow = {
   id: string;
   studentName: string;
@@ -188,8 +258,11 @@ type TrendRow = { month: string; admissions: number; revenue: number };
 type ComparisonRow = { name: string; target: number; achieved: number };
 
 function buildTeamData(team: TeamRecord) {
-  const totalTarget = team.members.reduce((sum, m) => sum + m.activeTarget, 0);
-  const totalAchieved = team.members.reduce((sum, m) => sum + m.achieved, 0);
+  // The roster is real, but neither `users` nor sales_team carries a target or
+  // an achieved figure for a team member, so these stay 0 rather than being
+  // summed out of fabricated per-member values.
+  const totalTarget = 0;
+  const totalAchieved = 0;
   const totalApplications = 0;
   const enrollmentsPending = 0;
   const enrollmentsCompleted = totalAchieved;
@@ -201,16 +274,13 @@ function buildTeamData(team: TeamRecord) {
 
   const trend: TrendRow[] = [];
 
-  // Counsellor comparison (empty until members are enriched server-side).
-  const comparison: ComparisonRow[] = team.members.map((m) => ({
-    name: m.name.split(" ")[0],
-    target: m.activeTarget,
-    achieved: m.achieved,
-  }));
-
-  const sortedPerf = [...team.members].sort((a, b) => b.achieved - a.achieved);
-  const topPerformers = sortedPerf.slice(0, 3);
-  const lowPerformers = sortedPerf.slice(-3).reverse();
+  // Per-member performance has no source (see above), so the comparison chart
+  // and the leaderboards stay empty and render their honest empty states.
+  // Listing the real roster here with "0 / 0 — 0%" against each name would read
+  // as a factual claim that every counsellor has achieved nothing.
+  const comparison: ComparisonRow[] = [];
+  const topPerformers: TeamMember[] = [];
+  const lowPerformers: TeamMember[] = [];
 
   const applications: ApplicationRow[] = [];
   const students: StudentRow[] = [];
@@ -419,56 +489,42 @@ function TeamProfilePage() {
         <TabsContent value="members">
           <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
             <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
-              {team.memberCount} counsellors
+              {team.memberCount} {team.memberCount === 1 ? "counsellor" : "counsellors"}
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1100px] border-collapse text-sm">
+              {/* Columns are limited to what GET /sales-teams/:id actually
+                  returns per member. Designation / Group / Manager / Target /
+                  Achieved / Status were dropped: `users` has no designation or
+                  manager column at all, and members_details carries no region,
+                  status or target — so each of those could only have been
+                  rendered by inventing a value. */}
+              <table className="w-full min-w-[720px] border-collapse text-sm">
                 <thead className="bg-muted/60">
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-2.5 font-semibold">Emp ID</th>
                     <th className="px-4 py-2.5 font-semibold">Counsellor</th>
-                    <th className="px-4 py-2.5 font-semibold">Designation</th>
-                    <th className="px-4 py-2.5 font-semibold">Group</th>
-                    <th className="px-4 py-2.5 font-semibold">Manager</th>
-                    <th className="px-4 py-2.5 font-semibold">Target</th>
-                    <th className="px-4 py-2.5 font-semibold">Achieved</th>
-                    <th className="px-4 py-2.5 font-semibold">Status</th>
+                    <th className="px-4 py-2.5 font-semibold">Phone</th>
                     <th className="px-4 py-2.5 text-right font-semibold">Action</th>
                   </tr>
                 </thead>
                 <tbody>
+                  {/* members.length === memberCount by construction, so a
+                      non-zero count can no longer sit above an empty table. */}
                   {team.members.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                        {team.memberCount > 0
-                          ? "Member details are not available for this team yet."
-                          : "No counsellors assigned to this team."}
+                      <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                        No counsellors assigned to this team.
                       </td>
                     </tr>
                   )}
                   {team.members.map((c) => (
-                    <tr key={c.empId} className="border-b border-border last:border-0 hover:bg-muted/40">
+                    <tr key={c.id} className="border-b border-border last:border-0 hover:bg-muted/40">
                       <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">{c.empId}</td>
                       <td className="px-4 py-3">
                         <div className="text-sm font-semibold text-foreground">{c.name}</div>
                         <div className="text-xs text-muted-foreground">{c.email}</div>
                       </td>
-                      <td className="px-4 py-3 text-foreground">{c.designation}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{c.group}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{c.manager}</td>
-                      <td className="px-4 py-3 font-semibold text-foreground">{c.activeTarget}</td>
-                      <td className="px-4 py-3 font-semibold text-foreground">{c.achieved}</td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset",
-                            STATUS_STYLES[c.status],
-                          )}
-                        >
-                          <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[c.status])} />
-                          {c.status}
-                        </span>
-                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{c.phone}</td>
                       <td className="px-4 py-3 text-right">
                         <Link
                           to="/counsellors/profile/$empId"
@@ -569,37 +625,15 @@ function TeamProfilePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {team.members.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                        Per-counsellor targets are not available for this team yet.
-                      </td>
-                    </tr>
-                  )}
-                  {team.members.map((m) => {
-                    const pct = m.activeTarget ? Math.round((m.achieved / m.activeTarget) * 100) : 0;
-                    return (
-                      <tr key={m.empId} className="border-b border-border last:border-0 hover:bg-muted/40">
-                        <td className="px-4 py-3 text-foreground">{m.name}</td>
-                        <td className="px-4 py-3 font-semibold text-foreground">{m.activeTarget}</td>
-                        <td className="px-4 py-3 font-semibold text-foreground">{m.achieved}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
-                              <div
-                                className={cn(
-                                  "h-full rounded-full",
-                                  pct >= 100 ? "bg-emerald-500" : pct >= 75 ? "bg-sky-500" : pct >= 50 ? "bg-amber-500" : "bg-rose-500",
-                                )}
-                                style={{ width: `${Math.min(100, pct)}%` }}
-                              />
-                            </div>
-                            <span className="text-xs font-semibold text-foreground">{pct}%</span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {/* No per-member target source exists (see buildTeamData),
+                      so the real roster is NOT listed here against 0 / 0 / 0%. */}
+                  <tr>
+                    <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                      {team.memberCount === 0
+                        ? "No counsellors assigned to this team."
+                        : "Per-counsellor targets are not available for this team yet."}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -799,7 +833,7 @@ function KpiTile({ icon: Icon, label, value, accent }: { icon: typeof Users; lab
   );
 }
 
-function PerformerList({ items, tone }: { items: Counsellor[]; tone: "emerald" | "rose" }) {
+function PerformerList({ items, tone }: { items: TeamMember[]; tone: "emerald" | "rose" }) {
   if (items.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-border bg-background px-3 py-6 text-center text-xs text-muted-foreground">
@@ -809,30 +843,24 @@ function PerformerList({ items, tone }: { items: Counsellor[]; tone: "emerald" |
   }
   return (
     <ul className="space-y-2">
-      {items.map((m) => {
-        const pct = m.activeTarget ? Math.round((m.achieved / m.activeTarget) * 100) : 0;
-        return (
-          <li key={m.empId} className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-foreground">{m.name}</div>
-              <div className="text-[11px] text-muted-foreground">{m.empId} · {m.designation}</div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">{m.achieved}/{m.activeTarget}</span>
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                  tone === "emerald"
-                    ? "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20"
-                    : "bg-rose-500/10 text-rose-700 ring-rose-500/20",
-                )}
-              >
-                {pct}%
-              </span>
-            </div>
-          </li>
-        );
-      })}
+      {items.map((m) => (
+        <li key={m.id} className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-foreground">{m.name}</div>
+            <div className="text-[11px] text-muted-foreground">{m.empId} · {m.email}</div>
+          </div>
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
+              tone === "emerald"
+                ? "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20"
+                : "bg-rose-500/10 text-rose-700 ring-rose-500/20",
+            )}
+          >
+            {EMPTY}
+          </span>
+        </li>
+      ))}
     </ul>
   );
 }

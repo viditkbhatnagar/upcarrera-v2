@@ -75,7 +75,16 @@ function asText(value: string | number | null | undefined): string {
   return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
 }
 
-/** Strip the `UC-` display prefix to recover the numeric consultant users.id. */
+/**
+ * Recover the numeric consultant users.id from the route param.
+ *
+ * The list now passes a bare `users.id`. The `UC-<id>` form is still accepted so
+ * URLs bookmarked before that change keep working.
+ *
+ * Do NOT start routing on a hand-entered employee_code ("UC-1024"): its digits
+ * are not a users.id, so this would silently open a different person — the exact
+ * bug that made every counsellor resolve to UC-91.
+ */
 function empIdToConsultantId(empId: string): number | null {
   const digits = String(empId).replace(/[^0-9]/g, "");
   if (digits === "") return null;

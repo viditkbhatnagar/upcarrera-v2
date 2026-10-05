@@ -55,6 +55,25 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 
+/**
+ * Every action on this screen is read-only in practice.
+ *
+ * fees.collection.tsx imports only `apiGet` — there is no write path on this
+ * page at all. Yet each control reported success, and the most dangerous of
+ * them said "Payment recorded for <student>." An accounts user would reasonably
+ * believe a payment had been entered against a student's ledger when nothing
+ * whatsoever was sent to the server.
+ *
+ * These messages were invisible until now only because <Toaster /> had never
+ * been mounted. With it mounted they would display, so they have to be honest.
+ * The controls are left in place (removing them is a product decision) but they
+ * now state plainly that nothing was saved.
+ */
+function FEE_ACTION_NOT_WIRED(action: string): string {
+  return `${action} is not available yet — this screen is read-only. Nothing was saved.`;
+}
+
+
 const searchSchema = z.object({
   tab: fallback(z.enum(["overdue", "due", "upcoming", "paid", "all"]), "overdue").default("overdue"),
   due: fallback(z.string(), "").default(""),
@@ -564,7 +583,7 @@ function FeeCollection() {
                         {b === "paid" ? (
                           <>
                             <Button size="sm" variant="ghost" onClick={() => setReceiptOpen(r)} title="View Receipt"><Eye className="h-4 w-4" /></Button>
-                            <Button size="sm" variant="ghost" onClick={() => { toast.success(`Receipt ${r.receipt} downloaded.`); }} title="Download Receipt"><Download className="h-4 w-4" /></Button>
+                            <Button size="sm" variant="ghost" onClick={() => { toast.error(FEE_ACTION_NOT_WIRED("Receipt download")); }} title="Download Receipt"><Download className="h-4 w-4" /></Button>
                             <Button size="sm" variant="ghost" onClick={() => setReceiptOpen(r)} title="View Payment"><FileText className="h-4 w-4" /></Button>
                           </>
                         ) : b === "upcoming" ? (
@@ -576,7 +595,7 @@ function FeeCollection() {
                           <>
                             <Button size="sm" variant="ghost" onClick={() => setPayOpen(r)} title="Record Payment"><IndianRupee className="h-4 w-4" /></Button>
                             <Button size="sm" variant="ghost" onClick={() => setRemindOpen(r)} title="Send Reminder"><Send className="h-4 w-4" /></Button>
-                            <Button size="sm" variant="ghost" onClick={() => { toast.success(`Calling ${r.student}…`); }} title="Call"><Phone className="h-4 w-4" /></Button>
+                            <Button size="sm" variant="ghost" onClick={() => { toast.error(FEE_ACTION_NOT_WIRED("Click-to-call from this screen")); }} title="Call"><Phone className="h-4 w-4" /></Button>
                             <Button size="sm" variant="ghost" onClick={() => setFollowOpen(r)} title="Add Follow-up"><MessageSquare className="h-4 w-4" /></Button>
                           </>
                         )}
@@ -594,7 +613,7 @@ function FeeCollection() {
       <ExportModal open={exportOpen} onClose={() => setExportOpen(false)} count={rows.length} />
 
       {/* ----------- Bulk Reminder Modal ----------- */}
-      <BulkReminderModal open={bulkOpen} onClose={() => setBulkOpen(false)} count={selected.size} onSent={() => { setBulkOpen(false); setSelected(new Set()); toast.success(`Reminders queued for ${selected.size} students.`); }} />
+      <BulkReminderModal open={bulkOpen} onClose={() => setBulkOpen(false)} count={selected.size} onSent={() => { setBulkOpen(false); setSelected(new Set()); toast.error(FEE_ACTION_NOT_WIRED("Bulk reminders")); }} />
 
       {/* ----------- Record Payment Modal ----------- */}
       <RecordPaymentModal item={payOpen} onClose={() => setPayOpen(null)} />
@@ -656,7 +675,7 @@ function ExportModal({ open, onClose, count }: { open: boolean; onClose: () => v
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => { onClose(); toast.success(`${format} export generated.`); }}>Export</Button>
+          <Button onClick={() => { onClose(); toast.error(FEE_ACTION_NOT_WIRED("Export")); }}>Export</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -753,7 +772,7 @@ function RecordPaymentModal({ item, onClose }: { item: Installment | null; onClo
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => { onClose(); toast.success(`Payment recorded for ${item.student}.`); }}><CreditCard className="h-4 w-4" /> Record</Button>
+          <Button onClick={() => { onClose(); toast.error(FEE_ACTION_NOT_WIRED("Recording a payment")); }}><CreditCard className="h-4 w-4" /> Record</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -796,7 +815,7 @@ function ReminderModal({ item, onClose }: { item: Installment | null; onClose: (
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button variant="outline" onClick={() => toast.message("Preview opened.")}>Preview</Button>
-          <Button onClick={() => { onClose(); toast.success(`Reminder sent via ${channel}.`); }}>Send</Button>
+          <Button onClick={() => { onClose(); toast.error(FEE_ACTION_NOT_WIRED("Reminders")); }}>Send</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -852,7 +871,7 @@ function FollowupDrawer({ item, onClose }: { item: Installment | null; onClose: 
         <DrawerFooter>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={onClose}>Cancel</Button>
-            <Button onClick={() => { onClose(); toast.success("Follow-up saved."); }}>Save</Button>
+            <Button onClick={() => { onClose(); toast.error(FEE_ACTION_NOT_WIRED("Follow-up notes")); }}>Save</Button>
           </div>
         </DrawerFooter>
       </DrawerContent>
@@ -890,7 +909,7 @@ function ReceiptModal({ item, onClose }: { item: Installment | null; onClose: ()
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Close</Button>
-          <Button onClick={() => toast.success(`Receipt ${item.receipt} downloaded.`)}><Download className="h-4 w-4" /> Download PDF</Button>
+          <Button onClick={() => toast.error(FEE_ACTION_NOT_WIRED("Receipt download"))}><Download className="h-4 w-4" /> Download PDF</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

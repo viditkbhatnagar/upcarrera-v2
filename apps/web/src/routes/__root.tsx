@@ -9,6 +9,7 @@ import { useEffect } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 
 import { AppShell } from "../components/app-shell";
+import { Toaster } from "../components/ui/sonner";
 import { getToken } from "../lib/session";
 
 const PUBLIC_PATHS = new Set(["/", "/login"]);
@@ -86,13 +87,20 @@ function RootComponent() {
   const path = router.state.location.pathname;
   const isLogin = path === "/login" || path === "/";
 
-  if (isLogin) {
-    return <Outlet />;
-  }
-
+  // sonner renders nothing unless <Toaster /> is on the page. It had never been
+  // mounted, so all 101 toast.success/toast.error calls across the app were
+  // silent — every save confirmation and every server error went unseen. Mounted
+  // at the root so it covers the login screen too.
   return (
-    <AppShell>
-      <Outlet />
-    </AppShell>
+    <>
+      {isLogin ? (
+        <Outlet />
+      ) : (
+        <AppShell>
+          <Outlet />
+        </AppShell>
+      )}
+      <Toaster position="top-right" richColors closeButton />
+    </>
   );
 }

@@ -16,6 +16,11 @@ import { UpdateConsultantDto } from './dto/update-consultant.dto';
 import { ListConsultantsDto } from './dto/list-consultants.dto';
 import { ListAdmissionsDto } from './dto/list-admissions.dto';
 import { SetUniversitiesDto } from './dto/set-universities.dto';
+import {
+  AssignTeamDto,
+  CreateCounsellorGroupDto,
+  UpdateCounsellorGroupDto,
+} from './dto/counsellor-group.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
@@ -60,6 +65,47 @@ export class ConsultantsController {
     return this.consultants.groups();
   }
 
+  // Counsellor groups — the top of the Group -> Team -> Counsellor hierarchy.
+  // Declared above GET /:id so 'groups' is never captured as an id.
+  @Post('groups')
+  @ResponseMessage('Counsellor group created')
+  createGroup(
+    @Body() dto: CreateCounsellorGroupDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.consultants.createGroup(dto, userId);
+  }
+
+  @Patch('groups/:id')
+  @ResponseMessage('Counsellor group updated')
+  updateGroup(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateCounsellorGroupDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.consultants.updateGroup(id, dto, userId);
+  }
+
+  @Delete('groups/:id')
+  @ResponseMessage('Counsellor group deleted')
+  removeGroup(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.consultants.removeGroup(id, userId);
+  }
+
+  /** Put a team under a group (or detach it with group_id: null). */
+  @Patch('teams/:id/group')
+  @ResponseMessage('Team group updated')
+  assignTeamGroup(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('group_id') groupId: number | null,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.consultants.assignTeamGroup(id, groupId ?? null, userId);
+  }
+
   @Get('admissions/:student_id')
   @ResponseMessage('Admission')
   admissionDetail(
@@ -74,6 +120,17 @@ export class ConsultantsController {
   @ResponseMessage('Consultant')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.consultants.findOne(id);
+  }
+
+  /** Transfer a counsellor to another team (spec 2.1). */
+  @Patch(':id/team')
+  @ResponseMessage('Counsellor team updated')
+  assignTeam(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AssignTeamDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.consultants.assignTeam(id, dto, userId);
   }
 
   @Get(':id/performance')

@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api";
+import { useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ApiError, apiGet, apiPost, apiUpload } from "@/lib/api";
 import {
   Download,
   Plus,
@@ -18,7 +18,6 @@ import {
   Users,
   UserCheck,
   UserX,
-  UserMinus,
   ChevronLeft,
   ChevronRight,
   Hash,
@@ -27,6 +26,7 @@ import {
   Loader2,
   AlertTriangle,
 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import {
@@ -47,11 +47,6 @@ import {
 import {
   STATUS_DOT,
   STATUS_STYLES,
-  TEAMS,
-  GROUPS,
-  TEAM_LEADERS,
-  MANAGERS,
-  DESIGNATIONS,
   type Counsellor,
   type CounsellorStatus,
 } from "@/lib/counsellors-data";
@@ -81,6 +76,14 @@ interface ApiConsultant {
   doj?: string | null;
   highest_qualification?: string | null;
   status?: number | null;
+  /** Hand-entered employee id (migration 001). Null for legacy rows. */
+  employee_code?: string | null;
+  /** Group -> Team -> Counsellor, resolved server-side by decorateHierarchy. */
+  team_id?: number | null;
+  team_name?: string | null;
+  team_leader_name?: string | null;
+  group_name?: string | null;
+  manager_name?: string | null;
 }
 
 interface ConsultantsResponse {
@@ -88,6 +91,12 @@ interface ConsultantsResponse {
   total: number;
   page: number;
   limit: number;
+}
+
+/** GET /consultants/groups — counsellors grouped by their users.region value. */
+interface CounsellorGroupsResponse {
+  items: Array<{ id: string; name: string | null; total_counsellors: number }>;
+  total: number;
 }
 
 function asText(value: string | null | undefined): string {
@@ -104,19 +113,60 @@ function asDate(value: string | null | undefined): string {
   return value ? String(value).slice(0, 10) : "";
 }
 
-function mapApiConsultant(c: ApiConsultant): Counsellor {
+/** "1 counsellor" / "2 counsellors" — replaces the hardcoded plural suffixes. */
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
+}
+
+/** Display form of a YYYY-MM-DD joining date; "—" when users.doj is NULL
+ *  (true for many legacy rows). */
+function formatDate(value: string): string {
+  if (!value) return EMPTY;
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return EMPTY;
+  return parsed.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+/** Row number continuous across pages — page 2 starts at 11, not 1. */
+function serialNo(page: number, pageSize: number, index: number): number {
+  return (page - 1) * pageSize + index + 1;
+}
+
+/**
+ * A list row. `id` is the real users.id and is what every link and query uses;
+ * `empId` is display only. Keeping them apart matters: once employee_code is in
+ * use, empId becomes something like "UC-1024" whose digits are NOT a users.id,
+ * so routing on the display string would open the wrong person — the same class
+ * of bug as the original UC-91 defect.
+ */
+type CounsellorRow = Counsellor & { id: number };
+
+function mapApiConsultant(c: ApiConsultant): CounsellorRow {
   const gender =
     c.gender === "Female" || c.gender === "Other" ? c.gender : "Male";
   return {
-    empId: c.code != null ? `UC-${c.code}` : `UC-${c.id}`,
+    // users.code is the phone dial code (91 for every Indian user), NOT a per-user
+    // identifier — deriving the display id from it gave all 35 counsellors "UC-91"
+    // and pointed every View link at the same profile. Prefer the hand-entered
+    // employee_code added by migration 001; fall back to the users.id, which is
+    // at least unique, for rows that have not been given one yet.
+    id: c.id,
+    empId: c.employee_code?.trim() || `UC-${c.id}`,
     name: c.name && c.name.trim() !== "" ? c.name : EMPTY,
     email: asText(c.email),
     phone: asText(c.phone),
-    // No team/leader/group/manager source on the users row → surface as "—".
-    team: asText(c.region),
-    teamLeader: EMPTY,
-    group: asText(c.region),
-    manager: EMPTY,
+    // Resolved server-side through users.team_id -> sales_team -> counsellor_group
+    // (migration 001). These were hardcoded blank, and team/group both showed the
+    // free-text users.region, so all four columns read "—" for every counsellor
+    // (QA C05). A counsellor in no team still shows "—" — correctly.
+    team: asText(c.team_name),
+    teamLeader: asText(c.team_leader_name),
+    group: asText(c.group_name),
+    manager: asText(c.manager_name),
     // No target/achieved source in the schema.
     activeTarget: 0,
     achieved: 0,
@@ -152,9 +202,44 @@ function CounsellorsPage() {
       apiGet<ConsultantsResponse>("/consultants", { limit: 1000 }),
   });
 
-  const allCounsellors = useMemo<Counsellor[]>(
+  // Group options come from the server's own grouping of counsellors (derived
+  // from users.region), so the dropdown can only ever offer values that exist.
+  // It previously listed North/South/East/West/Central from the prototype file,
+  // none of which match any row — so picking one always emptied the table.
+  const { data: groupsData } = useQuery({
+    queryKey: ["consultants", "groups"],
+    queryFn: () => apiGet<CounsellorGroupsResponse>("/consultants/groups"),
+    staleTime: 5 * 60 * 1000,
+  });
+
+
+  const allCounsellors = useMemo<CounsellorRow[]>(
     () => (data?.items ?? []).map(mapApiConsultant),
     [data],
+  );
+
+  /**
+   * Filter options come from the rows on screen, so the list can only offer a
+   * value that at least one counsellor actually has. "—" is excluded: it is the
+   * placeholder for "not set", not a selectable team.
+   */
+  const distinct = (pick: (c: CounsellorRow) => string) =>
+    [...new Set(allCounsellors.map(pick))].filter((v) => v && v !== EMPTY).sort();
+
+  const teamOptions = useMemo(() => distinct((c) => c.team), [allCounsellors]);
+  const leaderOptions = useMemo(() => distinct((c) => c.teamLeader), [allCounsellors]);
+  const managerOptions = useMemo(() => distinct((c) => c.manager), [allCounsellors]);
+  const groupOptions = useMemo(
+    () =>
+      [
+        ...new Set([
+          ...allCounsellors.map((c) => c.group),
+          ...(groupsData?.items ?? []).map((g) => g.name ?? ""),
+        ]),
+      ]
+        .filter((v) => v && v !== EMPTY)
+        .sort(),
+    [allCounsellors, groupsData],
   );
 
   const filtered = useMemo(() => {
@@ -172,20 +257,37 @@ function CounsellorsPage() {
     });
   }, [allCounsellors, statusFilter, search, empId, team, group, tl, mgr, from, to]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const currentPage = Math.min(page, totalPages);
-  const pageRows = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  // The table header claims "Sorted by Joining Date · Newest first" — make that
+  // true. GET /consultants has no sort parameter (ListConsultantsDto accepts only
+  // page/limit/search/status) and orders by `id desc`, so the sort happens here,
+  // over the full set we already hold. Undated rows (users.doj is NULL on many
+  // legacy rows) sort last instead of leading the list.
+  const sorted = useMemo(
+    () =>
+      [...filtered].sort((a, b) => {
+        if (a.joiningDate === b.joiningDate) return 0;
+        if (!a.joiningDate) return 1;
+        if (!b.joiningDate) return -1;
+        return a.joiningDate < b.joiningDate ? 1 : -1;
+      }),
+    [filtered],
+  );
 
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageRows = sorted.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  // users.status is an Int carrying only 1/0, so mapStatus can never return
+  // "On Leave" — an On Leave tile would read 0 forever and its filter would
+  // always return an empty table. Both are gone.
   const counts = useMemo(() => {
-    let active = 0,
-      inactive = 0,
-      leave = 0;
+    let active = 0;
+    let inactive = 0;
     allCounsellors.forEach((c) => {
       if (c.status === "Active") active++;
-      else if (c.status === "Inactive") inactive++;
-      else leave++;
+      else inactive++;
     });
-    return { active, inactive, leave };
+    return { active, inactive };
   }, [allCounsellors]);
 
   const resetFilters = () => {
@@ -232,7 +334,7 @@ function CounsellorsPage() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <KpiCard
           icon={Users}
           label="Total Counsellors"
@@ -268,18 +370,6 @@ function CounsellorsPage() {
           accent="bg-rose-500/10 text-rose-600"
           dot="bg-rose-500"
         />
-        <KpiCard
-          icon={UserMinus}
-          label="On Leave"
-          value={counts.leave}
-          active={statusFilter === "On Leave"}
-          onClick={() => {
-            setStatusFilter(statusFilter === "On Leave" ? "All" : "On Leave");
-            setPage(1);
-          }}
-          accent="bg-amber-500/10 text-amber-600"
-          dot="bg-amber-500"
-        />
       </div>
 
       {/* Filters */}
@@ -291,37 +381,75 @@ function CounsellorsPage() {
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
           <FilterInput icon={Search} placeholder="Search counsellor" value={search} onChange={setSearch} />
           <FilterInput icon={Hash} placeholder="Employee ID" value={empId} onChange={setEmpId} />
-          <FilterSelect value={team} onChange={setTeam} options={["All", ...TEAMS]} placeholder="Team" />
-          <FilterSelect value={group} onChange={setGroup} options={["All", ...GROUPS]} placeholder="Group" />
-          <FilterSelect value={tl} onChange={setTl} options={["All", ...TEAM_LEADERS]} placeholder="Team Leader" />
-          <FilterSelect value={mgr} onChange={setMgr} options={["All", ...MANAGERS]} placeholder="Manager" />
+          {/* Every option below is derived from the rows actually fetched, so a
+              filter can only ever offer a value that exists. They used to be
+              populated from the prototype module (Team Alpha..Echo, Priya Sharma,
+              Arjun Rao), none of which matched any row, so picking any of them
+              emptied the table (QA C04). They work now because migration 001
+              gives counsellors a real team, leader, group and manager. */}
+          <FilterSelect
+            value={team}
+            onChange={setTeam}
+            options={["All", ...teamOptions]}
+            placeholder="Team"
+            allLabel="All Teams"
+          />
+          <FilterSelect
+            value={group}
+            onChange={setGroup}
+            options={["All", ...groupOptions]}
+            placeholder="Group"
+            allLabel="All Groups"
+          />
+          <FilterSelect
+            value={tl}
+            onChange={setTl}
+            options={["All", ...leaderOptions]}
+            placeholder="Team Leader"
+            allLabel="All Team Leaders"
+          />
+          <FilterSelect
+            value={mgr}
+            onChange={setMgr}
+            options={["All", ...managerOptions]}
+            placeholder="Manager"
+            allLabel="All Managers"
+          />
           <FilterSelect
             value={statusFilter}
             onChange={(v) => setStatusFilter(v as StatusFilter)}
-            options={["All", "Active", "Inactive", "On Leave"]}
+            options={["All", "Active", "Inactive"]}
             placeholder="Status"
+            allLabel="All Statuses"
           />
+          {/* `placeholder` has no effect on a native date input — these rendered
+              as two anonymous dd/mm/yyyy boxes. Label them like every other
+              control on the page. */}
           <div className="grid grid-cols-2 gap-2">
-            <div className="relative">
-              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="date"
-                className="h-9 pl-9 text-sm"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                placeholder="From"
-              />
-            </div>
-            <div className="relative">
-              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="date"
-                className="h-9 pl-9 text-sm"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-                placeholder="To"
-              />
-            </div>
+            <Field label="Joined from">
+              <div className="relative">
+                <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="date"
+                  aria-label="Joined from"
+                  className="h-9 pl-9 text-sm"
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value)}
+                />
+              </div>
+            </Field>
+            <Field label="Joined to">
+              <div className="relative">
+                <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="date"
+                  aria-label="Joined to"
+                  className="h-9 pl-9 text-sm"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                />
+              </div>
+            </Field>
           </div>
           <div className="flex items-end">
             <button
@@ -339,7 +467,7 @@ function CounsellorsPage() {
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="text-sm font-semibold text-foreground">
-            {filtered.length.toLocaleString()} counsellors
+            {pluralize(filtered.length, "counsellor")}
             {statusFilter !== "All" && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
                 {statusFilter}
@@ -380,7 +508,7 @@ function CounsellorsPage() {
               </div>
             </div>
           ) : (
-            <table className="w-full min-w-[1200px] border-collapse text-sm">
+            <table className="w-full min-w-[1320px] border-collapse text-sm">
               <thead className="sticky top-0 z-10 bg-muted/60 backdrop-blur">
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5 font-semibold w-16">Sl No</th>
@@ -391,6 +519,7 @@ function CounsellorsPage() {
                   <th className="px-4 py-2.5 font-semibold">Team Leader</th>
                   <th className="px-4 py-2.5 font-semibold">Group</th>
                   <th className="px-4 py-2.5 font-semibold">Manager</th>
+                  <th className="px-4 py-2.5 font-semibold">Joining Date</th>
                   <th className="px-4 py-2.5 font-semibold">Active Target</th>
                   <th className="px-4 py-2.5 font-semibold">Status</th>
                   <th className="px-4 py-2.5 text-right font-semibold">Action</th>
@@ -403,10 +532,12 @@ function CounsellorsPage() {
                     : 0;
                   return (
                     <tr
-                      key={c.empId}
+                      key={c.id}
                       className="group border-b border-border last:border-0 transition hover:bg-muted/40"
                     >
-                      <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">{i + 1}</td>
+                      <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground">
+                        {serialNo(currentPage, PAGE_SIZE, i)}
+                      </td>
                       <td className="px-4 py-3">
                         <span className="font-mono text-xs font-semibold text-primary">
                           {c.empId}
@@ -428,6 +559,9 @@ function CounsellorsPage() {
                       <td className="px-4 py-3 text-sm text-muted-foreground">{c.teamLeader}</td>
                       <td className="px-4 py-3 text-sm text-foreground">{c.group}</td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">{c.manager}</td>
+                      <td className="px-4 py-3 text-sm tabular-nums text-muted-foreground whitespace-nowrap">
+                        {formatDate(c.joiningDate)}
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex w-32 flex-col gap-1">
                           <div className="flex items-baseline justify-between text-[11px]">
@@ -462,7 +596,7 @@ function CounsellorsPage() {
                         <div className="flex items-center justify-end gap-1">
                           <Link
                             to="/counsellors/profile/$empId"
-                            params={{ empId: c.empId }}
+                            params={{ empId: String(c.id) }}
                             title="View"
                             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-background hover:text-foreground"
                           >
@@ -593,16 +727,20 @@ function FilterInput({
   );
 }
 
+/** `allLabel` is explicit because the old `All ${placeholder}s` template
+ *  produced "All Statuss". */
 function FilterSelect({
   value,
   onChange,
   options,
   placeholder,
+  allLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: string[];
   placeholder: string;
+  allLabel: string;
 }) {
   return (
     <Select value={value} onValueChange={onChange}>
@@ -612,7 +750,7 @@ function FilterSelect({
       <SelectContent>
         {options.map((o) => (
           <SelectItem key={o} value={o}>
-            {o === "All" ? `All ${placeholder}s` : o}
+            {o === "All" ? allLabel : o}
           </SelectItem>
         ))}
       </SelectContent>
@@ -631,6 +769,48 @@ function IconBtn({ icon: Icon, label }: { icon: typeof Eye; label: string }) {
   );
 }
 
+/* ---------------- Add Counsellor ---------------- */
+
+/** The writable half of CreateConsultantDto.
+ *
+ *  Deliberately absent:
+ *  - Employee ID — server-assigned (`UC-${users.id}`); there is no employee-code
+ *    column to post one to.
+ *  - Designation — the old dropdown was fed by the mock DESIGNATIONS array and
+ *    has no column. `highest_qualification` is the real column the list renders
+ *    in that slot, so that is what we collect.
+ *  - "On Leave" status — users.status is an Int with only 1/0. */
+interface CounsellorForm {
+  name: string;
+  username: string;
+  password: string;
+  email: string;
+  phone: string;
+  gender: string;
+  dob: string;
+  doj: string;
+  highest_qualification: string;
+  status: "Active" | "Inactive";
+  profile_picture: string;
+}
+
+const EMPTY_FORM: CounsellorForm = {
+  name: "",
+  username: "",
+  password: "",
+  email: "",
+  phone: "",
+  gender: "",
+  dob: "",
+  doj: "",
+  highest_qualification: "",
+  status: "Active",
+  profile_picture: "",
+};
+
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PHOTO_BYTES = 2 * 1024 * 1024;
+
 function AddCounsellorDialog({
   open,
   onOpenChange,
@@ -638,13 +818,108 @@ function AddCounsellorDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
+  const qc = useQueryClient();
+  const [form, setForm] = useState<CounsellorForm>(EMPTY_FORM);
+  const [photoName, setPhotoName] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const set = <K extends keyof CounsellorForm>(key: K, value: CounsellorForm[K]) =>
+    setForm((prev) => ({ ...prev, [key]: value }));
+
+  /** Closing always discards the draft, so re-opening starts clean. */
+  const close = (next: boolean) => {
+    if (!next) {
+      setForm(EMPTY_FORM);
+      setPhotoName("");
+    }
+    onOpenChange(next);
+  };
+
+  // POST /files/upload — NOT /files/avatar, which writes the *logged-in* user's
+  // users.profile_picture and would replace the admin's own photo. /files/upload
+  // returns a root-relative storage key we pass through as `profile_picture`.
+  const photoMut = useMutation({
+    mutationFn: (file: File) => {
+      const body = new FormData();
+      body.append("file", file);
+      return apiUpload<{ path: string }>("/files/upload", body);
+    },
+    onSuccess: (res, file) => {
+      set("profile_picture", res.path);
+      setPhotoName(file.name);
+      toast.success("Photo uploaded");
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Couldn’t upload the photo"),
+  });
+
+  // Add Counsellor -> POST /consultants. The service forces role_id = 6,
+  // bcrypt-hashes the password and throws 409 "User already exists!" on a
+  // duplicate phone or email — surfaced below rather than swallowed.
+  const createMut = useMutation({
+    mutationFn: (body: Record<string, unknown>) => apiPost("/consultants", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["consultants", "list"] });
+      toast.success("Counsellor created");
+      close(false);
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Something went wrong"),
+  });
+
+  const name = form.name.trim();
+  const username = form.username.trim();
+  const isPending = createMut.isPending || photoMut.isPending;
+  const canSubmit =
+    name !== "" &&
+    username !== "" &&
+    form.password.length >= MIN_PASSWORD_LENGTH &&
+    !isPending;
+
+  const submit = () => {
+    if (!canSubmit) return;
+    // Send only what CreateConsultantDto accepts; blank optionals are omitted
+    // rather than posted as empty strings.
+    createMut.mutate({
+      name,
+      username,
+      password: form.password,
+      ...(form.email.trim() ? { email: form.email.trim() } : {}),
+      ...(form.phone.trim() ? { phone: form.phone.trim() } : {}),
+      ...(form.gender ? { gender: form.gender } : {}),
+      ...(form.dob ? { dob: form.dob } : {}),
+      ...(form.doj ? { doj: form.doj } : {}),
+      ...(form.highest_qualification.trim()
+        ? { highest_qualification: form.highest_qualification.trim() }
+        : {}),
+      ...(form.profile_picture ? { profile_picture: form.profile_picture } : {}),
+      status: form.status === "Active" ? 1 : 0,
+    });
+  };
+
+  const pickPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the same file be re-picked after an error
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Profile photo must be a PNG or JPG image");
+      return;
+    }
+    if (file.size > MAX_PHOTO_BYTES) {
+      toast.error("Profile photo must be 2 MB or smaller");
+      return;
+    }
+    photoMut.mutate(file);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={close}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="text-xl font-semibold">Add Counsellor</DialogTitle>
           <p className="text-sm text-muted-foreground">
-            Create a new admission counsellor profile.
+            Create a new admission counsellor profile. The username and password
+            are the counsellor’s login credentials — share them directly.
           </p>
         </DialogHeader>
 
@@ -656,42 +931,79 @@ function AddCounsellorDialog({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-sm font-semibold text-foreground">Profile Photo</div>
-              <div className="text-xs text-muted-foreground">PNG or JPG, up to 2 MB.</div>
+              <div className="truncate text-xs text-muted-foreground">
+                {photoName || "PNG or JPG, up to 2 MB."}
+              </div>
             </div>
-            <button className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted">
-              <Upload className="h-3.5 w-3.5" />
-              Upload
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg"
+              className="hidden"
+              onChange={pickPhoto}
+            />
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={isPending}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {photoMut.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Upload className="h-3.5 w-3.5" />
+              )}
+              {photoMut.isPending ? "Uploading…" : photoName ? "Replace" : "Upload"}
             </button>
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Employee ID">
-              <Input placeholder="UC-1065" />
-            </Field>
-            <Field label="Designation">
-              <Select>
-                <SelectTrigger><SelectValue placeholder="Select designation" /></SelectTrigger>
-                <SelectContent>
-                  {DESIGNATIONS.map((d) => (
-                    <SelectItem key={d} value={d}>{d}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-
-            <Field label="Name">
-              <Input placeholder="Full name" />
+            <Field label="Name" required>
+              <Input
+                placeholder="Full name"
+                value={form.name}
+                onChange={(e) => set("name", e.target.value)}
+              />
             </Field>
             <Field label="Email">
-              <Input type="email" placeholder="name@upcarrera.com" />
+              <Input
+                type="email"
+                placeholder="name@upcarrera.com"
+                value={form.email}
+                onChange={(e) => set("email", e.target.value)}
+              />
+            </Field>
+
+            <Field label="Username" required>
+              <Input
+                autoComplete="off"
+                placeholder="Login username"
+                value={form.username}
+                onChange={(e) => set("username", e.target.value)}
+              />
+            </Field>
+            <Field label="Password" required>
+              <Input
+                type="password"
+                autoComplete="new-password"
+                placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+                value={form.password}
+                onChange={(e) => set("password", e.target.value)}
+              />
             </Field>
 
             <Field label="Phone Number">
-              <Input placeholder="+91 9xxxxxxxxx" />
+              <Input
+                placeholder="9xxxxxxxxx"
+                value={form.phone}
+                onChange={(e) => set("phone", e.target.value)}
+              />
             </Field>
             <Field label="Gender">
-              <Select>
-                <SelectTrigger><SelectValue placeholder="Select gender" /></SelectTrigger>
+              <Select value={form.gender} onValueChange={(v) => set("gender", v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select gender" />
+                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="Male">Male</SelectItem>
                   <SelectItem value="Female">Female</SelectItem>
@@ -701,38 +1013,69 @@ function AddCounsellorDialog({
             </Field>
 
             <Field label="Date of Birth">
-              <Input type="date" />
+              <Input
+                type="date"
+                value={form.dob}
+                onChange={(e) => set("dob", e.target.value)}
+              />
             </Field>
             <Field label="Joining Date">
-              <Input type="date" />
+              <Input
+                type="date"
+                value={form.doj}
+                onChange={(e) => set("doj", e.target.value)}
+              />
             </Field>
 
+            <Field label="Highest Qualification">
+              <Input
+                placeholder="e.g. MBA"
+                value={form.highest_qualification}
+                onChange={(e) => set("highest_qualification", e.target.value)}
+              />
+            </Field>
             <Field label="Status">
-              <Select defaultValue="Active">
-                <SelectTrigger><SelectValue placeholder="Select status" /></SelectTrigger>
+              <Select
+                value={form.status}
+                onValueChange={(v) => set("status", v as CounsellorForm["status"])}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select status" />
+                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="Active">Active</SelectItem>
                   <SelectItem value="Inactive">Inactive</SelectItem>
-                  <SelectItem value="On Leave">On Leave</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
           </div>
+
+          <p className="text-xs text-muted-foreground">
+            The employee ID is assigned by the server when the counsellor is saved.
+          </p>
         </div>
 
         <DialogFooter className="gap-2">
           <button
-            onClick={() => onOpenChange(false)}
-            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+            type="button"
+            onClick={() => close(false)}
+            disabled={createMut.isPending}
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
           <button
-            onClick={() => onOpenChange(false)}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover"
+            type="button"
+            onClick={submit}
+            disabled={!canSubmit}
+            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Plus className="h-4 w-4" />
-            Create Counsellor
+            {createMut.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}
+            {createMut.isPending ? "Creating…" : "Create Counsellor"}
           </button>
         </DialogFooter>
       </DialogContent>
@@ -740,10 +1083,25 @@ function AddCounsellorDialog({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  required,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-xs font-semibold text-foreground">{label}</Label>
+      <Label className="text-xs font-semibold text-foreground">
+        {label}
+        {required && (
+          <span aria-hidden className="ml-0.5 text-rose-500">
+            *
+          </span>
+        )}
+      </Label>
       {children}
     </div>
   );

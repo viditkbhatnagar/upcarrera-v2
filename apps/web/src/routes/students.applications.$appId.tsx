@@ -74,6 +74,24 @@ interface TimelineEntry {
 }
 
 /* ---------------- Page ---------------- */
+/**
+ * None of this page's stage actions reach the server.
+ *
+ * The Phase 1 stage engine does not exist yet (QA AP04): there is no endpoint to
+ * move an application between stages, record a registration fee, send it to
+ * Accounts, approve it or reject it. Every handler below updates local React
+ * state and nothing else — yet they all used to report success, including
+ * "Application approved — student enrolled" and a timeline entry reading
+ * "Student record created". No student record is created; nothing is saved.
+ *
+ * That went unnoticed because <Toaster /> was never mounted, so no toast in the
+ * app rendered at all. It is mounted now, so these messages would be shown to a
+ * counsellor — which is why they must tell the truth until the stage engine lands.
+ */
+function STAGE_NOT_PERSISTED(action: string): string {
+  return `${action} is not saved yet — the application workflow has no backend. Nothing was recorded.`;
+}
+
 function ApplicationProfilePage() {
   const { appId } = Route.useParams();
   const navigate = useNavigate();
@@ -294,7 +312,7 @@ function ApplicationProfilePage() {
         onSubmit={() => {
           moveStage("Registration Fee Pending", "Payment Plan Generated", "Registration fee account created");
           setPlanOpen(false);
-          toast.success("Payment plan generated");
+          toast.error(STAGE_NOT_PERSISTED("Payment plan"));
         }}
       />
       <UpdatePaymentDrawer
@@ -311,7 +329,7 @@ function ApplicationProfilePage() {
             ...t,
           ]);
           setPayOpen(false);
-          toast.success("Payment submitted for verification");
+          toast.error(STAGE_NOT_PERSISTED("Payment"));
         }}
       />
       <SendFormModal
@@ -320,7 +338,7 @@ function ApplicationProfilePage() {
         onSubmit={() => {
           moveStage("Application Form Pending", "Application Form Sent", "Form link emailed to student");
           setSendFormOpen(false);
-          toast.success("Application form sent");
+          toast.error(STAGE_NOT_PERSISTED("Application form"));
         }}
       />
       <VerifyModal
@@ -329,7 +347,7 @@ function ApplicationProfilePage() {
         onApprove={() => {
           moveStage("Enrolled", "Enrollment Approved", "Student record created");
           setVerifyOpen(false);
-          toast.success("Application approved — student enrolled");
+          toast.error(STAGE_NOT_PERSISTED("Approval"));
         }}
       />
       <CorrectionModal
@@ -338,7 +356,7 @@ function ApplicationProfilePage() {
         onSubmit={() => {
           moveStage("Application Form Pending", "Correction Requested", "Sent back to student");
           setCorrectionOpen(false);
-          toast.success("Correction request sent");
+          toast.error(STAGE_NOT_PERSISTED("Correction request"));
         }}
       />
       <RejectModal
@@ -347,7 +365,7 @@ function ApplicationProfilePage() {
         onSubmit={() => {
           moveStage("Rejected", "Application Rejected");
           setRejectOpen(false);
-          toast.success("Application rejected");
+          toast.error(STAGE_NOT_PERSISTED("Rejection"));
         }}
       />
     </div>

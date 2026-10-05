@@ -182,6 +182,14 @@ function StudentDetailPage() {
     enabled: numericId != null,
   });
 
+  // The URL carries the internal students.id (what GET /students/:id takes), but
+  // the operator knows this person by their printed id — STU-1688, not 1547. Show
+  // the real one as soon as the record loads, falling back to the raw param while
+  // it is in flight (QA ST05).
+  const crumbId = data
+    ? dash(data.enrollment_id ?? `STU-${data.student_id}`)
+    : rawParam;
+
   return (
     <div className="space-y-5">
       {/* Breadcrumb / back */}
@@ -191,7 +199,7 @@ function StudentDetailPage() {
             Students
           </Link>
           <span>/</span>
-          <span className="font-mono font-semibold text-foreground">{rawParam}</span>
+          <span className="font-mono font-semibold text-foreground">{crumbId}</span>
         </div>
         <div className="flex items-center gap-2">
           <Link

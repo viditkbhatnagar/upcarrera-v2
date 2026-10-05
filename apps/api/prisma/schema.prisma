@@ -731,8 +731,14 @@ model salary_settings {
 model sales_team {
   id            Int       @id @default(autoincrement())
   name          String?   @db.VarChar(160)
+  /// users.id of the team leader, stored as a string by the legacy schema.
+  /// Resolved to a name by SalesService.decorateTeams.
   leader        String?   @db.VarChar(10)
+  /// LEGACY read path: a JSON array of users.id. users.team_id is now the
+  /// source of truth; this is kept written so legacy PHP/LMS readers still work.
   members       String?   @db.LongText
+  /// Parent counsellor_group (migration 001).
+  group_id      Int?
   university_id String?   @db.VarChar(10)
   course_id     String?   @db.VarChar(10)
   status        Int?
@@ -742,6 +748,8 @@ model sales_team {
   updated_at    DateTime? @db.DateTime(0)
   created_at    DateTime? @db.DateTime(0)
   deleted_at    DateTime? @db.DateTime(0)
+
+  @@index([group_id], map: "idx_sales_team_group")
 }
 
 model semester {
@@ -1184,7 +1192,20 @@ model users {
   updated_at            DateTime? @db.DateTime(0)
   deleted_at            DateTime? @db.DateTime(0)
 
+  /// Counsellor hierarchy (migration 001). A counsellor belongs to exactly one
+  /// sales_team; unlike sales_team.members (a JSON blob) this is queryable in
+  /// both directions and indexed.
+  team_id               Int?
+  /// users.id of the Team Leader or Manager this user reports to.
+  reports_to            Int?
+  /// Hand-entered employee id ("UC-1024"). NOT users.code — that column is the
+  /// phone dial code and is 91 for every Indian user.
+  employee_code         String?   @db.VarChar(32)
+
   @@index([role_id], map: "role_id")
+  @@index([team_id], map: "idx_users_team")
+  @@index([reports_to], map: "idx_users_reports_to")
+  @@unique([employee_code], map: "uq_users_employee_code")
 }
 
 enum resources_type {
@@ -1220,4 +1241,25 @@ enum invoice_payment_status {
 enum resources_status {
   Active
   Archived
+}
+
+/// Top of the counsellor hierarchy: Group (Manager) -> Team (Leader) -> Counsellor.
+/// Created by database/migrations/001-counsellor-hierarchy.sql. Phase 1 record
+/// access (own / team / group) is derived from this chain.
+model counsellor_group {
+  id         Int       @id @default(autoincrement())
+  code       String?   @unique(map: "uq_counsellor_group_code") @db.VarChar(32)
+  name       String?   @db.VarChar(160)
+  /// users.id of the group manager. No FK: nothing in this legacy schema
+  /// declares one, and the LMS writes to users too.
+  manager_id Int?
+  status     Int?      @default(1)
+  created_by Int?
+  updated_by Int?
+  deleted_by Int?
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+
+  @@index([manager_id], map: "idx_counsellor_group_manager")
 }

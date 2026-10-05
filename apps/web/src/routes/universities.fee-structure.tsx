@@ -382,7 +382,7 @@ function FeeStructuresPage() {
     const a = document.createElement("a");
     a.href = url; a.download = "fee-structures.csv"; a.click();
     URL.revokeObjectURL(url);
-    toast.success("Exported to CSV");
+    toast.error("Export is not available yet — nothing was saved.");
   };
 
   return (
@@ -744,7 +744,7 @@ function FeeStructuresPage() {
                 <Button onClick={() => {
                   setALL((prev) => prev.map((x) => x.id === editing.id ? editing : x));
                   setEditing(null);
-                  toast.success("Fee structure updated");
+                  toast.error("Fee structures cannot be saved yet — there is no fee-structure API. Nothing was changed.");
                 }}>
                   <Save /> Save Changes
                 </Button>
