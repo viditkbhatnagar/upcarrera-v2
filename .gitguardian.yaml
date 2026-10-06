@@ -1,0 +1,9 @@
+# GitGuardian config. The *.env.example files hold documented PLACEHOLDER values
+# (e.g. JWT_SECRET="change-me-to-a-long-random-secret"), not real secrets — real
+# secrets live only in the gitignored .env on each server. Ignore them so PRs
+# that touch the example files are not flagged.
+version: 2
+secret:
+  ignored-paths:
+    - "**/.env.example"
+  ignored-matches: []
