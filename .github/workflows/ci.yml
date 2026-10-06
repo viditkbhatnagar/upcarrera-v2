@@ -52,6 +52,11 @@ jobs:
       DATABASE_URL: "mysql://root:root@127.0.0.1:3306/upcarrera"
       JWT_SECRET: "ci-test-secret-not-for-production"
       JWT_EXPIRES_IN: "7d"
+      # WS5 ApplicantConfig fail-fasts without these (must be >=32 chars and differ
+      # from JWT_SECRET). CI test values only — real secrets live in the server .env.
+      APPLICANT_SESSION_SECRET: "ci-applicant-session-secret-not-for-production-32+"
+      APPLICANT_PORTAL_URL: "http://localhost:3001/apply"
+      MAGIC_LINK_TTL_HOURS: "168"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
