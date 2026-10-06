@@ -17,6 +17,8 @@ import { UpdateCandidateDocumentDto } from './dto/update-candidate-document.dto'
 import { UploadedFileType } from './uploaded-file.type';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
+import type { AccessUser } from '../workflow/record-access.service';
 
 /**
  * Candidate (lead) document management.
@@ -40,44 +42,55 @@ export class CandidatesDocumentsController {
 
   // --- literal `documents/:id` routes first (route-order safety) ---
 
+  // The :id here is the DOCUMENT id, so no per-row guard applies: the service
+  // resolves the owning application/lead and runs the SAME record-access check as
+  // the students/applications document twins (403 out of scope / 404 missing). The
+  // permission slug mirrors those twins.
   @Patch('documents/:id')
+  @RequirePermission('crm:applications.edit')
   @ResponseMessage('Document Updated Successfully!')
   @UseInterceptors(FileInterceptor('file'))
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateCandidateDocumentDto,
     @UploadedFile() file: UploadedFileType,
-    @CurrentUser('id') userId: number,
+    @CurrentUser() user: AccessUser,
   ) {
-    return this.files.updateCandidateDocument(id, dto, userId, file);
+    return this.files.updateCandidateDocument(id, dto, user, file);
   }
 
   @Delete('documents/:id')
+  @RequirePermission('crm:applications.edit')
   @ResponseMessage('Document Deleted Successfully!')
   remove(
     @Param('id', ParseIntPipe) id: number,
-    @CurrentUser('id') userId: number,
+    @CurrentUser() user: AccessUser,
   ) {
-    return this.files.deleteCandidateDocument(id, userId);
+    return this.files.deleteCandidateDocument(id, user);
   }
 
-  // --- candidate-scoped `:id/documents` routes ---
+  // --- candidate-scoped `:id/documents` routes (the :id is a LEAD id) ---
 
   @Get(':id/documents')
+  @RequirePermission('crm:applications.view')
   @ResponseMessage('Candidate documents fetched')
-  list(@Param('id', ParseIntPipe) id: number) {
-    return this.files.listCandidateDocuments(id);
+  list(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    return this.files.listCandidateDocuments(id, user);
   }
 
   @Post(':id/documents')
+  @RequirePermission('crm:applications.edit')
   @ResponseMessage('Document Added Successfully!')
   @UseInterceptors(FileInterceptor('file'))
   create(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: CreateCandidateDocumentDto,
     @UploadedFile() file: UploadedFileType,
-    @CurrentUser('id') userId: number,
+    @CurrentUser() user: AccessUser,
   ) {
-    return this.files.createCandidateDocument(id, dto, userId, file);
+    return this.files.createCandidateDocument(id, dto, user, file);
   }
 }

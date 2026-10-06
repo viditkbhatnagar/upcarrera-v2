@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 /**
  * Query params for GET /students — pagination + optional filters.
@@ -50,4 +50,16 @@ export class ListStudentsDto {
   @Type(() => Number)
   @IsInt()
   referred_by?: number;
+
+  /**
+   * Free-text search over the student's name, email and phone (all held on the
+   * linked `users` row) and over the printed `STU-<n>` id.
+   *
+   * Without it the Students screen could only filter the rows already fetched,
+   * so searching for a student on page 2 from page 1 found nothing (QA ST02).
+   * It intersects with the enrolment filters rather than replacing them.
+   */
+  @IsOptional()
+  @IsString()
+  search?: string;
 }

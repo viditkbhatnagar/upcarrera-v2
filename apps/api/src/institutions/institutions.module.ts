@@ -4,12 +4,14 @@ import {
   UserUniversityController,
 } from './institutions.controller';
 import { InstitutionsService } from './institutions.service';
+import { WorkflowCoreModule } from '../workflow/workflow-core.module';
 
 /**
  * Institutions module (users with role_id=5) + the GET /users/:id/university read.
  * PrismaService is provided by the @Global() PrismaModule, so no import is needed.
  */
 @Module({
+  imports: [WorkflowCoreModule],
   controllers: [InstitutionsController, UserUniversityController],
   providers: [InstitutionsService],
   exports: [InstitutionsService],

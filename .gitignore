@@ -30,3 +30,7 @@ graphify-out/
 *.log
 .DS_Store
 .gap_backlog.json
+
+# Source archives dropped in for import (templates etc.) — the extracted,
+# reviewed files are committed instead.
+*.rar

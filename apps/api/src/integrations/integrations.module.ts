@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { IntegrationsController } from './integrations.controller';
 import { ZoomService } from './zoom.service';
 import { EmailService } from './email.service';
+import { EmailTemplatesService } from './email-templates.service';
 import { SmsService } from './sms.service';
 import { OtpService } from './otp.service';
 
@@ -15,7 +16,7 @@ import { OtpService } from './otp.service';
  */
 @Module({
   controllers: [IntegrationsController],
-  providers: [ZoomService, EmailService, SmsService, OtpService],
-  exports: [ZoomService, EmailService, SmsService, OtpService],
+  providers: [ZoomService, EmailService, EmailTemplatesService, SmsService, OtpService],
+  exports: [ZoomService, EmailService, EmailTemplatesService, SmsService, OtpService],
 })
 export class IntegrationsModule {}

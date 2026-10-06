@@ -3,8 +3,19 @@ import {
   IsOptional,
   IsString,
   IsDateString,
+  Matches,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
+
+/**
+ * A phone-shaped value: digits with optional +, spaces, dashes and brackets, or
+ * '' to clear. Numbers here may be international, so this is a shape check, not
+ * the Indian-mobile rule applications use.
+ */
+const PHONE_SHAPE = /^(\+?[\d\s\-()]{6,24})?$/;
+const PHONE_SHAPE_MESSAGE = 'must be a phone number (digits, +, spaces or dashes)';
 
 /**
  * Every field optional on update — mirrors the permissive legacy update.
@@ -49,6 +60,7 @@ export class UpdateStudentDto {
   @IsOptional()
   @IsString()
   @MaxLength(20)
+  @Matches(PHONE_SHAPE, { message: `second_phone ${PHONE_SHAPE_MESSAGE}` })
   second_phone?: string;
 
   @IsOptional()
@@ -68,14 +80,18 @@ export class UpdateStudentDto {
   @IsOptional()
   @IsString()
   @MaxLength(25)
+  @Matches(PHONE_SHAPE, { message: `whatsapp_no ${PHONE_SHAPE_MESSAGE}` })
   whatsapp_no?: string;
 
   @IsOptional()
   @IsDateString()
   enrollment_date?: string;
 
+  // 0 Pending · 1 In Progress · 2 Enrolled · 3 Passed Out · 4 Dropout · 5 Cancelled
   @IsOptional()
   @IsInt()
+  @Min(0)
+  @Max(5)
   admission_status?: number;
 
   @IsOptional()

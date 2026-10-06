@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPatch, ApiError } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from "@/lib/api";
 import {
   ArrowLeft,
   Building2,
@@ -23,6 +23,11 @@ import {
   ChevronRight,
   AlertTriangle,
   X,
+  MoreVertical,
+  Pause,
+  Play,
+  Loader2,
+  CalendarRange,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -55,17 +60,55 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import {
+  COLLECTION_MODEL_HELP,
+  COLLECTION_MODEL_LABEL,
+  feeStructureKeys,
+  listFeeStructures,
+  type FeeCollectionModel,
+} from "@/lib/api/fee-structures";
+import { CollectionModelBadge } from "@/components/fee-structure/badges";
+
+/**
+ * The subset of the `universities` row the Edit form writes back, carried
+ * verbatim: no trim, no `|| fallback`, no normalisation.
+ */
+type RawUniversity = {
+  title: string | null;
+  category: string | null;
+  website: string | null;
+  email: string | null;
+  phone: string | null;
+  country_id: string | null;
+  state: string | null;
+  address: string | null;
+  status: string | null;
+  fee_collection_model: string | null;
+};
 
 type UniRow = {
+  /**
+   * Display-only code (`UNI-028`) derived from the id — the same format the
+   * list page shows. There is no code column, so this never reaches the API;
+   * every request uses the route's numeric id.
+   */
   code: string;
   name: string;
   type: "Type 1 – Student Pays University" | "Type 2 – Student Pays upCarrera";
   category: string;
+  /** "<state>, <country name>" — never the free-text address. */
   location: string;
+  /** Country NAME(s) resolved from `country_id` via GET /countries. */
   country: string;
   state: string;
-  city: string;
   address: string;
   website: string;
   email: string;
@@ -75,6 +118,17 @@ type UniRow = {
   status: "Active" | "Inactive";
   initials: string;
   color: string;
+  /**
+   * ---- Raw server values, carried alongside the coerced display values ----
+   *
+   * Everything above is COERCED for rendering: a NULL title shows as
+   * `University #28`, a NULL/unknown category shows as "Private University",
+   * a missing field shows as "—". That is fine for a profile card; it is data
+   * loss the moment it is fed back into a PATCH. The Edit dialog therefore
+   * seeds itself from `raw`, never from the display fields, so that opening
+   * Edit and saving cannot stamp a derived default over a NULL column.
+   */
+  raw: RawUniversity;
 };
 
 const CATEGORY_STYLE: Record<string, string> = {
@@ -87,7 +141,9 @@ const CATEGORY_STYLE: Record<string, string> = {
 
 export const Route = createFileRoute("/universities/universities_/$code")({
   head: ({ params }) => ({
-    meta: [{ title: `${params.code} — Universities — upCarrera` }],
+    meta: [
+      { title: `${displayUniversityCode(params.code)} — Universities — upCarrera` },
+    ],
   }),
   component: UniversityProfilePage,
 });
@@ -117,6 +173,7 @@ interface ApiUniversity {
   state: string | null;
   photo: string | null;
   status: number | string | null;
+  fee_collection_model: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -177,30 +234,69 @@ function mapType(): UniRow["type"] {
   return "Type 1 – Student Pays University";
 }
 
-// status is a numeric/string flag where 1 (or "1"/"Active") means active.
+/**
+ * Legacy `status` is CHAR(1): "1"/Active, "0"/Inactive.
+ *
+ * This used to collapse NULL to "Inactive" while the list page
+ * (universities.universities.tsx `deriveStatus`) collapsed it to "Active", so
+ * the same university read as Active in the table and Inactive on its own
+ * profile. They now agree on "Active", matching the list page: the legacy app
+ * treats a row as live unless it is explicitly switched off, and the list is
+ * the screen operators filter on. Either way this is DISPLAY ONLY — the Edit
+ * form seeds its Status select from `raw.status` via `columnToStatus`, which
+ * maps NULL to "" ("not set") and never to a guess.
+ */
 function mapStatus(status: number | string | null): UniRow["status"] {
-  const s = String(status ?? "").toLowerCase();
-  return s === "1" || s === "active" || s === "true" ? "Active" : "Inactive";
+  const s = String(status ?? "").toLowerCase().trim();
+  if (s === "0" || s === "inactive" || s === "false") return "Inactive";
+  return "Active";
 }
 
-function mapApiUniversity(u: ApiUniversity): UniRow {
+/** Same display format as the list page: `UNI-<id padded to 3>`. */
+function displayUniversityCode(id: number | string): string {
+  return `UNI-${String(id).padStart(3, "0")}`;
+}
+
+/** Where the GET /countries lookup is, so Country never shows a raw id early. */
+type CountryLookupStatus = "pending" | "error" | "success";
+
+function mapApiUniversity(
+  u: ApiUniversity,
+  countryNames: Map<string, string>,
+  countryLookup: CountryLookupStatus,
+): UniRow {
   const name = (u.title ?? "").trim() || `University #${u.id}`;
   const intakesCount = u.intakes
     ? u.intakes.split(",").filter((x) => x.trim() !== "").length
     : 0;
-  const city = (u.address ?? "").trim();
   const state = (u.state ?? "").trim();
+  // `country_id` is an id (or id list), resolved to names for display. There
+  // is no City column — the city lives inside the free-text `address`, which is
+  // shown in full in its own Address row rather than passed off as a "City".
+  //
+  // "Country ID n" is only honest once the lookup has answered: while it is in
+  // flight the Country row reads "Loading…" (and the header shows the state
+  // alone); if it failed, the raw id is shown with that caveat.
+  const described = describeCountryIds(u.country_id ?? "", countryNames);
+  const country =
+    described === ""
+      ? ""
+      : countryLookup === "pending"
+        ? "Loading…"
+        : countryLookup === "error" && described.includes("Country ID ")
+          ? `${described} (country names unavailable)`
+          : described;
+  const locationCountry = countryLookup === "pending" ? "" : described;
   const location =
-    [city, state].filter((x) => x !== "").join(", ") || "—";
+    [state, locationCountry].filter((x) => x !== "").join(", ") || "—";
   return {
-    code: String(u.id),
+    code: displayUniversityCode(u.id),
     name,
     type: mapType(),
     category: mapCategory(u.category),
     location,
-    country: (u.country_id ?? "").trim() || "—",
+    country: country || "—",
     state: state || "—",
-    city: city || "—",
     address: (u.address ?? "").trim() || "—",
     website: (u.website ?? "").trim() || "—",
     email: (u.email ?? "").trim() || "—",
@@ -210,6 +306,21 @@ function mapApiUniversity(u: ApiUniversity): UniRow {
     status: mapStatus(u.status),
     initials: deriveInitials(name),
     color: pickColor(name),
+    // Verbatim. This is what the Edit form seeds from and what the "did the
+    // user change it?" diff compares against. See the UniRow.raw comment.
+    raw: {
+      title: u.title ?? null,
+      category: u.category ?? null,
+      website: u.website ?? null,
+      email: u.email ?? null,
+      phone: u.phone ?? null,
+      country_id: u.country_id ?? null,
+      state: u.state ?? null,
+      address: u.address ?? null,
+      status:
+        u.status === null || u.status === undefined ? null : String(u.status),
+      fee_collection_model: u.fee_collection_model ?? null,
+    },
   };
 }
 
@@ -223,6 +334,22 @@ interface ApiCourse {
   total_duration: string | null;
   specialisations: string | null;
   status: number | null;
+}
+
+/** IN04: a tagged course as GET /universities/:id/courses returns it. */
+interface TaggedCourseApi {
+  course_id: number;
+  title: string | null;
+  short_name: string | null;
+  level: string | null;
+  duration: string | null;
+  course_status: number | null;
+  university_course_name: string | null;
+  university_course_code: string | null;
+  /** 1 = offered, 0 = paused. */
+  status: number | null;
+  open_intake_count: number;
+  open_intakes: Array<{ id: number; name: string | null }>;
 }
 
 interface ApiSemester {
@@ -322,11 +449,10 @@ function UniversityProfilePage() {
     retry: false,
   });
 
-  // Courses tab -> GET /courses?university_id=<id>.
+  // Courses tab -> GET /courses?university_id=<id>. (Legacy source, kept for the
+  // in-page Fee Structure wizard's course picker.)
   const {
     data: coursesData,
-    isLoading: coursesLoading,
-    isError: coursesError,
   } = useQuery({
     queryKey: ["university-courses", code],
     queryFn: () =>
@@ -335,6 +461,22 @@ function UniversityProfilePage() {
         { university_id: code },
       ),
   });
+
+  // IN04 Tagged Courses tab -> GET /universities/:id/courses (the M:N mapping,
+  // with each course's open-intake count + chips).
+  const {
+    data: taggedData,
+    isLoading: coursesLoading,
+    isError: coursesError,
+  } = useQuery({
+    queryKey: ["university-tagged-courses", code],
+    queryFn: () => apiGet<TaggedCourseApi[]>(`/universities/${code}/courses`),
+  });
+  const tagged = useMemo<TaggedCourseApi[]>(() => taggedData ?? [], [taggedData]);
+  const taggedCourseIds = useMemo(
+    () => new Set(tagged.map((t) => t.course_id)),
+    [tagged],
+  );
 
   // Fee Structure tab -> GET /semesters?university_id=<id>.
   const {
@@ -350,21 +492,27 @@ function UniversityProfilePage() {
       ),
   });
 
+  // GET /countries resolves the stored `country_id` to a name.
+  const { data: countriesData, status: countryLookup } = useCountries();
+  const countryNames = useMemo(
+    () => countryNameMap(countriesData?.items),
+    [countriesData],
+  );
+
   // Derived view-model from the live row; placeholder keeps hooks unconditional
   // while the request is in flight (real loading/error UI is rendered below).
   const profile: UniRow = useMemo(
     () =>
       apiUni
-        ? mapApiUniversity(apiUni)
+        ? mapApiUniversity(apiUni, countryNames, countryLookup)
         : {
-            code: String(code),
+            code: displayUniversityCode(code),
             name: "",
             type: "Type 1 – Student Pays University",
             category: "Private University",
             location: "—",
             country: "—",
             state: "—",
-            city: "—",
             address: "—",
             website: "—",
             email: "—",
@@ -374,8 +522,20 @@ function UniversityProfilePage() {
             status: "Inactive",
             initials: "U",
             color: AVATAR_COLORS[0],
+            raw: {
+              title: null,
+              category: null,
+              website: null,
+              email: null,
+              phone: null,
+              country_id: null,
+              state: null,
+              address: null,
+              status: null,
+              fee_collection_model: null,
+            },
           },
-    [apiUni, code],
+    [apiUni, code, countryNames, countryLookup],
   );
 
   const taggedCourses = useMemo<CourseRow[]>(
@@ -390,12 +550,23 @@ function UniversityProfilePage() {
 
   const [editUniversityOpen, setEditUniversityOpen] = useState(false);
 
+  // Active fee-structure count for this university, for the overview link.
+  const activeFeesQuery = useQuery({
+    queryKey: feeStructureKeys.list({ university_id: Number(code), status: "active", limit: 1 }),
+    queryFn: () =>
+      listFeeStructures({ university_id: Number(code), status: "active", limit: 1 }),
+    enabled: Number.isFinite(Number(code)),
+  });
+  const activeFeeCount = activeFeesQuery.data?.total ?? 0;
+
+  // IN04 Tag-Course dialog: a real picker (live courses minus already-tagged) with
+  // a per-row "Name at this university", posting to POST /universities/:id/courses.
   const [tagCourseOpen, setTagCourseOpen] = useState(false);
-  const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
+  const [tagSelected, setTagSelected] = useState<Set<number>>(new Set());
+  const [tagNames, setTagNames] = useState<Record<number, string>>({});
   const [courseSearch, setCourseSearch] = useState("");
-  const [courseLevelFilter, setCourseLevelFilter] = useState<
-    "All" | "UG" | "PG" | "Diploma" | "Certificate"
-  >("All");
+  // The tagged course being renamed (row menu).
+  const [renameTarget, setRenameTarget] = useState<TaggedCourseApi | null>(null);
 
   // Create Fee Structure wizard state
   const [feeOpen, setFeeOpen] = useState(false);
@@ -470,17 +641,25 @@ function UniversityProfilePage() {
     });
   };
 
+  // There is no fee-structure API yet (QA FS01/FS02): this screen reads course
+  // rows and renders them as fee structures, and nothing here can persist. These
+  // handlers used to claim success anyway. That went unnoticed only because
+  // <Toaster /> was never mounted, so no toast in the app rendered at all — now
+  // that it is mounted, a fabricated "Updated" would be shown to the operator.
+  // Tell the truth instead: the dialog closes, and the message says why nothing
+  // was saved.
+  const FEE_NOT_PERSISTED =
+    "Fee structures can't be saved yet — there is no fee-structure API. Nothing was changed.";
+
   const saveEditFee = () => {
-    // Semester rows have no write endpoint; the edit dialog stays local.
     setEditFee(null);
     setEditFeeDraft(null);
-    toast.success("Fee Structure Updated");
+    toast.error(FEE_NOT_PERSISTED);
   };
 
   const deleteFee = () => {
-    // No delete endpoint for semesters; close the dialog only.
     setViewFee(null);
-    toast.success("Fee Structure Deleted");
+    toast.error(FEE_NOT_PERSISTED);
   };
 
   const INTAKES = useMemo(
@@ -569,30 +748,97 @@ function UniversityProfilePage() {
       total: totalFee,
     });
     setFeeStatus(activate ? "Active" : "Draft");
-    toast.success("Fee Structure Created Successfully");
+    toast.error(FEE_NOT_PERSISTED);
   };
 
-  // The Tag-Course dialog has no backing write endpoint (no university↔course
-  // junction route), so it stays local. Source its picker from the live tagged
-  // courses rather than a mock library so no fabricated rows are shown.
-  const filteredLibrary = useMemo(() => {
-    return taggedCourses.filter((c) => {
-      const matchesSearch =
-        courseSearch.trim() === "" ||
-        c.name.toLowerCase().includes(courseSearch.toLowerCase()) ||
-        c.code.toLowerCase().includes(courseSearch.toLowerCase());
-      const matchesLevel = courseLevelFilter === "All" || c.level === courseLevelFilter;
-      return matchesSearch && matchesLevel;
+  // IN04: the full course master for the Tag dialog picker (loaded on open).
+  const allCoursesQuery = useQuery({
+    queryKey: ["courses", "all-for-tag"],
+    queryFn: () => apiGet<{ items: ApiCourse[] }>("/courses", { limit: 1000 }),
+    enabled: tagCourseOpen,
+  });
+  // Live courses NOT already tagged to this university, narrowed by the search box.
+  const tagPickerCourses = useMemo(() => {
+    const rows = allCoursesQuery.data?.items ?? [];
+    const q = courseSearch.trim().toLowerCase();
+    return rows.filter((c) => {
+      if (taggedCourseIds.has(c.id)) return false;
+      if (q === "") return true;
+      const name = (c.title ?? c.short_name ?? "").toLowerCase();
+      return name.includes(q) || String(c.id).includes(q);
     });
-  }, [taggedCourses, courseSearch, courseLevelFilter]);
+  }, [allCoursesQuery.data, taggedCourseIds, courseSearch]);
 
-  const toggleCourse = (courseCode: string) => {
-    setSelectedCourses((prev) =>
-      prev.includes(courseCode)
-        ? prev.filter((c) => c !== courseCode)
-        : [...prev, courseCode],
-    );
+  const toggleTagCourse = (courseId: number) =>
+    setTagSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(courseId)) n.delete(courseId);
+      else n.add(courseId);
+      return n;
+    });
+
+  const resetTagDialog = () => {
+    setTagSelected(new Set());
+    setTagNames({});
+    setCourseSearch("");
   };
+
+  const invalidateTagged = () => {
+    qc.invalidateQueries({ queryKey: ["university-tagged-courses", code] });
+    qc.invalidateQueries({ queryKey: ["university", code] });
+    qc.invalidateQueries({ queryKey: ["universities"] });
+  };
+
+  const tagMut = useMutation({
+    mutationFn: () => {
+      const items = [...tagSelected].map((id) => {
+        const name = tagNames[id]?.trim();
+        return name ? { course_id: id, university_course_name: name } : { course_id: id };
+      });
+      return apiPost<{ added: number; revived: number; already: number }>(
+        `/universities/${code}/courses`,
+        { items },
+      );
+    },
+    onSuccess: (res) => {
+      invalidateTagged();
+      toast.success(`Tagged ${res.added + res.revived} course(s)`);
+      setTagCourseOpen(false);
+      resetTagDialog();
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Couldn’t tag courses"),
+  });
+
+  const updateTagMut = useMutation({
+    mutationFn: (vars: {
+      courseId: number;
+      body: {
+        university_course_name?: string | null;
+        university_course_code?: string | null;
+        status?: number;
+      };
+    }) => apiPatch(`/universities/${code}/courses/${vars.courseId}`, vars.body),
+    onSuccess: () => {
+      invalidateTagged();
+      toast.success("Tagged course updated");
+      setRenameTarget(null);
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Couldn’t update the tagged course"),
+  });
+
+  const untagMut = useMutation({
+    mutationFn: (courseId: number) =>
+      apiDelete(`/universities/${code}/courses/${courseId}`),
+    onSuccess: () => {
+      invalidateTagged();
+      toast.success("Course untagged");
+    },
+    // The server 409s (with a clear message) when the pair is still referenced.
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Couldn’t untag the course"),
+  });
 
   const basicInfo = useMemo(
     () => ({
@@ -602,7 +848,6 @@ function UniversityProfilePage() {
       category: profile.category,
       country: profile.country,
       state: profile.state,
-      city: profile.city,
       website: profile.website,
       email: profile.email,
       phone: profile.phone,
@@ -612,12 +857,16 @@ function UniversityProfilePage() {
     [profile],
   );
 
-  // Edit University -> PATCH /universities/:id.
+  // Edit University -> PATCH /universities/:id. The body is a PARTIAL: only
+  // the columns the operator actually changed are present (UpdateUniversityDto
+  // is a PartialType, so omitted columns are left alone server-side).
   const editMut = useMutation({
-    mutationFn: (body: Partial<ApiUniversity>) =>
+    mutationFn: (body: Partial<UniversityPayload>) =>
       apiPatch(`/universities/${code}`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["university", code] });
+      // The list page reads the same rows; keep it from showing stale values.
+      qc.invalidateQueries({ queryKey: ["universities"] });
       toast.success("University updated");
       setEditUniversityOpen(false);
     },
@@ -821,9 +1070,32 @@ function UniversityProfilePage() {
               <Field label="University Code" value={basicInfo.code} mono />
               <Field label="University Type" value={basicInfo.type} />
               <Field label="University Category" value={basicInfo.category} />
+              <Field
+                label="Fee Collection Model"
+                value={
+                  <CollectionModelBadge
+                    model={profile.raw.fee_collection_model as FeeCollectionModel | null}
+                    universityId={Number(code)}
+                  />
+                }
+              />
+              <Field
+                label="Fee Structures"
+                value={
+                  <Link
+                    to="/universities/fee-structure"
+                    search={{ university_id: String(code) }}
+                    className="inline-flex items-center gap-1 text-primary hover:underline"
+                  >
+                    {activeFeeCount} active
+                  </Link>
+                }
+              />
               <Field label="Country" value={basicInfo.country} />
               <Field label="State" value={basicInfo.state} />
-              <Field label="City" value={basicInfo.city} />
+              {/* No City row: there is no city column. It used to render the
+                  ENTIRE address under a "City" label; the address (city
+                  included) is shown in full in the Address row below. */}
               <Field
                 label="Website"
                 value={
@@ -852,7 +1124,7 @@ function UniversityProfilePage() {
                 }
               />
               <Field
-                label="Address"
+                label="Address (including city)"
                 value={basicInfo.address}
                 className="sm:col-span-2"
               />
@@ -901,10 +1173,10 @@ function UniversityProfilePage() {
                     <TableHead className="px-4">Course Code</TableHead>
                     <TableHead>Course Name</TableHead>
                     <TableHead>Level</TableHead>
-                    <TableHead>Group</TableHead>
-                    <TableHead>Specialisation</TableHead>
                     <TableHead>Duration</TableHead>
+                    <TableHead>Intakes</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead className="text-right pr-4">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -923,10 +1195,10 @@ function UniversityProfilePage() {
                         colSpan={7}
                         className="py-10 text-center text-sm text-muted-foreground"
                       >
-                        Couldn’t load courses for this university.
+                        Couldn’t load tagged courses for this university.
                       </TableCell>
                     </TableRow>
-                  ) : taggedCourses.length === 0 ? (
+                  ) : tagged.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={7} className="py-12 text-center">
                         <div className="mx-auto flex max-w-sm flex-col items-center gap-1">
@@ -937,55 +1209,134 @@ function UniversityProfilePage() {
                             No courses tagged yet
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            Courses mapped to this university will appear here.
+                            Use “Add Course” to tag courses to this university.
                           </p>
                         </div>
                       </TableCell>
                     </TableRow>
                   ) : (
-                    taggedCourses.map((c) => (
-                      <TableRow key={c.code} className="hover:bg-muted/40">
-                        <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">
-                          {c.code}
-                        </TableCell>
-                        <TableCell className="py-3 text-sm font-medium text-foreground">
-                          {c.specialisation && c.specialisation !== "—"
-                            ? `${c.name} in ${c.specialisation}`
-                            : c.name}
-                        </TableCell>
-                        <TableCell className="py-3">
-                          <Badge
-                            variant="secondary"
-                            className="bg-slate-100 text-slate-700"
-                          >
-                            {c.level}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="py-3 text-sm">{c.category}</TableCell>
-                        <TableCell className="py-3 text-sm">
-                          {c.specialisation}
-                        </TableCell>
-                        <TableCell className="py-3 text-sm">{c.duration}</TableCell>
-                        <TableCell className="py-3">
-                          {c.status === "Active" ? (
-                            <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
-                              Active
+                    tagged.map((c) => {
+                      const name =
+                        c.university_course_name ??
+                        c.title ??
+                        c.short_name ??
+                        `Course #${c.course_id}`;
+                      const paused = c.status === 0;
+                      return (
+                        <TableRow key={c.course_id} className="hover:bg-muted/40">
+                          <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                            CRS-{String(c.course_id).padStart(3, "0")}
+                          </TableCell>
+                          <TableCell className="py-3 text-sm font-medium text-foreground">
+                            {name}
+                            {c.university_course_name && c.title && (
+                              <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+                                ({c.title})
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-3">
+                            <Badge variant="secondary" className="bg-slate-100 text-slate-700">
+                              {mapLevel(c.level)}
                             </Badge>
-                          ) : (
-                            <Badge
-                              variant="secondary"
-                              className="bg-zinc-100 text-zinc-600"
-                            >
-                              Inactive
-                            </Badge>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
+                          </TableCell>
+                          <TableCell className="py-3 text-sm">
+                            {(c.duration ?? "").trim() || "—"}
+                          </TableCell>
+                          <TableCell className="py-3">
+                            {c.open_intake_count === 0 ? (
+                              <span className="text-xs text-muted-foreground">No open intakes</span>
+                            ) : (
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                                  <CalendarRange className="h-3.5 w-3.5 text-muted-foreground" />
+                                  {c.open_intake_count}
+                                </span>
+                                {c.open_intakes.slice(0, 3).map((i) => (
+                                  <Badge key={i.id} variant="outline" className="text-[10px]">
+                                    {i.name ?? `#${i.id}`}
+                                  </Badge>
+                                ))}
+                                {c.open_intakes.length > 3 && (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    +{c.open_intakes.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-3">
+                            {paused ? (
+                              <Badge variant="secondary" className="bg-amber-100 text-amber-700">
+                                Paused
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
+                                Offered
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-3 pr-4 text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-8 w-8">
+                                  <MoreVertical className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => setRenameTarget(c)}>
+                                  <Pencil className="mr-2 h-4 w-4" /> Rename
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() =>
+                                    updateTagMut.mutate({
+                                      courseId: c.course_id,
+                                      body: { status: paused ? 1 : 0 },
+                                    })
+                                  }
+                                >
+                                  {paused ? (
+                                    <>
+                                      <Play className="mr-2 h-4 w-4" /> Resume
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Pause className="mr-2 h-4 w-4" /> Pause
+                                    </>
+                                  )}
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-destructive focus:text-destructive"
+                                  onClick={() => untagMut.mutate(c.course_id)}
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" /> Untag
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
                   )}
                 </TableBody>
               </Table>
             </div>
+            {/* IN04: the free-text university.intakes blob, kept visible read-only. */}
+            {apiUni?.intakes && apiUni.intakes.trim() !== "" && (
+              <div className="border-t p-4">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Legacy intakes note
+                </p>
+                <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">
+                  {apiUni.intakes}
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  This is the old free-text note. Admission intakes are now managed as
+                  offerings on the Intakes screen.
+                </p>
+              </div>
+            )}
           </div>
         </TabsContent>
 
@@ -1152,137 +1503,155 @@ function UniversityProfilePage() {
         </TabsContent>
       </Tabs>
 
-      <EditUniversityDialog
-        open={editUniversityOpen}
-        university={profile}
-        saving={editMut.isPending}
-        onClose={() => setEditUniversityOpen(false)}
-        onSave={(form) => {
-          // Map the new design's form fields back onto the snake_case
-          // UpdateUniversityDto columns the API understands.
-          editMut.mutate({
-            title: form.name.trim(),
-            category: form.category.trim(),
-            website: form.website.trim(),
-            email: form.email.trim(),
-            phone: form.phone.trim(),
-            country_id: form.country.trim(),
-            state: form.state.trim(),
-            address: form.address.trim() || form.city.trim(),
-            status: form.status === "Active" ? "1" : "0",
-          });
-        }}
-      />
+      {editUniversityOpen && (
+        <EditUniversityDialog
+          // Mounted only while open and keyed by row id, so every open
+          // re-snapshots the raw seed values the diff compares against.
+          key={profile.code}
+          university={profile}
+          saving={editMut.isPending}
+          onClose={() => setEditUniversityOpen(false)}
+          // The body arrives already diffed against the seed — untouched
+          // columns are absent, so there is nothing here to re-derive.
+          onSave={(body) => editMut.mutate(body)}
+        />
+      )}
 
-      {/* Tag Course Dialog */}
-      <Dialog open={tagCourseOpen} onOpenChange={setTagCourseOpen}>
+      {/* Tag Course Dialog (IN04): live course master minus already-tagged. */}
+      <Dialog
+        open={tagCourseOpen}
+        onOpenChange={(o) => {
+          setTagCourseOpen(o);
+          if (!o) resetTagDialog();
+        }}
+      >
         <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>Tag Courses</DialogTitle>
             <DialogDescription>
-              Select courses from the library to tag to {profile.name}.
+              Select courses to tag to {profile.name}. Give each a name at this
+              university if it differs from the master title.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <div className="flex items-center gap-3">
-              <div className="relative flex-1">
-                <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="Search courses..."
-                  value={courseSearch}
-                  onChange={(e) => setCourseSearch(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
-              <Select
-                value={courseLevelFilter}
-                onValueChange={(v) =>
-                  setCourseLevelFilter(v as typeof courseLevelFilter)
-                }
-              >
-                <SelectTrigger className="w-32">
-                  <SelectValue placeholder="Level" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="All">All Levels</SelectItem>
-                  <SelectItem value="UG">UG</SelectItem>
-                  <SelectItem value="PG">PG</SelectItem>
-                  <SelectItem value="Diploma">Diploma</SelectItem>
-                  <SelectItem value="Certificate">Certificate</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setCourseSearch("");
-                  setCourseLevelFilter("All");
-                }}
-              >
-                <X className="mr-1 h-4 w-4" />
-                Clear
-              </Button>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search courses…"
+                value={courseSearch}
+                onChange={(e) => setCourseSearch(e.target.value)}
+                className="pl-9"
+              />
             </div>
-            <div className="max-h-72 overflow-y-auto rounded-xl border">
-              {filteredLibrary.length === 0 ? (
+            <div className="max-h-80 overflow-y-auto rounded-xl border">
+              {allCoursesQuery.isLoading ? (
+                <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading courses…
+                </div>
+              ) : tagPickerCourses.length === 0 ? (
                 <div className="p-6 text-center text-sm text-muted-foreground">
-                  No courses match your search.
+                  {courseSearch.trim()
+                    ? "No untagged courses match your search."
+                    : "Every live course is already tagged."}
                 </div>
               ) : (
                 <div className="divide-y">
-                  {filteredLibrary.map((c) => {
-                    const selected = selectedCourses.includes(c.code);
+                  {tagPickerCourses.map((c) => {
+                    const selected = tagSelected.has(c.id);
+                    const cName = (c.title ?? c.short_name ?? "").trim() || `Course #${c.id}`;
                     return (
-                      <button
-                        key={c.code}
-                        type="button"
-                        onClick={() => toggleCourse(c.code)}
+                      <div
+                        key={c.id}
                         className={cn(
-                          "flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-muted/40",
+                          "flex items-center gap-3 px-4 py-2.5 transition-colors",
                           selected && "bg-accent/10",
                         )}
                       >
-                        <div>
-                          <div className="text-sm font-medium text-foreground">
-                            {c.name}
-                          </div>
-                          <div className="mt-0.5 text-xs text-muted-foreground">
-                            {c.code} · {c.level} · {c.category} · {c.specialisation}
-                          </div>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => toggleTagCourse(c.id)}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        >
+                          <span
+                            className={cn(
+                              "grid h-4 w-4 shrink-0 place-items-center rounded border",
+                              selected
+                                ? "border-emerald-600 bg-emerald-600 text-white"
+                                : "border-muted-foreground/40",
+                            )}
+                          >
+                            {selected && <CheckCircle2 className="h-3.5 w-3.5" />}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium text-foreground">
+                              {cName}
+                            </span>
+                            <span className="block text-[11px] text-muted-foreground">
+                              CRS-{String(c.id).padStart(3, "0")} · {mapLevel(c.level)}
+                            </span>
+                          </span>
+                        </button>
                         {selected && (
-                          <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
+                          <Input
+                            value={tagNames[c.id] ?? ""}
+                            onChange={(e) =>
+                              setTagNames((prev) => ({ ...prev, [c.id]: e.target.value }))
+                            }
+                            placeholder="Name at this university (optional)"
+                            className="h-8 w-56 text-xs"
+                          />
                         )}
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
               )}
             </div>
-            {selectedCourses.length > 0 && (
+            {tagSelected.size > 0 && (
               <div className="text-xs text-muted-foreground">
-                {selectedCourses.length} course
-                {selectedCourses.length > 1 ? "s" : ""} selected
+                {tagSelected.size} course{tagSelected.size > 1 ? "s" : ""} selected
               </div>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTagCourseOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setTagCourseOpen(false);
+                resetTagDialog();
+              }}
+            >
               Cancel
             </Button>
             <Button
               className="gap-2 bg-accent text-accent-foreground hover:bg-accent-hover"
-              onClick={() => setTagCourseOpen(false)}
+              disabled={tagSelected.size === 0 || tagMut.isPending}
+              onClick={() => tagMut.mutate()}
             >
-              <BookPlus className="h-4 w-4" />
+              {tagMut.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <BookPlus className="h-4 w-4" />
+              )}
               Tag{" "}
-              {selectedCourses.length > 0
-                ? `${selectedCourses.length} Course${selectedCourses.length > 1 ? "s" : ""}`
+              {tagSelected.size > 0
+                ? `${tagSelected.size} Course${tagSelected.size > 1 ? "s" : ""}`
                 : "Courses"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Rename a tagged course's university-specific name/code (IN04). */}
+      <RenameTaggedCourseDialog
+        target={renameTarget}
+        onClose={() => setRenameTarget(null)}
+        isPending={updateTagMut.isPending}
+        onSubmit={(body) =>
+          renameTarget &&
+          updateTagMut.mutate({ courseId: renameTarget.course_id, body })
+        }
+      />
 
       {/* Create Fee Structure Wizard */}
       <Dialog
@@ -1299,14 +1668,19 @@ function UniversityProfilePage() {
 
           {feeSuccess ? (
             <div className="space-y-4 py-4">
-              <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                <CheckCircle2 className="h-6 w-6 text-emerald-600" />
+              {/* Not a success panel: nothing was written. There is no
+                  fee-structure API (QA FS01/FS02), so this is a preview of what
+                  WOULD be created. It used to claim "has been saved". */}
+              <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <AlertTriangle className="h-6 w-6 text-amber-600" />
                 <div>
-                  <div className="text-sm font-semibold text-emerald-800">
-                    Fee Structure Created Successfully
+                  <div className="text-sm font-semibold text-amber-900">
+                    Preview only — not saved
                   </div>
-                  <div className="text-xs text-emerald-700">
-                    The fee structure has been saved.
+                  <div className="text-xs text-amber-800">
+                    Fee structures cannot be stored yet: the fee-structure API
+                    does not exist. Nothing below has been written to the
+                    database.
                   </div>
                 </div>
               </div>
@@ -2041,120 +2415,248 @@ const CATEGORIES = [
   "International University",
 ];
 
+/* ---------------- University edit form: shape, seed, payload, diff ----------------
+ *
+ * Deliberately mirrors apps/web/src/routes/universities.universities.tsx
+ * (`seedUniversityForm` / `toUniversityPayload` / `diffUniversityPayload`) so
+ * the list page and this profile page cannot drift on what they write back.
+ *
+ * Only the columns `UpdateUniversityDto` actually accepts live in this shape.
+ * Fields rendered by the dialog but ABSENT here, because the schema has no
+ * column for them and so they must never reach a PATCH body:
+ *   - University Code -> derived from `id`, read-only
+ *   - University Type -> no payer-type column on `model university`
+ *   - City            -> no column; the legacy app folds it into `address`
+ */
+type UniversityForm = {
+  name: string;
+  category: string;
+  website: string;
+  email: string;
+  phone: string;
+  country: string;
+  state: string;
+  address: string;
+  status: string;
+  fee_collection_model: string;
+};
+
+/** "Active"/"Inactive" -> the CHAR(1) column. Anything else passes through. */
+function statusToColumn(status: string): string {
+  if (status === "Active") return "1";
+  if (status === "Inactive") return "0";
+  return status.trim();
+}
+
+/** Inverse of `statusToColumn`, for seeding the form from the stored value. */
+function columnToStatus(raw: string | null): string {
+  const v = (raw ?? "").trim();
+  if (v === "") return ""; // NULL / empty — "not set", NOT a guess either way
+  if (v === "1") return "Active";
+  if (v === "0") return "Inactive";
+  return v; // unrecognised: surfaced verbatim as an extra Select option
+}
+
+/** Map the form onto the snake_case columns UpdateUniversityDto accepts. */
+function toUniversityPayload(form: UniversityForm) {
+  return {
+    title: form.name.trim(),
+    category: form.category.trim(),
+    website: form.website.trim(),
+    email: form.email.trim(),
+    phone: form.phone.trim(),
+    // Legacy free-form Text column — the list page writes it the same way.
+    country_id: form.country.trim(),
+    state: form.state.trim(),
+    // `address` is written from the Address field alone. It used to fall back
+    // to the City field, but the old `UniRow.city` was itself DERIVED from `address`,
+    // so that path wrote a column back from its own display derivative.
+    address: form.address.trim(),
+    status: statusToColumn(form.status),
+    fee_collection_model: form.fee_collection_model,
+  };
+}
+
+type UniversityPayload = ReturnType<typeof toUniversityPayload>;
+
+/**
+ * Seed the Edit form from the RAW server row — never from the display row.
+ *
+ * `UniRow.name`/`.category`/`.status`/`.country`/`.address` are all
+ * coercions (`University #28`, "Private University", "Active", "—"). Seeding
+ * from them and PATCHing back is exactly what rewrites master data, so none of
+ * them are read here.
+ */
+function seedUniversityForm(raw: RawUniversity): UniversityForm {
+  return {
+    name: raw.title ?? "",
+    category: raw.category ?? "",
+    website: raw.website ?? "",
+    email: raw.email ?? "",
+    phone: raw.phone ?? "",
+    country: raw.country_id ?? "",
+    state: raw.state ?? "",
+    address: raw.address ?? "",
+    status: columnToStatus(raw.status),
+    fee_collection_model: raw.fee_collection_model ?? "",
+  };
+}
+
+/** The form fields the operator actually edited, compared trim-insensitively. */
+function changedFields(
+  seeded: UniversityForm,
+  current: UniversityForm,
+): (keyof UniversityForm)[] {
+  return (Object.keys(current) as (keyof UniversityForm)[]).filter(
+    (k) => current[k].trim() !== seeded[k].trim(),
+  );
+}
+
+/**
+ * Build the PATCH body by diffing the submitted form against the values it was
+ * seeded with, omitting every untouched column.
+ *
+ * This is the real safety net, independent of the seeding: a column the
+ * operator never touched is simply not in the request, so the server cannot
+ * overwrite it — not with a derived default, not with a trimmed variant, not
+ * with anything. Keys are omitted entirely; no `undefined` is sent.
+ */
+function diffUniversityPayload(
+  seeded: UniversityForm,
+  current: UniversityForm,
+): Partial<UniversityPayload> {
+  const before = toUniversityPayload(seeded) as Record<string, string>;
+  const after = toUniversityPayload(current) as Record<string, string>;
+  const body: Record<string, string> = {};
+  for (const column of Object.keys(after)) {
+    if (after[column] !== before[column]) body[column] = after[column];
+  }
+  return body as Partial<UniversityPayload>;
+}
+
+/**
+ * A stored value that is not one of the known options has to be offered as an
+ * extra option, otherwise the Select renders its placeholder and the operator
+ * cannot tell a real stored value from an empty column.
+ *
+ * The comparison is exact, not trimmed: a padded `"Private University "` is
+ * not byte-equal to any SelectItem, so it gets its own option rather than
+ * silently rendering as "nothing selected".
+ */
+function extraSelectOptions(
+  value: string,
+  known: readonly string[],
+): string[] {
+  if (!value.trim() || known.includes(value)) return [];
+  return [value];
+}
+
+const STATUS_OPTIONS = ["Active", "Inactive"] as const;
+
+function validateUniversityForm(form: UniversityForm): Record<string, string> {
+  const next: Record<string, string> = {};
+  if (!form.name.trim()) next.name = "University name is required";
+  if (!form.category.trim()) next.category = "University category is required";
+  // Spec 3.4: required, but only blocks when touched (Edit validates touched
+  // fields only), so an existing NULL-model row is never force-blocked and the
+  // model can never be cleared via the Select.
+  if (!form.fee_collection_model)
+    next.fee_collection_model = "Fee collection model is required";
+  // The picker only ever yields numeric ids; this guards the raw-id fallback
+  // input (shown when GET /countries fails or is empty) against a typed
+  // country NAME. Edit validates touched fields only, so a legacy stored value
+  // never blocks an unrelated save.
+  if (!form.country.trim()) next.country = "Country is required";
+  else if (!COUNTRY_ID_RE.test(form.country.trim()))
+    next.country = "Enter a numeric country ID (e.g. 99), or several separated by commas";
+  if (!form.state.trim()) next.state = "State is required";
+  if (form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))
+    next.email = "Invalid email address";
+  if (
+    form.website.trim() &&
+    !/^(https?:\/\/)?[^\s$.?#].[^\s]*$/i.test(form.website.trim())
+  )
+    next.website = "Invalid website URL";
+  return next;
+}
+
 function EditUniversityDialog({
-  open,
   university,
   saving,
   onClose,
   onSave,
 }: {
-  open: boolean;
   university: UniRow;
   saving?: boolean;
   onClose: () => void;
-  onSave: (updated: UniRow) => void;
+  /** Receives an already-diffed PARTIAL body: untouched columns are absent. */
+  onSave: (body: Partial<UniversityPayload>) => void;
 }) {
-  const [form, setForm] = useState({
-    code: university.code,
-    name: university.name,
-    type: university.type,
-    category: university.category,
-    website: university.website === "—" ? "" : university.website,
-    email: university.email === "—" ? "" : university.email,
-    phone: university.phone === "—" ? "" : university.phone,
-    country: university.country === "—" ? "" : university.country,
-    state: university.state === "—" ? "" : university.state,
-    city: university.city === "—" ? "" : university.city,
-    address: university.address === "—" ? "" : university.address,
-    status: university.status,
-  });
-
+  /*
+   * Captured ONCE when the dialog mounts, from the raw server row. The lazy
+   * `useState` initialiser keeps the snapshot stable for the lifetime of the
+   * dialog (a background refetch cannot move it underneath the operator), so
+   * the diff below always compares against what the form was opened with. The
+   * call site mounts this only while open and keys it by row id, so every open
+   * re-snapshots.
+   */
+  const [seeded] = useState<UniversityForm>(() =>
+    seedUniversityForm(university.raw),
+  );
+  const [form, setForm] = useState<UniversityForm>(seeded);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Re-seed the form whenever the dialog is (re)opened for this university.
-  const [seededKey, setSeededKey] = useState<string | null>(null);
-  if (open && seededKey !== university.code) {
-    setSeededKey(university.code);
-    setForm({
-      code: university.code,
-      name: university.name,
-      type: university.type,
-      category: university.category,
-      website: university.website === "—" ? "" : university.website,
-      email: university.email === "—" ? "" : university.email,
-      phone: university.phone === "—" ? "" : university.phone,
-      country: university.country === "—" ? "" : university.country,
-      state: university.state === "—" ? "" : university.state,
-      city: university.city === "—" ? "" : university.city,
-      address: university.address === "—" ? "" : university.address,
-      status: university.status,
-    });
-    setErrors({});
-  }
-  if (!open && seededKey !== null) {
-    setSeededKey(null);
-  }
+  /*
+   * University Type has no column on `model university`; it is a display-only
+   * control and is kept out of `form` so it can never reach a PATCH body.
+   */
+  const [type, setType] = useState<UniRow["type"]>(university.type);
 
-  const update = (field: keyof typeof form, value: string) => {
+  // Stored values outside the standard option sets, surfaced as extra options
+  // so the operator sees what is really in the column instead of a blank.
+  const extraCategories = extraSelectOptions(seeded.category, CATEGORIES);
+  const extraStatuses = extraSelectOptions(seeded.status, STATUS_OPTIONS);
+
+  const update = <K extends keyof UniversityForm>(
+    field: K,
+    value: UniversityForm[K],
+  ) => {
     setForm((prev) => ({ ...prev, [field]: value }));
-    if (errors[field]) {
-      setErrors((prev) => {
-        const next = { ...prev };
-        delete next[field];
-        return next;
-      });
-    }
-  };
-
-  const validate = () => {
-    const next: Record<string, string> = {};
-    if (!form.name.trim()) next.name = "University name is required";
-    if (!form.code.trim()) next.code = "University code is required";
-    if (!form.type) next.type = "University type is required";
-    if (!form.category) next.category = "University category is required";
-    if (!form.country.trim()) next.country = "Country is required";
-    if (!form.state.trim()) next.state = "State is required";
-    if (!form.city.trim()) next.city = "City is required";
-    if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
-      next.email = "Invalid email address";
-    if (form.website && !/^(https?:\/\/)?[^\s$.?#].[^\s]*$/i.test(form.website))
-      next.website = "Invalid website URL";
-    setErrors(next);
-    return Object.keys(next).length === 0;
+    setErrors((prev) => {
+      if (!prev[field as string]) return prev;
+      const next = { ...prev };
+      delete next[field as string];
+      return next;
+    });
   };
 
   const save = () => {
-    if (!validate()) return;
+    const touched = changedFields(seeded, form);
 
-    const initials =
-      form.name
-        .split(/\s+/)
-        .filter(
-          (word) => word && !/^(University|College|Institute|of|the|and|&)$/i.test(word),
-        )
-        .map((word) => word[0]?.toUpperCase())
-        .slice(0, 2)
-        .join("") || university.initials;
+    // Nothing was edited: send nothing. A no-op PATCH is exactly how derived
+    // defaults used to get written over real NULLs.
+    if (touched.length === 0) {
+      toast.info("No changes to save");
+      onClose();
+      return;
+    }
 
-    const location = `${form.city.trim()}, ${form.state.trim()}`;
+    /*
+     * Validate only what the operator touched. The required-field rules exist
+     * to stop them SUBMITTING a blank, not to force them to invent a value for
+     * a column that is NULL today, that they are not editing, and that the
+     * PATCH will not include anyway.
+     */
+    const all = validateUniversityForm(form);
+    const next = Object.fromEntries(
+      Object.entries(all).filter(([field]) =>
+        touched.includes(field as keyof UniversityForm),
+      ),
+    );
+    setErrors(next);
+    if (Object.keys(next).length > 0) return;
 
-    onSave({
-      ...university,
-      code: form.code.trim() || university.code,
-      name: form.name.trim() || university.name,
-      type: form.type as UniRow["type"],
-      category: form.category,
-      website: form.website.trim(),
-      email: form.email.trim(),
-      phone: form.phone.trim(),
-      country: form.country.trim(),
-      state: form.state.trim(),
-      city: form.city.trim(),
-      address: form.address.trim(),
-      location,
-      status: form.status as UniRow["status"],
-      initials,
-    });
+    onSave(diffUniversityPayload(seeded, form));
   };
 
   const SectionTitle = ({ children }: { children: React.ReactNode }) => (
@@ -2168,15 +2670,18 @@ function EditUniversityDialog({
 
   return (
     <Dialog
-      open={open}
+      open
       onOpenChange={(nextOpen) => {
-        if (!nextOpen) onClose();
+        if (!nextOpen && !saving) onClose();
       }}
     >
       <DialogContent className="max-w-3xl p-0 overflow-hidden max-h-[85vh]">
         <DialogHeader className="px-6 pt-6 pb-0">
           <DialogTitle className="text-xl font-semibold">Edit University</DialogTitle>
-          <DialogDescription>Update this university profile.</DialogDescription>
+          <DialogDescription>
+            Update this university profile. Only the fields you edit are saved —
+            everything you leave alone is left exactly as stored.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
@@ -2195,33 +2700,35 @@ function EditUniversityDialog({
                 className={cn(errors.name && "border-red-400 focus-visible:ring-red-300")}
               />
               {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+              {!form.name.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  No name is stored for this university — the heading above
+                  shows “{university.name}”, which is derived from the record
+                  id, not something the database holds.
+                </p>
+              )}
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="profile-edit-uni-code">
-                University Code <span className="text-accent">*</span>
-              </Label>
+              <Label htmlFor="profile-edit-uni-code">University Code</Label>
               <Input
                 id="profile-edit-uni-code"
-                className={cn(
-                  "font-mono",
-                  errors.code && "border-red-400 focus-visible:ring-red-300",
-                )}
-                value={form.code}
-                onChange={(e) => update("code", e.target.value)}
+                className="font-mono"
+                value={university.code}
                 readOnly
               />
-              {errors.code && <p className="text-xs text-red-500">{errors.code}</p>}
+              <p className="text-xs text-muted-foreground">
+                Derived from the record id — not a stored column.
+              </p>
             </div>
 
             <div className="space-y-1.5">
-              <Label>
-                University Type <span className="text-accent">*</span>
-              </Label>
-              <Select value={form.type} onValueChange={(v) => update("type", v)}>
-                <SelectTrigger
-                  className={cn(errors.type && "border-red-400 focus:ring-red-300")}
-                >
+              <Label>University Type</Label>
+              <Select
+                value={type}
+                onValueChange={(v) => setType(v as UniRow["type"])}
+              >
+                <SelectTrigger>
                   <SelectValue placeholder="Select type" />
                 </SelectTrigger>
                 <SelectContent>
@@ -2233,7 +2740,9 @@ function EditUniversityDialog({
                   </SelectItem>
                 </SelectContent>
               </Select>
-              {errors.type && <p className="text-xs text-red-500">{errors.type}</p>}
+              <p className="text-xs text-muted-foreground">
+                Display only — there is no payer-type column to save this to.
+              </p>
             </div>
 
             <div className="space-y-1.5">
@@ -2252,24 +2761,99 @@ function EditUniversityDialog({
                       {c}
                     </SelectItem>
                   ))}
+                  {extraCategories.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               {errors.category && (
                 <p className="text-xs text-red-500">{errors.category}</p>
               )}
+              {extraCategories.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  “{extraCategories[0]}” is the value currently stored for this
+                  university. It is not one of the standard categories — it is
+                  kept as-is unless you pick a different one.
+                </p>
+              )}
+              {!form.category.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  No category is stored for this university. The badge on the
+                  profile shows a default, not a stored value.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>
+                Fee Collection Model <span className="text-accent">*</span>
+              </Label>
+              <Select
+                value={form.fee_collection_model}
+                onValueChange={(v) => update("fee_collection_model", v)}
+              >
+                <SelectTrigger
+                  className={cn(
+                    errors.fee_collection_model && "border-red-400 focus:ring-red-300",
+                  )}
+                >
+                  <SelectValue placeholder="Select collection model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(["upcarrera_collects", "university_collects"] as FeeCollectionModel[]).map(
+                    (m) => (
+                      <SelectItem key={m} value={m}>
+                        {COLLECTION_MODEL_LABEL[m]}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectContent>
+              </Select>
+              {errors.fee_collection_model && (
+                <p className="text-xs text-red-500">{errors.fee_collection_model}</p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {form.fee_collection_model
+                  ? COLLECTION_MODEL_HELP[form.fee_collection_model as FeeCollectionModel]
+                  : "upCarrera collects: the student pays upCarrera (royalty to the university). University collects: the student pays the university (commission to upCarrera)."}
+              </p>
             </div>
 
             <div className="space-y-1.5">
               <Label>Status</Label>
               <Select value={form.status} onValueChange={(v) => update("status", v)}>
                 <SelectTrigger>
-                  <SelectValue />
+                  {/* The placeholder is what a NULL `status` looks like. It
+                      used to render as a definite Active/Inactive — a claim
+                      the database never made. */}
+                  <SelectValue placeholder="Not set" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Active">Active</SelectItem>
-                  <SelectItem value="Inactive">Inactive</SelectItem>
+                  {STATUS_OPTIONS.map((o) => (
+                    <SelectItem key={o} value={o}>
+                      {o}
+                    </SelectItem>
+                  ))}
+                  {extraStatuses.map((o) => (
+                    <SelectItem key={o} value={o}>
+                      {o}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+              {extraStatuses.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  “{extraStatuses[0]}” is the value currently stored. It is kept
+                  as-is unless you pick a different one.
+                </p>
+              )}
+              {!form.status.trim() && (
+                <p className="text-xs text-muted-foreground">
+                  No status is stored for this university.
+                </p>
+              )}
             </div>
           </div>
 
@@ -2332,62 +2916,43 @@ function EditUniversityDialog({
           </div>
 
           {/* Location */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-4">
             <SectionTitle>Location</SectionTitle>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="profile-edit-uni-country">
-                Country <span className="text-accent">*</span>
-              </Label>
-              <Input
-                id="profile-edit-uni-country"
-                placeholder="India"
-                value={form.country}
-                onChange={(e) => update("country", e.target.value)}
-                className={cn(errors.country && "border-red-400 focus-visible:ring-red-300")}
-              />
-              {errors.country && (
-                <p className="text-xs text-red-500">{errors.country}</p>
-              )}
-            </div>
+            <CountryField
+              id="profile-edit-uni-country"
+              value={form.country}
+              storedValue={seeded.country}
+              error={errors.country}
+              disabled={Boolean(saving)}
+              onChange={(v) => update("country", v)}
+            />
 
-            <div className="space-y-1.5">
-              <Label htmlFor="profile-edit-uni-state">
-                State <span className="text-accent">*</span>
-              </Label>
-              <Input
-                id="profile-edit-uni-state"
-                placeholder="Uttar Pradesh"
-                value={form.state}
-                onChange={(e) => update("state", e.target.value)}
-                className={cn(errors.state && "border-red-400 focus-visible:ring-red-300")}
-              />
-              {errors.state && <p className="text-xs text-red-500">{errors.state}</p>}
-            </div>
+            <StateField
+              id="profile-edit-uni-state"
+              value={form.state}
+              countryId={form.country}
+              error={errors.state}
+              disabled={Boolean(saving)}
+              onChange={(v) => update("state", v)}
+            />
 
-            <div className="space-y-1.5">
-              <Label htmlFor="profile-edit-uni-city">
-                City <span className="text-accent">*</span>
-              </Label>
-              <Input
-                id="profile-edit-uni-city"
-                placeholder="Noida"
-                value={form.city}
-                onChange={(e) => update("city", e.target.value)}
-                className={cn(errors.city && "border-red-400 focus-visible:ring-red-300")}
-              />
-              {errors.city && <p className="text-xs text-red-500">{errors.city}</p>}
-            </div>
-
-            <div className="space-y-1.5 sm:col-span-3">
-              <Label htmlFor="profile-edit-uni-address">Full Address</Label>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label htmlFor="profile-edit-uni-address">Address (including city)</Label>
               <Textarea
                 id="profile-edit-uni-address"
-                placeholder="Enter complete postal address"
+                placeholder="e.g. Sector 125, Noida, Uttar Pradesh 201313"
                 rows={3}
                 value={form.address}
                 onChange={(e) => update("address", e.target.value)}
               />
+              {/* The City input that used to sit here was removed: the schema
+                  has no City column, the profile's City row is derived FROM
+                  `address`, and the old save wrote `address` back from it. */}
+              <p className="text-xs text-muted-foreground">
+                There is no separate City field — a university record stores
+                its city as part of this address, so include it here.
+              </p>
             </div>
           </div>
         </div>
@@ -2406,6 +2971,248 @@ function EditUniversityDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/* ---------------- Country / State lookups ----------------
+ *
+ * Mirrors the same block in universities.universities.tsx.
+ *
+ * `university.country_id` is a Text column holding `countries.country_id`
+ * (India is 99) — and, per the legacy DTO, possibly a comma-separated list of
+ * them. It is never a country name, so it is rendered through GET /countries
+ * and edited with a picker valued by id. `states.country` is a VarChar holding
+ * the country NAME, so state suggestions are filtered by name, not id.
+ */
+
+interface ApiCountry {
+  country_id: number;
+  country: string;
+}
+
+interface ApiState {
+  id: number;
+  country: string;
+  state_name: string;
+}
+
+/** Both lookup endpoints default to 20 rows; these are small reference tables. */
+const LOOKUP_LIMIT = 1000;
+const LOOKUP_STALE_MS = 5 * 60_000;
+
+function useCountries() {
+  return useQuery({
+    queryKey: ["countries", { page: 1, limit: LOOKUP_LIMIT }],
+    queryFn: () =>
+      apiGet<{ items: ApiCountry[]; total: number }>("/countries", {
+        page: 1,
+        limit: LOOKUP_LIMIT,
+      }),
+    staleTime: LOOKUP_STALE_MS,
+  });
+}
+
+/** id (as the string stored in `country_id`) -> country name. */
+function countryNameMap(countries: ApiCountry[] | undefined): Map<string, string> {
+  return new Map((countries ?? []).map((c) => [String(c.country_id), c.country]));
+}
+
+/** A `country_id` value the picker / API can accept: one id or an id list. */
+const COUNTRY_ID_RE = /^\d+(\s*,\s*\d+)*$/;
+
+/**
+ * Human label for a stored `country_id`, which may be a comma-separated list.
+ * Only an all-digit token is labelled "Country ID n"; an earlier free-text UI
+ * let some rows store a country NAME here, and that is shown verbatim rather
+ * than as the nonsensical "Country ID India".
+ */
+function describeCountryIds(raw: string, names: Map<string, string>): string {
+  return raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .map((id) => names.get(id) ?? (/^\d+$/.test(id) ? `Country ID ${id}` : id))
+    .join(", ");
+}
+
+/**
+ * Country NAME for state suggestions: a listed id resolves through the lookup;
+ * a single non-numeric stored value (a legacy name) is used as the name itself.
+ */
+function countryNameFor(
+  countryId: string,
+  names: Map<string, string>,
+): string | undefined {
+  const token = countryId.trim();
+  if (!token) return undefined;
+  const resolved = names.get(token);
+  if (resolved) return resolved;
+  return /^\d+$/.test(token) || token.includes(",") ? undefined : token;
+}
+
+/**
+ * Country picker, valued by `countries.country_id`.
+ *
+ * Seeded with the verbatim stored `country_id`; `toUniversityPayload` trims it
+ * and `diffUniversityPayload` only sends it when it differs from the seed, so
+ * opening Edit and saving never rewrites the column. A stored value that is not
+ * exactly one listed id (padded, a comma-separated list, an id with no
+ * countries row) is offered as its own option so the trigger shows it. If the
+ * lookup is unavailable it degrades to the raw id input.
+ */
+function CountryField({
+  id,
+  value,
+  storedValue,
+  error,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  storedValue: string;
+  error?: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const { data, isLoading, isError } = useCountries();
+  const countries = data?.items ?? [];
+  const names = countryNameMap(countries);
+  const storedIsExtra = storedValue.trim() !== "" && !names.has(storedValue);
+  const lookupUnavailable = !isLoading && (isError || countries.length === 0);
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>
+        Country <span className="text-accent">*</span>
+      </Label>
+      {lookupUnavailable ? (
+        <>
+          <Input
+            id={id}
+            placeholder="Country ID, e.g. 99"
+            disabled={disabled}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className={cn(error && "border-red-400 focus-visible:ring-red-300")}
+          />
+          <p className="text-xs text-muted-foreground">
+            {isError
+              ? "The country list could not be loaded"
+              : "No countries are set up yet"}{" "}
+            — enter the country ID directly.
+          </p>
+        </>
+      ) : (
+        <Select
+          value={value}
+          disabled={disabled || isLoading}
+          onValueChange={onChange}
+        >
+          <SelectTrigger
+            id={id}
+            className={cn(error && "border-red-400 focus:ring-red-300")}
+          >
+            {/* While loading, a seeded id has no SelectItem yet to render, so
+                the trigger would be blank rather than showing the placeholder. */}
+            {isLoading ? (
+              <span className="text-muted-foreground">Loading countries…</span>
+            ) : (
+              <SelectValue placeholder="Select country" />
+            )}
+          </SelectTrigger>
+          <SelectContent>
+            {countries.map((c) => (
+              <SelectItem key={c.country_id} value={String(c.country_id)}>
+                {c.country}
+              </SelectItem>
+            ))}
+            {storedIsExtra && (
+              <SelectItem value={storedValue}>
+                {describeCountryIds(storedValue, names)} (stored value)
+              </SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+      )}
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {!lookupUnavailable && storedIsExtra && value === storedValue && (
+        <p className="text-xs text-muted-foreground">
+          This is the value currently stored for this university (
+          <span className="font-mono">{storedValue.trim()}</span>). It is kept
+          as-is unless you pick a different country.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * State: free text (the column is a plain VarChar and many countries have no
+ * rows in `states`), with suggestions from GET /states for the chosen country.
+ */
+function StateField({
+  id,
+  value,
+  countryId,
+  error,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  countryId: string;
+  error?: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const { data: countries } = useCountries();
+  // states.country holds the NAME; a multi-id or unknown id has none.
+  const countryName = countryNameFor(countryId, countryNameMap(countries?.items));
+  const { data: states } = useQuery({
+    queryKey: ["states", { country: countryName, limit: LOOKUP_LIMIT }],
+    queryFn: () =>
+      apiGet<{ items: ApiState[]; total: number }>("/states", {
+        country: countryName,
+        page: 1,
+        limit: LOOKUP_LIMIT,
+      }),
+    enabled: Boolean(countryName),
+    staleTime: LOOKUP_STALE_MS,
+  });
+  const suggestions = countryName ? (states?.items ?? []) : [];
+  const listId = `${id}-options`;
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>
+        State <span className="text-accent">*</span>
+      </Label>
+      <Input
+        id={id}
+        placeholder="e.g. Uttar Pradesh"
+        maxLength={255}
+        disabled={disabled}
+        value={value}
+        list={suggestions.length > 0 ? listId : undefined}
+        autoComplete="off"
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(error && "border-red-400 focus-visible:ring-red-300")}
+      />
+      {suggestions.length > 0 && (
+        <datalist id={listId}>
+          {suggestions.map((st) => (
+            <option key={st.id} value={st.state_name} />
+          ))}
+        </datalist>
+      )}
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {!error && suggestions.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Type to pick from the states on file for {countryName}, or enter one.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -2430,5 +3237,80 @@ function Field({
         {value}
       </div>
     </div>
+  );
+}
+
+/** IN04: rename a tagged course's university-specific name/code. */
+function RenameTaggedCourseDialog({
+  target,
+  onClose,
+  isPending,
+  onSubmit,
+}: {
+  target: TaggedCourseApi | null;
+  onClose: () => void;
+  isPending: boolean;
+  onSubmit: (body: {
+    university_course_name: string | null;
+    university_course_code: string | null;
+  }) => void;
+}) {
+  const [name, setName] = useState("");
+  const [courseCode, setCourseCode] = useState("");
+
+  useEffect(() => {
+    if (target) {
+      setName(target.university_course_name ?? "");
+      setCourseCode(target.university_course_code ?? "");
+    }
+  }, [target]);
+
+  return (
+    <Dialog open={target != null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-[460px]">
+        <DialogHeader>
+          <DialogTitle>Rename course at this university</DialogTitle>
+          <DialogDescription>
+            Master title: {target?.title ?? target?.short_name ?? "—"}. Leave the
+            name blank to fall back to the master title.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <div className="space-y-1.5">
+            <Label>Name at this university</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={target?.title ?? "Programme name"}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Code at this university</Label>
+            <Input
+              value={courseCode}
+              onChange={(e) => setCourseCode(e.target.value)}
+              placeholder="Optional"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            disabled={isPending}
+            onClick={() =>
+              onSubmit({
+                university_course_name: name.trim() === "" ? null : name.trim(),
+                university_course_code:
+                  courseCode.trim() === "" ? null : courseCode.trim(),
+              })
+            }
+          >
+            {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

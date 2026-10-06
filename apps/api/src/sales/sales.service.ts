@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -12,7 +13,9 @@ import { UpdatePasswordDto } from './dto/update-password.dto';
 import { ListSalesTeamsDto } from './dto/list-sales-teams.dto';
 import { CreateSalesTeamDto } from './dto/create-sales-team.dto';
 import { UpdateSalesTeamDto } from './dto/update-sales-team.dto';
+import { isUserId } from './dto/sales-team-ids';
 
+import { stripUserSecrets, type UserSecretField } from '../common/user-secrets';
 /** Legacy role ids (login_helper.php). */
 const TELECALLER_ROLE_ID = 2;
 const STUDENT_ROLE_ID = 4;
@@ -237,7 +240,7 @@ export class SalesService {
     ]);
 
     return {
-      items: items.map((t) => this.withParsedMembers(t)),
+      items: await this.decorateTeams(items),
       total,
       page: pg.page,
       limit: pg.limit,
@@ -251,11 +254,13 @@ export class SalesService {
     if (!team) {
       throw new NotFoundException('Sales Team not found!');
     }
-    return this.withParsedMembers(team);
+    const [decorated] = await this.decorateTeams([team]);
+    return decorated;
   }
 
   /** Port of Sales::add — members[] is stored as a JSON string. */
   async createTeam(dto: CreateSalesTeamDto, userId: number) {
+    this.assertMemberIds(dto.members);
     const now = new Date();
     const team = await this.prisma.sales_team.create({
       data: {
@@ -277,6 +282,7 @@ export class SalesService {
 
   /** Port of Sales::edit — partial update; re-stringifies members when given. */
   async updateTeam(id: number, dto: UpdateSalesTeamDto, userId: number) {
+    this.assertMemberIds(dto.members);
     await this.findOneTeam(id); // 404 if missing / soft-deleted
 
     const now = new Date();
@@ -294,6 +300,61 @@ export class SalesService {
 
     const team = await this.prisma.sales_team.update({ where: { id }, data });
     return this.withParsedMembers(team);
+  }
+
+  /**
+   * DELETE /sales-teams/:id/members/:memberId — take one id off a team's roster.
+   *
+   * Moving a real counsellor between teams goes through
+   * PATCH /consultants/:id/team, which keeps users.team_id and this JSON roster
+   * in step. That endpoint cannot remove an id whose user does not exist (it
+   * 404s on the consultant), and legacy rows do carry such ids — production's
+   * two teams reference users 30, 31 and 41, none of which exist. Without this,
+   * an operator could see "Unknown user #30" in Manage Members and have no way
+   * to take it off.
+   *
+   * Both stores are written in one transaction: the id is stripped from the
+   * roster JSON, and users.team_id is cleared only when it points at THIS team,
+   * so a user who has since moved elsewhere is not detached from their new team.
+   * The remaining entries keep the exact representation they were stored in
+   * (string or number), since legacy PHP readers share this column.
+   */
+  async removeTeamMember(teamId: number, memberId: number, userId: number) {
+    // Interactive transaction with a row lock: the roster is re-read under
+    // SELECT ... FOR UPDATE, so a concurrent DELETE (or any other locked roster
+    // write) between our read and our write cannot be silently undone by
+    // writing back a stale filtered copy.
+    await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<{ members: string | null }[]>`
+        SELECT members FROM sales_team
+        WHERE id = ${teamId} AND deleted_at IS NULL
+        FOR UPDATE`;
+      if (rows.length === 0) {
+        throw new NotFoundException('Sales Team not found!');
+      }
+
+      const entries = this.safeParseMembers(rows[0].members);
+      const remaining = entries.filter((m) => Number(m) !== memberId);
+      if (remaining.length === entries.length) {
+        throw new NotFoundException('That user is not a member of this team');
+      }
+
+      const now = new Date();
+      await tx.sales_team.update({
+        where: { id: teamId },
+        data: {
+          members: JSON.stringify(remaining),
+          updated_by: userId,
+          updated_at: now,
+        },
+      });
+      await tx.users.updateMany({
+        where: { id: memberId, team_id: teamId },
+        data: { team_id: null, updated_by: userId, updated_at: now },
+      });
+    });
+
+    return this.findOneTeam(teamId);
   }
 
   /** Soft delete — stamp deleted_at/deleted_by (Sales::delete -> remove()). */
@@ -473,6 +534,21 @@ export class SalesService {
     };
   }
 
+  /**
+   * Reject a members array that holds anything but users.id values. The column
+   * is stored verbatim, so a display code such as "UC-91" would otherwise be
+   * persisted and later resolve to no one (QA T01).
+   */
+  private assertMemberIds(members: unknown[] | undefined): void {
+    if (members === undefined) return;
+    const bad = members.filter((m) => !isUserId(m));
+    if (bad.length > 0) {
+      throw new BadRequestException(
+        `members must be user ids; got ${bad.map((m) => JSON.stringify(m)).join(', ')}`,
+      );
+    }
+  }
+
   /** Parse the sales_team.members JSON string into numeric user ids. */
   private parseMemberIds(members: string | null): number[] {
     const parsed = this.safeParseMembers(members);
@@ -495,6 +571,94 @@ export class SalesService {
   /** Return a team row with `members` replaced by the parsed array. */
   private withParsedMembers<T extends { members: string | null }>(team: T) {
     return { ...team, members: this.safeParseMembers(team.members) };
+  }
+
+  /**
+   * Resolve the user ids a team carries into display names.
+   *
+   * `sales_team.leader` is a VarChar holding a users.id, and `members` is a JSON
+   * array of users.id — so both render as bare numbers ("30", "31") unless they
+   * are joined. There is no FK to lean on (the schema is an introspection of the
+   * legacy database and declares no relations), so the join is done here.
+   *
+   * Every id across every team is resolved in ONE query. The per-row lookup in
+   * `insights()` is an N+1 and should not be copied.
+   *
+   * Adds `leader_name` and `members_details` without altering `leader` or
+   * `members`, so existing callers are unaffected.
+   */
+  private async decorateTeams<
+    T extends {
+      leader: string | null;
+      members: string | null;
+      group_id: number | null;
+    },
+  >(teams: T[]) {
+    const memberIdsByTeam = teams.map((t) => this.parseMemberIds(t.members));
+    const leaderIds = teams
+      .map((t) => Number(t.leader))
+      .filter((n) => Number.isInteger(n) && n > 0);
+
+    const allIds = [...new Set([...leaderIds, ...memberIdsByTeam.flat()])];
+
+    const groupIds = [
+      ...new Set(teams.map((t) => t.group_id).filter((g): g is number => g != null)),
+    ];
+
+    const [users, groups] = await Promise.all([
+      allIds.length
+        ? this.prisma.users.findMany({
+            where: { id: { in: allIds }, deleted_at: null },
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+              employee_code: true,
+            },
+          })
+        : Promise.resolve([]),
+      // The parent group (migration 001). A soft-deleted group resolves to
+      // null, the same as a missing user does.
+      groupIds.length
+        ? this.prisma.counsellor_group.findMany({
+            where: { id: { in: groupIds }, deleted_at: null },
+            select: { id: true, code: true, name: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    const byId = new Map(users.map((u) => [u.id, u]));
+    const groupById = new Map(groups.map((g) => [g.id, g]));
+
+    return teams.map((team, i) => {
+      const memberIds = memberIdsByTeam[i];
+      const leaderId = Number(team.leader);
+      const leader = Number.isInteger(leaderId) ? byId.get(leaderId) : undefined;
+
+      const group = team.group_id != null ? groupById.get(team.group_id) : undefined;
+
+      return {
+        ...team,
+        members: memberIds,
+        group_name: group?.name ?? null,
+        group_code: group?.code ?? null,
+        // Null rather than the raw id when the user is missing or soft-deleted —
+        // the caller can then fall back deliberately instead of printing "30".
+        leader_name: leader?.name ?? null,
+        members_details: memberIds.map((id) => {
+          const u = byId.get(id);
+          return {
+            id,
+            name: u?.name ?? null,
+            email: u?.email ?? null,
+            phone: u?.phone ?? null,
+            employee_code: u?.employee_code ?? null,
+          };
+        }),
+        // Counted from the resolved ids, so it cannot disagree with the roster.
+        members_count: memberIds.length,
+      };
+    });
   }
 
   /**
@@ -522,15 +686,8 @@ export class SalesService {
     }
   }
 
-  /** Strip secret hashes before returning a users row. */
-  private stripSecrets<
-    T extends {
-      password?: string | null;
-      prev_password?: string | null;
-      zoom_password?: string | null;
-    },
-  >(user: T): Omit<T, 'password' | 'prev_password' | 'zoom_password'> {
-    const { password, prev_password, zoom_password, ...rest } = user;
-    return rest;
+  /** Remove every credential column — see common/user-secrets.ts. */
+  private stripSecrets<T extends object>(user: T): Omit<T, UserSecretField> {
+    return stripUserSecrets(user);
   }
 }

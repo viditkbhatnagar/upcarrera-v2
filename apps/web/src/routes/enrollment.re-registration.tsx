@@ -315,7 +315,7 @@ function ReRegistrationPage() {
           : r,
       ),
     );
-    toast.success(`${row.name} marked as Confirmed`);
+    toast.error(`Confirming a re-registration is not available yet — nothing was saved.`);
   };
 
   const reset = () => {

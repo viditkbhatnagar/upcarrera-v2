@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
@@ -16,7 +16,13 @@ import {
  * `course_ids` LongText column (the service does the JSON.stringify, mirroring
  * the legacy json_encode($courseIds)).
  */
+/*
+ * `group_name` is trimmed before validation, and the service rejects a name
+ * that already exists (case-insensitive, whitespace-normalised) with 409 —
+ * `group_courses` has no unique index, which is how "MSC" ended up twice.
+ */
 export class CreateGroupCourseDto {
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MinLength(3)
   @MaxLength(255)

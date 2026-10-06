@@ -5,10 +5,13 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
+import { RecordAccessService } from '../workflow/record-access.service';
+import { UserStateService } from '../common/user-state.service';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { ListClientsDto } from './dto/list-clients.dto';
 
+import { stripUserSecrets, type UserSecretField } from '../common/user-secrets';
 /** Legacy role id for clients (Clients.php hard-codes role_id = 8). */
 const CLIENT_ROLE_ID = 8;
 const BCRYPT_ROUNDS = 10;
@@ -31,7 +34,21 @@ const DEFAULT_LIMIT = 20;
  */
 @Injectable()
 export class ClientsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly access: RecordAccessService,
+    private readonly userState: UserStateService,
+  ) {}
+
+  /**
+   * Flush the live-state + record-access caches after an access-affecting write
+   * (status change), so a deactivated client user loses access within seconds rather
+   * than at the cache TTL (finding #9). The TTL stays a backstop.
+   */
+  private invalidateUserCaches(userId: number): void {
+    this.userState.invalidate(userId);
+    this.access.invalidate(userId);
+  }
 
   private normalizePagination(page?: number, limit?: number) {
     const safePage = page && page > 0 ? page : DEFAULT_PAGE;
@@ -43,12 +60,9 @@ export class ClientsService {
     };
   }
 
-  /** Never leak password hashes in API responses. */
-  private stripSecrets<
-    T extends { password?: string | null; prev_password?: string | null },
-  >(user: T): Omit<T, 'password' | 'prev_password'> {
-    const { password, prev_password, ...rest } = user;
-    return rest;
+  /** Remove every credential column — see common/user-secrets.ts. */
+  private stripSecrets<T extends object>(user: T): Omit<T, UserSecretField> {
+    return stripUserSecrets(user);
   }
 
   // ===========================================================================
@@ -265,6 +279,8 @@ export class ClientsService {
       });
     }
 
+    // An edit may flip users.status -> flush the access caches (finding #9).
+    this.invalidateUserCaches(id);
     return {
       ...this.stripSecrets(user),
       profile: this.decorateProfile(profile),

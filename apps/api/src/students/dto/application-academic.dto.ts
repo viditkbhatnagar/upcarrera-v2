@@ -5,28 +5,43 @@ import { IsInt, IsOptional, IsString, MaxLength } from 'class-validator';
  * Body for PATCH /applications/:id/academic.
  * Ports App/Application::academic — updates the academic/admission fields on the
  * application. The legacy controller force-sets admission_status = 0 (false) on this
- * step; that behaviour is preserved in the service.
+ * step; the service now does so only when the university or course actually
+ * changes, so an edit of the counsellor, source or intake leaves it alone.
+ *
+ * The reference ids accept null (@IsOptional passes null through) so an edit can
+ * CLEAR a course/specialisation that no longer fits the chosen university —
+ * dropping the key would leave the old one on the row.
  */
 export class ApplicationAcademicDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  university_id?: number;
+  university_id?: number | null;
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  course_id?: number;
+  course_id?: number | null;
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  specialisation_id?: number;
+  specialisation_id?: number | null;
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  session_id?: number;
+  session_id?: number | null;
+
+  /**
+   * IN04: the chosen intake (intake.id). Validated against university_course_intake
+   * for the effective (university_id, course_id); on success the server stores it
+   * and dual-writes session_id from intake.session_id. null clears it.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  intake_id?: number | null;
 
   @IsOptional()
   @IsString()
@@ -36,12 +51,12 @@ export class ApplicationAcademicDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  pipeline_user?: number;
+  pipeline_user?: number | null;
 
   @IsOptional()
   @IsString()
   @MaxLength(255)
-  source?: string;
+  source?: string | null;
 
   @IsOptional()
   @IsString()

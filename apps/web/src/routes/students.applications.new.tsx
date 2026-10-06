@@ -1,12 +1,27 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet, apiPost, apiPatch, ApiError } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
+import { apiPost, apiPatch, ApiError } from "@/lib/api";
+import {
+  type CatalogOption,
+  labelOf,
+  useAdmissionCourseOptions,
+  useAdmissionIntakeOptions,
+  useAdmissionUniversityOptions,
+  useLeadSourceOptions,
+  useSpecialisationOptions,
+} from "@/components/applications/catalogs";
+import {
+  DuplicateChecking,
+  DuplicateNotice,
+  INDIAN_MOBILE_ERROR,
+  normalizeIndianMobile,
+  useDuplicateCheck,
+} from "@/components/applications/duplicate-check";
 import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Save,
   Send,
   X,
   Upload,
@@ -37,14 +52,26 @@ export const Route = createFileRoute("/students/applications/new")({
 /* ============ Types ============ */
 type StepId = "basic" | "course" | "academic" | "employment" | "documents" | "review";
 
+/**
+ * One qualification row. `name` is one of QUALIFICATION_LEVELS: the server
+ * seeds exactly those rows on create and PATCH /qualifications updates a row by
+ * that label, so a free-text name ("Bachelor Degree") matched nothing and was
+ * silently dropped. Only board and percentage have columns
+ * (qualification.board / .percentage); institution and year of passing are not
+ * stored anywhere yet, so they are not asked for.
+ */
 interface Qualification {
   id: string;
   name: string;
   board: string;
-  institution: string;
-  year: string;
   score: string;
 }
+
+/** The qualification rows POST /applications seeds — the only labels PATCH can update. */
+const QUALIFICATION_LEVELS = ["10th", "12th", "Degree"] as const;
+
+/** A whole-number percentage, 0–100 (qualification.percentage is an Int). */
+const PERCENTAGE_RE = /^\d{1,3}$/;
 
 interface DocItem {
   key: string;
@@ -105,36 +132,39 @@ const STEPS: { id: StepId; label: string; icon: typeof UserIcon }[] = [
   { id: "review", label: "Review & Submit", icon: FileCheck2 },
 ];
 
-/* Catalog rows from the academic API; `title` is the form value, `id` resolved at submit. */
-interface CatalogRow {
-  id: number;
-  title: string;
+/*
+ * University, course, specialisation, intake and lead-source options come from
+ * the live catalogs (components/applications/catalogs.ts) — they used to be
+ * prototype literals ("January 2026", "Marketing", "Facebook") that match no row
+ * (QA AP05). The form keeps each option's VALUE (the id; for lead sources the
+ * title, which is what applications.source stores) and prints the label. It
+ * used to keep the label and look the id up by title, so two courses both
+ * called "MBA" collapsed into one and the first one's id was sent.
+ */
+
+/** The selected option's id as a number, or undefined when nothing is chosen. */
+function idValue(value: string): number | undefined {
+  return value ? Number(value) : undefined;
 }
-interface CatalogResponse {
-  items: { id: number; title: string | null }[];
+
+/** Labels of the course-step selections, for the review and success screens. */
+interface CourseLabels {
+  university: string;
+  course: string;
+  specialization: string;
+  intake: string;
 }
-const SPECIALIZATIONS = [
-  "Marketing",
-  "Finance",
-  "Human Resources",
-  "Operations",
-  "Business Analytics",
-  "Information Technology",
-  "International Business",
-];
-const INTAKES = ["January 2026", "April 2026", "July 2026", "October 2026"];
-const LEAD_SOURCES = [
-  "Website",
-  "Facebook",
-  "Instagram",
-  "Google Ads",
-  "Referral",
-  "Walk-In",
-  "Education Fair",
-  "Partner",
-  "Counsellor Generated",
-  "Other",
-];
+
+/** The application this page already created — a retry must not POST it again. */
+interface CreatedApplication {
+  application_id: number;
+  displayId: string;
+}
+
+interface QualificationResults {
+  results?: Array<{ qualification: string; updated: number }>;
+}
+
 const EMPLOYMENT_STATUSES = [
   "Student",
   "Employed",
@@ -180,9 +210,7 @@ const INITIAL_FORM: FormState = {
   leadSource: "",
   referredBy: "",
   highestQualification: "",
-  qualifications: [
-    { id: crypto.randomUUID(), name: "", board: "", institution: "", year: "", score: "" },
-  ],
+  qualifications: [{ id: crypto.randomUUID(), name: "", board: "", score: "" }],
   employmentStatus: "",
   companyName: "",
   designation: "",
@@ -197,62 +225,40 @@ const INITIAL_FORM: FormState = {
 /* ============ Component ============ */
 function NewApplicationPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [stepIdx, setStepIdx] = useState(0);
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [submitted, setSubmitted] = useState<{ id: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [createdApp, setCreatedApp] = useState<CreatedApplication | null>(null);
   const photoRef = useRef<HTMLInputElement>(null);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
 
-  // Live university catalog. The dropdown keeps using `title` as its value (the
-  // mock did the same); the id is resolved from this list at submit time.
-  const universitiesQuery = useQuery({
-    queryKey: ["catalog", "universities"],
-    queryFn: () => apiGet<CatalogResponse>("/universities", { limit: 200 }),
-  });
-  const universityRows = useMemo<CatalogRow[]>(
-    () =>
-      (universitiesQuery.data?.items ?? [])
-        .filter((u) => u.title)
-        .map((u) => ({ id: u.id, title: u.title as string })),
-    [universitiesQuery.data],
-  );
-  const UNIVERSITIES = useMemo(() => universityRows.map((u) => u.title), [universityRows]);
+  // IN04 admission cascade (keyed by id): only universities/courses/intakes with
+  // a live, OPEN offering are offered, so a lead can never be saved against a
+  // closed or untagged combination. Specialisations still come from the course.
+  const universities = useAdmissionUniversityOptions();
+  const courses = useAdmissionCourseOptions(form.university || null);
+  const specialisations = useSpecialisationOptions(form.course || null);
+  const intakes = useAdmissionIntakeOptions(form.university || null, form.course || null);
+  const leadSources = useLeadSourceOptions();
+  const INTAKES = intakes.options;
+  const LEAD_SOURCES = leadSources.options;
+  const courseLabels: CourseLabels = {
+    university: labelOf(universities.options, form.university) ?? "",
+    course: labelOf(courses.options, form.course) ?? "",
+    specialization: labelOf(specialisations.options, form.specialization) ?? "",
+    intake: labelOf(intakes.options, form.intake) ?? "",
+  };
 
-  // Live course catalog, scoped to the selected university (resolved id). When no
-  // university is chosen yet the query is disabled and the list stays empty.
-  const selectedUniversityId = useMemo(
-    () => universityRows.find((u) => u.title === form.university)?.id,
-    [universityRows, form.university],
-  );
-  const coursesQuery = useQuery({
-    queryKey: ["catalog", "courses", selectedUniversityId ?? null],
-    queryFn: () =>
-      apiGet<CatalogResponse>("/courses", {
-        limit: 200,
-        university_id: selectedUniversityId,
-      }),
-    enabled: selectedUniversityId != null,
-  });
-  const courseRows = useMemo<CatalogRow[]>(
-    () =>
-      (coursesQuery.data?.items ?? [])
-        .filter((c) => c.title)
-        .map((c) => ({ id: c.id, title: c.title as string })),
-    [coursesQuery.data],
-  );
-  const COURSES = useMemo(() => courseRows.map((c) => c.title), [courseRows]);
-
-  // Auto-save every 60s
-  useEffect(() => {
-    const t = setInterval(() => setSavedAt(new Date()), 60000);
-    return () => clearInterval(t);
-  }, []);
+  // An applicant who already has an application is shown, not entered twice
+  // (QA AP10). Once this page has created the application, it is not its own
+  // duplicate.
+  const duplicate = useDuplicateCheck(form.mobile, form.email, createdApp?.application_id);
 
   // Warn on leave
   useEffect(() => {
@@ -288,6 +294,7 @@ function NewApplicationPage() {
       if (!form.dob) e.dob = "Required";
       if (!form.nationality) e.nationality = "Required";
       if (!form.mobile.trim()) e.mobile = "Required";
+      else if (!normalizeIndianMobile(form.mobile)) e.mobile = INDIAN_MOBILE_ERROR;
       if (!form.email.trim()) e.email = "Required";
       else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) e.email = "Invalid email";
       if (!form.country) e.country = "Required";
@@ -297,17 +304,22 @@ function NewApplicationPage() {
     } else if (idx === 1) {
       if (!form.university) e.university = "Required";
       if (!form.course) e.course = "Required";
-      if (!form.intake) e.intake = "Required";
-      if (!form.leadSource) e.leadSource = "Required";
+      if (!form.intake && INTAKES.length > 0) e.intake = "Required";
+      if (!form.leadSource && LEAD_SOURCES.length > 0) e.leadSource = "Required";
       if (form.leadSource === "Referral" && !form.referredBy.trim()) e.referredBy = "Required";
     } else if (idx === 2) {
       if (!form.highestQualification) e.highestQualification = "Required";
+      const seen = new Set<string>();
       form.qualifications.forEach((q, i) => {
-        if (!q.name.trim()) e[`q_${i}_name`] = "Required";
+        if (!q.name) e[`q_${i}_name`] = "Required";
+        else if (seen.has(q.name)) e[`q_${i}_name`] = "Already added above";
+        seen.add(q.name);
         if (!q.board.trim()) e[`q_${i}_board`] = "Required";
-        if (!q.institution.trim()) e[`q_${i}_institution`] = "Required";
-        if (!q.year.trim()) e[`q_${i}_year`] = "Required";
-        if (!q.score.trim()) e[`q_${i}_score`] = "Required";
+        const score = q.score.trim();
+        if (!score) e[`q_${i}_score`] = "Required";
+        else if (!PERCENTAGE_RE.test(score) || Number(score) > 100) {
+          e[`q_${i}_score`] = "A whole-number percentage, 0–100";
+        }
       });
     } else if (idx === 3) {
       if (!form.employmentStatus) e.employmentStatus = "Required";
@@ -320,7 +332,10 @@ function NewApplicationPage() {
   };
 
   const next = () => {
-    if (validateStep(stepIdx)) setStepIdx((i) => Math.min(STEPS.length - 1, i + 1));
+    if (!validateStep(stepIdx)) return;
+    // Do not let a duplicate applicant past the contact step.
+    if (stepIdx === 0 && duplicate.matches.length > 0) return;
+    setStepIdx((i) => Math.min(STEPS.length - 1, i + 1));
   };
   const prev = () => setStepIdx((i) => Math.max(0, i - 1));
 
@@ -331,11 +346,13 @@ function NewApplicationPage() {
     reader.readAsDataURL(file);
   };
 
-  const addQualification = () =>
+  const addQualification = () => {
+    if (form.qualifications.length >= QUALIFICATION_LEVELS.length) return;
     set("qualifications", [
       ...form.qualifications,
-      { id: crypto.randomUUID(), name: "", board: "", institution: "", year: "", score: "" },
+      { id: crypto.randomUUID(), name: "", board: "", score: "" },
     ]);
+  };
   const removeQualification = (id: string) =>
     set(
       "qualifications",
@@ -360,66 +377,100 @@ function NewApplicationPage() {
       form.documents.map((d) => (d.key === key ? { ...d, file: null, status: "Not Uploaded" } : d)),
     );
 
+  /** POST the application once; a retry reuses the row this page already created. */
+  const createApplication = async (): Promise<CreatedApplication> => {
+    if (createdApp) return createdApp;
+    // ONE call — contact details plus the academic ids, so a failure cannot
+    // leave a row with no course. The server validates the mobile and the
+    // references, refuses a duplicate applicant (409), seeds the 10th / 12th /
+    // Degree qualification rows and issues the APP-YYYY-NNNNNN id.
+    const created = await apiPost<{
+      application_id: number;
+      custom_application_id?: string | null;
+    }>("/applications", {
+      name: form.fullName || undefined,
+      email: form.email || undefined,
+      phone: normalizeIndianMobile(form.mobile) ?? (form.mobile || undefined),
+      second_phone: form.altNumber || undefined,
+      whatsapp_no: form.whatsapp || undefined,
+      dob: form.dob || undefined,
+      gender: form.gender || undefined,
+      state: form.state || undefined,
+      district: form.city || undefined,
+      address: form.address || undefined,
+      university_id: idValue(form.university),
+      course_id: idValue(form.course),
+      specialisation_id: idValue(form.specialization),
+      // IN04: the chosen intake id. The server validates the (university, course,
+      // intake) offering and dual-writes applications.session_id from it.
+      intake_id: idValue(form.intake),
+      source: form.leadSource || undefined,
+    });
+    const row = {
+      application_id: created.application_id,
+      displayId: created.custom_application_id || `APP-${created.application_id}`,
+    };
+    setCreatedApp(row);
+    // The row exists from here on — refresh the list even if the next step fails.
+    void queryClient.invalidateQueries({ queryKey: ["applications"] });
+    return row;
+  };
+
+  /**
+   * Save the qualification rows; returns the labels the server did NOT update.
+   * PATCH answers 200 with updated: 0 for a label it has no row for, so the
+   * per-row counts are checked rather than trusting the status code.
+   */
+  const saveQualifications = async (appId: number): Promise<string[]> => {
+    const rows = form.qualifications
+      .filter((q) => q.name)
+      .map((q) => ({
+        qualification: q.name,
+        board: q.board.trim() || undefined,
+        ...(PERCENTAGE_RE.test(q.score.trim()) ? { percentage: Number(q.score.trim()) } : {}),
+      }));
+    if (rows.length === 0) return [];
+    const res = await apiPatch<QualificationResults>(`/applications/${appId}/qualifications`, {
+      qualifications: rows,
+    });
+    const updated = new Set(
+      (res?.results ?? []).filter((r) => r.updated > 0).map((r) => r.qualification),
+    );
+    return rows.map((r) => r.qualification).filter((q) => !updated.has(q));
+  };
+
   const submit = async () => {
     if (!validateStep(5)) return;
     if (submitting) return;
+    if (duplicate.matches.length > 0) {
+      setSubmitError("This applicant already has an application — see the notice above.");
+      return;
+    }
     setSubmitError(null);
     setSubmitting(true);
+    let created: CreatedApplication | null = createdApp;
     try {
-      // 1) Create the application (bio/contact step). Seeds default qualification rows.
-      const created = await apiPost<{
-        application_id: number;
-        custom_application_id?: string | null;
-      }>("/applications", {
-        name: form.fullName || undefined,
-        email: form.email || undefined,
-        phone: form.mobile || undefined,
-        second_phone: form.altNumber || undefined,
-        whatsapp_no: form.whatsapp || undefined,
-        dob: form.dob || undefined,
-        gender: form.gender || undefined,
-        state: form.state || undefined,
-        district: form.city || undefined,
-        address: form.address || undefined,
-      });
-      const appId = created.application_id;
-
-      // 2) Academic/admission step — university + course (resolved ids) + source.
-      const courseId = courseRows.find((c) => c.title === form.course)?.id;
-      await apiPatch(`/applications/${appId}/academic`, {
-        university_id: selectedUniversityId,
-        course_id: courseId,
-        source: form.leadSource || undefined,
-      });
-
-      // 3) Qualifications — matched server-side by the `qualification` label.
-      const qualificationRows = form.qualifications
-        .filter((q) => q.name.trim())
-        .map((q) => {
-          const pct = parseInt(q.score, 10);
-          return {
-            qualification: q.name,
-            board: q.board || undefined,
-            ...(Number.isNaN(pct) ? {} : { percentage: pct }),
-          };
-        });
-      if (qualificationRows.length > 0) {
-        await apiPatch(`/applications/${appId}/qualifications`, {
-          qualifications: qualificationRows,
-        });
+      created = await createApplication();
+      const missed = await saveQualifications(created.application_id);
+      if (missed.length > 0) {
+        setSubmitError(
+          `Application ${created.displayId} was created, but these qualifications were not saved: ${missed.join(", ")}. Press Submit to retry saving them.`,
+        );
+        return;
       }
-
-      setSubmitted({ id: created.custom_application_id || String(appId) });
+      setSubmitted({ id: created.displayId });
     } catch (err) {
+      const reason =
+        err instanceof ApiError ? err.message : "The request failed. Please try again.";
       setSubmitError(
-        err instanceof ApiError ? err.message : "Failed to submit application. Please try again.",
+        created
+          ? `Application ${created.displayId} was created, but its qualifications were not saved: ${reason} Press Submit to retry saving them.`
+          : reason,
       );
     } finally {
       setSubmitting(false);
     }
   };
-
-  const saveDraft = () => setSavedAt(new Date());
 
   /* ============ Success Screen ============ */
   if (submitted) {
@@ -442,9 +493,9 @@ function NewApplicationPage() {
             <div className="mt-1 text-xl font-bold text-primary">{submitted.id}</div>
             <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
               <SummaryItem label="Student Name" value={form.fullName} />
-              <SummaryItem label="University" value={form.university} />
-              <SummaryItem label="Course" value={form.course} />
-              <SummaryItem label="Admission Intake" value={form.intake} />
+              <SummaryItem label="University" value={courseLabels.university} />
+              <SummaryItem label="Course" value={courseLabels.course} />
+              <SummaryItem label="Admission Intake" value={courseLabels.intake} />
             </div>
           </div>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
@@ -458,6 +509,7 @@ function NewApplicationPage() {
             <button
               onClick={() => {
                 setSubmitted(null);
+                setCreatedApp(null);
                 setForm(INITIAL_FORM);
                 setStepIdx(0);
               }}
@@ -485,11 +537,6 @@ function NewApplicationPage() {
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Capture complete student admission information.
-            {savedAt && (
-              <span className="ml-2 text-xs text-primary">
-                · Draft saved {savedAt.toLocaleTimeString()}
-              </span>
-            )}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -499,13 +546,6 @@ function NewApplicationPage() {
           >
             <X className="h-4 w-4" />
             Cancel
-          </button>
-          <button
-            onClick={saveDraft}
-            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-semibold text-foreground transition hover:bg-muted"
-          >
-            <Save className="h-4 w-4" />
-            Save Draft
           </button>
           <button
             onClick={() => (stepIdx === STEPS.length - 1 ? submit() : next())}
@@ -524,6 +564,9 @@ function NewApplicationPage() {
           {submitError}
         </div>
       )}
+
+      <DuplicateChecking checking={duplicate.checking} />
+      <DuplicateNotice matches={duplicate.matches} />
 
       {/* Stepper */}
       <div className="rounded-2xl border border-border bg-surface p-5 shadow-card">
@@ -609,11 +652,15 @@ function NewApplicationPage() {
             form={form}
             set={set}
             errors={errors}
-            UNIVERSITIES={UNIVERSITIES}
-            COURSES={COURSES}
-            universitiesLoading={universitiesQuery.isLoading}
-            universitiesError={universitiesQuery.isError}
-            coursesLoading={coursesQuery.isLoading}
+            UNIVERSITIES={universities.options}
+            COURSES={courses.options}
+            SPECIALIZATIONS={specialisations.options}
+            INTAKES={INTAKES}
+            LEAD_SOURCES={LEAD_SOURCES}
+            universitiesLoading={universities.isLoading}
+            universitiesError={universities.isError}
+            coursesLoading={courses.isLoading}
+            coursesUnscoped={false}
           />
         )}
         {stepIdx === 2 && (
@@ -628,7 +675,9 @@ function NewApplicationPage() {
         )}
         {stepIdx === 3 && <StepEmployment form={form} set={set} errors={errors} />}
         {stepIdx === 4 && <StepDocuments form={form} uploadDoc={uploadDoc} removeDoc={removeDoc} />}
-        {stepIdx === 5 && <StepReview form={form} errors={errors} set={set} goTo={setStepIdx} />}
+        {stepIdx === 5 && (
+          <StepReview form={form} labels={courseLabels} errors={errors} set={set} goTo={setStepIdx} />
+        )}
 
         {/* Footer Nav */}
         <div className="flex items-center justify-between border-t border-border px-6 py-4">
@@ -921,25 +970,44 @@ function StepCourse({
   errors,
   UNIVERSITIES,
   COURSES,
+  SPECIALIZATIONS,
+  INTAKES,
+  LEAD_SOURCES,
   universitiesLoading,
   universitiesError,
   coursesLoading,
+  coursesUnscoped,
 }: {
   form: FormState;
   set: <K extends keyof FormState>(k: K, v: FormState[K]) => void;
   errors: Record<string, string>;
-  UNIVERSITIES: string[];
-  COURSES: string[];
+  UNIVERSITIES: CatalogOption[];
+  COURSES: CatalogOption[];
+  SPECIALIZATIONS: CatalogOption[];
+  INTAKES: CatalogOption[];
+  LEAD_SOURCES: CatalogOption[];
   universitiesLoading: boolean;
   universitiesError: boolean;
   coursesLoading: boolean;
+  /** True when the chosen university has no tagged courses and all are offered. */
+  coursesUnscoped: boolean;
 }) {
   return (
     <>
       <Section title="Admission Information" description="Select university, course and intake.">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           <Field label="University" required error={errors.university}>
-            <SelectInput value={form.university} onChange={(e) => set("university", e.target.value)}>
+            <SelectInput
+              value={form.university}
+              onChange={(e) => {
+                // The cascade is keyed by university: a new university clears the
+                // course, specialisation and intake chosen under the old one.
+                set("university", e.target.value);
+                set("course", "");
+                set("specialization", "");
+                set("intake", "");
+              }}
+            >
               <option value="">
                 {universitiesLoading
                   ? "Loading universities…"
@@ -950,14 +1018,21 @@ function StepCourse({
                       : "Search & select university"}
               </option>
               {UNIVERSITIES.map((u) => (
-                <option key={u}>{u}</option>
+                <option key={u.value} value={u.value}>
+                  {u.label}
+                </option>
               ))}
             </SelectInput>
           </Field>
           <Field label="Course" required error={errors.course}>
             <SelectInput
               value={form.course}
-              onChange={(e) => set("course", e.target.value)}
+              onChange={(e) => {
+                // Intakes are per (university, course): a new course clears the intake.
+                set("course", e.target.value);
+                set("specialization", "");
+                set("intake", "");
+              }}
               disabled={!form.university}
             >
               <option value="">
@@ -968,9 +1043,17 @@ function StepCourse({
                     : "Select course"}
               </option>
               {COURSES.map((c) => (
-                <option key={c}>{c}</option>
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
               ))}
             </SelectInput>
+            {coursesUnscoped && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                No courses are tagged to this university yet — showing courses not tagged to any
+                university.
+              </p>
+            )}
           </Field>
           <Field label="Specialization">
             <SelectInput
@@ -978,21 +1061,27 @@ function StepCourse({
               onChange={(e) => set("specialization", e.target.value)}
               disabled={!form.course}
             >
-              <option value="">Select specialization</option>
+              <option value="">
+                {SPECIALIZATIONS.length === 0 ? "None for this course" : "Select specialization"}
+              </option>
               {SPECIALIZATIONS.map((s) => (
-                <option key={s}>{s}</option>
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
               ))}
             </SelectInput>
           </Field>
-          <Field label="Intake" required error={errors.intake}>
+          <Field label="Intake" required={INTAKES.length > 0} error={errors.intake}>
             <SelectInput
               value={form.intake}
               onChange={(e) => set("intake", e.target.value)}
               disabled={!form.course}
             >
-              <option value="">Select intake</option>
+              <option value="">{INTAKES.length === 0 ? "No intakes set up" : "Select intake"}</option>
               {INTAKES.map((i) => (
-                <option key={i}>{i}</option>
+                <option key={i.value} value={i.value}>
+                  {i.label}
+                </option>
               ))}
             </SelectInput>
           </Field>
@@ -1001,11 +1090,13 @@ function StepCourse({
 
       <Section title="Source Information">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          <Field label="Lead Source" required error={errors.leadSource}>
+          <Field label="Lead Source" required={LEAD_SOURCES.length > 0} error={errors.leadSource}>
             <SelectInput value={form.leadSource} onChange={(e) => set("leadSource", e.target.value)}>
               <option value="">Select lead source</option>
               {LEAD_SOURCES.map((s) => (
-                <option key={s}>{s}</option>
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
               ))}
             </SelectInput>
           </Field>
@@ -1041,7 +1132,10 @@ function StepAcademic({
   updateQual: (id: string, f: keyof Qualification, v: string) => void;
 }) {
   return (
-    <Section title="Academic Qualification" description="Add all relevant academic records.">
+    <Section
+      title="Academic Qualification"
+      description="Add the 10th, 12th and Degree records you have — board and percentage are saved with the application."
+    >
       <div className="max-w-md mb-6">
         <Field label="Highest Qualification" required error={errors.highestQualification}>
           <SelectInput
@@ -1076,12 +1170,19 @@ function StepAcademic({
               )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              <Field label="Qualification Name" required error={errors[`q_${i}_name`]}>
-                <TextInput
-                  value={q.name}
-                  onChange={(e) => updateQual(q.id, "name", e.target.value)}
-                  placeholder="e.g. 12th, Bachelor Degree"
-                />
+              <Field label="Qualification" required error={errors[`q_${i}_name`]}>
+                <SelectInput value={q.name} onChange={(e) => updateQual(q.id, "name", e.target.value)}>
+                  <option value="">Select qualification</option>
+                  {QUALIFICATION_LEVELS.map((level) => (
+                    <option
+                      key={level}
+                      value={level}
+                      disabled={level !== q.name && form.qualifications.some((o) => o.name === level)}
+                    >
+                      {level}
+                    </option>
+                  ))}
+                </SelectInput>
               </Field>
               <Field label="Board / University" required error={errors[`q_${i}_board`]}>
                 <TextInput
@@ -1089,35 +1190,25 @@ function StepAcademic({
                   onChange={(e) => updateQual(q.id, "board", e.target.value)}
                 />
               </Field>
-              <Field label="Institution Name" required error={errors[`q_${i}_institution`]}>
-                <TextInput
-                  value={q.institution}
-                  onChange={(e) => updateQual(q.id, "institution", e.target.value)}
-                />
-              </Field>
-              <Field label="Year of Passing" required error={errors[`q_${i}_year`]}>
-                <TextInput
-                  value={q.year}
-                  onChange={(e) => updateQual(q.id, "year", e.target.value)}
-                  placeholder="e.g. 2021"
-                />
-              </Field>
-              <Field label="Percentage / CGPA" required error={errors[`q_${i}_score`]}>
+              <Field label="Percentage" required error={errors[`q_${i}_score`]}>
                 <TextInput
                   value={q.score}
+                  inputMode="numeric"
                   onChange={(e) => updateQual(q.id, "score", e.target.value)}
-                  placeholder="e.g. 78% or 8.4"
+                  placeholder="e.g. 78"
                 />
               </Field>
             </div>
           </div>
         ))}
-        <button
-          onClick={addQualification}
-          className="inline-flex items-center gap-2 rounded-xl border-2 border-dashed border-border bg-surface px-4 py-3 text-sm font-semibold text-primary hover:bg-primary/5 hover:border-primary transition w-full justify-center"
-        >
-          <Plus className="h-4 w-4" /> Add Qualification
-        </button>
+        {form.qualifications.length < QUALIFICATION_LEVELS.length && (
+          <button
+            onClick={addQualification}
+            className="inline-flex items-center gap-2 rounded-xl border-2 border-dashed border-border bg-surface px-4 py-3 text-sm font-semibold text-primary hover:bg-primary/5 hover:border-primary transition w-full justify-center"
+          >
+            <Plus className="h-4 w-4" /> Add Qualification
+          </button>
+        )}
       </div>
     </Section>
   );
@@ -1314,11 +1405,13 @@ function DocCard({
 /* ============ Step 6 ============ */
 function StepReview({
   form,
+  labels,
   errors,
   set,
   goTo,
 }: {
   form: FormState;
+  labels: CourseLabels;
   errors: Record<string, string>;
   set: <K extends keyof FormState>(k: K, v: FormState[K]) => void;
   goTo: (i: number) => void;
@@ -1341,10 +1434,10 @@ function StepReview({
         </ReviewBlock>
 
         <ReviewBlock title="Course Selection" onEdit={() => goTo(1)}>
-          <SummaryItem label="University" value={form.university} />
-          <SummaryItem label="Course" value={form.course} />
-          <SummaryItem label="Specialization" value={form.specialization} />
-          <SummaryItem label="Intake" value={form.intake} />
+          <SummaryItem label="University" value={labels.university} />
+          <SummaryItem label="Course" value={labels.course} />
+          <SummaryItem label="Specialization" value={labels.specialization} />
+          <SummaryItem label="Intake" value={labels.intake} />
           <SummaryItem label="Lead Source" value={form.leadSource} />
           {form.leadSource === "Referral" && (
             <SummaryItem label="Referred By" value={form.referredBy} />
@@ -1356,8 +1449,7 @@ function StepReview({
           <div className="sm:col-span-2 mt-2 space-y-2">
             {form.qualifications.map((q, i) => (
               <div key={q.id} className="rounded-lg border border-border bg-muted/30 p-3 text-xs">
-                <span className="font-semibold">#{i + 1}</span> {q.name} · {q.institution} ·{" "}
-                {q.year} · {q.score}
+                <span className="font-semibold">#{i + 1}</span> {q.name} · {q.board} · {q.score}%
               </div>
             ))}
           </div>

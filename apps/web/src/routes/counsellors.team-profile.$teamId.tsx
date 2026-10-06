@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, ApiError } from "@/lib/api";
 import {
@@ -38,12 +39,39 @@ import {
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
-  STATUS_DOT,
-  STATUS_STYLES,
-  type Counsellor,
-} from "@/lib/counsellors-data";
+  type ApiSalesTeam,
+  displayEmpId,
+  EMPTY,
+  groupLabel,
+  leaderLabel,
+  mapTeamStatus,
+  personLabel,
+  teamCode,
+  type TeamStatus,
+} from "@/components/teams/team-shared";
+import {
+  EditTeamDialog,
+  ManageMembersDialog,
+  TransferTeamDialog,
+} from "@/components/teams/team-dialogs";
 
-type TeamStatus = "Active" | "Inactive";
+
+/**
+ * A resolved team member. Deliberately narrow: these are exactly the fields
+ * GET /sales-teams/:id returns per member (`members_details`). This page used
+ * to type members as the mock `Counsellor`, which carries designation / group /
+ * manager / target / achieved — none of which has a source for a team member,
+ * so every one of them had to be faked to satisfy the type.
+ */
+interface TeamMember {
+  id: number;
+  empId: string;
+  name: string;
+  email: string;
+  phone: string;
+  /** True when the roster id resolves to no user (production: 30, 31, 41). */
+  unknown: boolean;
+}
 
 interface TeamRecord {
   id: string;
@@ -53,62 +81,95 @@ interface TeamRecord {
   group: string;
   status: TeamStatus;
   createdDate: string;
-  members: Counsellor[];
+  members: TeamMember[];
   memberCount: number;
 }
 
 // --- Live API wiring (GET /sales-teams/:id) ------------------------------
-// The profile is opened from /counsellors/teams with a `TM-####` route param
-// whose trailing digits are the real sales_team.id. We fetch the raw
-// sales_team row (SalesService.findOneTeam, members already parsed) and map it
-// into the TeamRecord shape the design renders. The source schema only carries
-// id/name/leader/status/created_at and a JSON `members` array of user IDs — it
-// has NO enriched member objects, group, target, applications, students or
-// activity history. Those sections therefore render honestly empty (member
-// count comes from members.length; leader/group fall back to "—") rather than
-// fabricating data.
-interface ApiTeam {
-  id: number | string;
-  name: string | null;
-  leader: string | null;
-  members: unknown[] | null;
-  university_id: string | null;
-  course_id: string | null;
-  status: number | string | null;
-  created_at: string | null;
-}
+// The profile is opened from /counsellors/teams with the numeric sales_team.id
+// as the route param (older links carried `TM-####`; its digits are the same
+// id, so both still resolve). SalesService.decorateTeams resolves the leader,
+// the members (`members_details`, one entry per roster id, with null details
+// when the user is missing or soft-deleted) and the parent group in one go.
+// There is NO target, application, student or activity history for a team, so
+// those sections render honestly empty rather than fabricating data.
 
-// sales_team.status is an Int? code; non-zero / truthy => Active (legacy parity).
-function mapTeamStatus(status: number | string | null): TeamStatus {
-  const code = typeof status === "string" ? Number(status) : status;
-  return code && code !== 0 ? "Active" : "Inactive";
-}
-
-// Extract the numeric sales_team id from the `TM-####` route param.
+// Extract the numeric sales_team id from the route param ("2" or "TM-0002").
 function parseTeamId(teamId: string): number | null {
   const digits = teamId.replace(/[^0-9]/g, "");
   if (!digits) return null;
   const n = Number(digits);
-  return Number.isNaN(n) ? null : n;
+  return Number.isNaN(n) || n <= 0 ? null : n;
 }
 
-// Map a raw sales_team row into the TeamRecord shape the existing JSX renders.
-function mapApiTeam(t: ApiTeam, routeId: string): TeamRecord {
-  const memberCount = Array.isArray(t.members) ? t.members.length : 0;
+function asText(value: string | null | undefined): string {
+  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
+}
+
+/** sales_team.members holds users.id values — tolerate number OR string JSON. */
+function parseMemberIds(members: unknown[] | null): number[] {
+  if (!Array.isArray(members)) return [];
+  return members.map((m) => Number(m)).filter((n) => Number.isFinite(n));
+}
+
+/**
+ * Build the roster.
+ *
+ * Prefer `members_details` (resolved server-side). Fall back to the raw id
+ * array so an older API build still renders one row per member rather than an
+ * empty table under a non-zero count.
+ *
+ * Either way there is exactly one row per member id, so the header count and
+ * the table can never disagree. An id whose user no longer exists renders as
+ * "Unknown user #30" — never as a bare number, and never as a missing row.
+ */
+function buildMembers(t: ApiSalesTeam): TeamMember[] {
+  const details = Array.isArray(t.members_details)
+    ? t.members_details
+    : parseMemberIds(t.members).map((id) => ({
+        id,
+        name: null,
+        email: null,
+        phone: null,
+        employee_code: null,
+      }));
+
+  return details.map((m) => {
+    const unknown = !(m.name && m.name.trim() !== "");
+    return {
+      id: m.id,
+      empId: unknown ? EMPTY : displayEmpId(m.employee_code, m.id),
+      name: personLabel(m.name, m.id),
+      email: asText(m.email),
+      phone: asText(m.phone),
+      unknown,
+    };
+  });
+}
+
+// Map a raw sales_team row into the TeamRecord shape the JSX renders. Display
+// only — the Edit / Members / Transfer dialogs read the raw row, never this.
+function mapApiTeam(t: ApiSalesTeam): TeamRecord {
+  const members = buildMembers(t);
   return {
-    id: routeId.toUpperCase(),
+    id: teamCode(t.id),
     name: t.name?.trim() || `Team #${t.id}`,
     shortName: t.name?.trim() || `#${t.id}`,
-    leader: t.leader?.trim() || "—",
-    group: "—",
+    leader: leaderLabel(t),
+    group: groupLabel(t),
     status: mapTeamStatus(t.status),
     createdDate: t.created_at ?? "",
-    // The endpoint returns member IDs only, not enriched counsellor objects.
-    // We keep an empty members list (count is preserved via memberCount) so the
-    // design's member/target/performance tables show honest empty states.
-    members: [],
-    memberCount,
+    members,
+    memberCount: members.length,
   };
+}
+
+/** "02 Oct 2026", or "—" for a missing / unparseable date. */
+function formatDate(value: string): string {
+  const d = new Date(value);
+  return value && !Number.isNaN(d.getTime())
+    ? d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+    : EMPTY;
 }
 
 const TEAM_STATUS_STYLES: Record<TeamStatus, string> = {
@@ -122,7 +183,7 @@ const TEAM_STATUS_DOT: Record<TeamStatus, string> = {
 
 export const Route = createFileRoute("/counsellors/team-profile/$teamId")({
   head: ({ params }) => ({
-    meta: [{ title: `${params.teamId} — Team Profile` }],
+    meta: [{ title: `Team ${params.teamId} — Team Profile` }],
   }),
   notFoundComponent: () => (
     <div className="rounded-2xl border border-border bg-surface p-10 text-center">
@@ -153,10 +214,11 @@ export const Route = createFileRoute("/counsellors/team-profile/$teamId")({
 /* ---------------- Derived data ---------------- */
 
 // Everything below is derived strictly from the team's real members. The
-// GET /sales-teams/:id endpoint returns member IDs only (not enriched
-// counsellor rows) and has no application / student / activity history, so the
-// member-backed aggregates resolve to 0 and the unbacked collections stay
-// empty — the design then shows honest empty states instead of fabricated rows.
+// members themselves are now resolved (id -> consultant), but `users` carries
+// no target/achieved columns and GET /sales-teams/:id has no application /
+// student / activity history, so those aggregates resolve to 0 and the
+// unbacked collections stay empty — the design then shows honest empty states
+// instead of fabricated rows.
 type ApplicationRow = {
   id: string;
   studentName: string;
@@ -187,30 +249,46 @@ type TimelineRow = {
 type TrendRow = { month: string; admissions: number; revenue: number };
 type ComparisonRow = { name: string; target: number; achieved: number };
 
-function buildTeamData(team: TeamRecord) {
-  const totalTarget = team.members.reduce((sum, m) => sum + m.activeTarget, 0);
-  const totalAchieved = team.members.reduce((sum, m) => sum + m.achieved, 0);
-  const totalApplications = 0;
-  const enrollmentsPending = 0;
-  const enrollmentsCompleted = totalAchieved;
-  const pendingRegFee = 0;
-  const conversionRate = totalApplications
-    ? Math.round((totalAchieved / totalApplications) * 100)
-    : 0;
-  const totalRevenue = 0;
+/** A team figure with no data source yet: null renders as EMPTY, never 0. */
+type Figure = number | null;
+
+function showFigure(n: Figure): string {
+  return n == null ? EMPTY : String(n);
+}
+
+function showPercent(part: Figure, whole: Figure): string {
+  return part == null || whole == null || whole === 0
+    ? EMPTY
+    : `${Math.round((part / whole) * 100)}%`;
+}
+
+function showLakhs(n: Figure): string {
+  return n == null ? EMPTY : `₹${(n / 100000).toFixed(1)}L`;
+}
+
+function buildTeamData() {
+  // The roster is real, but neither `users` nor sales_team carries a target,
+  // an achieved figure, applications, fees or revenue for a team. These are
+  // null (rendered "—") rather than 0: a 0 would read as a factual claim that
+  // the team has achieved nothing, and it would disagree with the Teams list,
+  // which no longer shows a Monthly Target column for the same reason.
+  const totalTarget: Figure = null;
+  const totalAchieved: Figure = null;
+  const totalApplications: Figure = null;
+  const enrollmentsPending: Figure = null;
+  const enrollmentsCompleted: Figure = totalAchieved;
+  const pendingRegFee: Figure = null;
+  const totalRevenue: Figure = null;
 
   const trend: TrendRow[] = [];
 
-  // Counsellor comparison (empty until members are enriched server-side).
-  const comparison: ComparisonRow[] = team.members.map((m) => ({
-    name: m.name.split(" ")[0],
-    target: m.activeTarget,
-    achieved: m.achieved,
-  }));
-
-  const sortedPerf = [...team.members].sort((a, b) => b.achieved - a.achieved);
-  const topPerformers = sortedPerf.slice(0, 3);
-  const lowPerformers = sortedPerf.slice(-3).reverse();
+  // Per-member performance has no source (see above), so the comparison chart
+  // and the leaderboards stay empty and render their honest empty states.
+  // Listing the real roster here with "0 / 0 — 0%" against each name would read
+  // as a factual claim that every counsellor has achieved nothing.
+  const comparison: ComparisonRow[] = [];
+  const topPerformers: TeamMember[] = [];
+  const lowPerformers: TeamMember[] = [];
 
   const applications: ApplicationRow[] = [];
   const students: StudentRow[] = [];
@@ -223,7 +301,6 @@ function buildTeamData(team: TeamRecord) {
     enrollmentsPending,
     enrollmentsCompleted,
     pendingRegFee,
-    conversionRate,
     totalRevenue,
     trend,
     comparison,
@@ -243,9 +320,12 @@ function TeamProfilePage() {
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["sales-teams", "detail", numericId],
-    queryFn: () => apiGet<ApiTeam>(`/sales-teams/${numericId}`),
+    queryFn: () => apiGet<ApiSalesTeam>(`/sales-teams/${numericId}`),
     enabled: numericId !== null,
   });
+
+  const [dialog, setDialog] = useState<"edit" | "members" | "transfer" | null>(null);
+  const closeDialog = (v: boolean) => !v && setDialog(null);
 
   // Loading: show the design's spinner inside the page chrome.
   if (numericId !== null && isLoading) {
@@ -290,8 +370,8 @@ function TeamProfilePage() {
     );
   }
 
-  const team = mapApiTeam(data, teamId);
-  const d = buildTeamData(team);
+  const team = mapApiTeam(data);
+  const d = buildTeamData();
 
   return (
     <div className="space-y-6">
@@ -328,29 +408,36 @@ function TeamProfilePage() {
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span className="font-mono font-semibold text-primary">{team.id}</span>
               <span className="inline-flex items-center gap-1">
-                <CalendarDays className="h-3.5 w-3.5" /> Created{" "}
-                {new Date(team.createdDate).toLocaleDateString("en-IN", {
-                  day: "2-digit",
-                  month: "short",
-                  year: "numeric",
-                })}
+                <CalendarDays className="h-3.5 w-3.5" /> Created {formatDate(team.createdDate)}
               </span>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <HeaderStat icon={UserCheck} label="Team Leader" value={team.leader} />
               <HeaderStat icon={Building2} label="Parent Group" value={team.group} />
               <HeaderStat icon={Users} label="Total Counsellors" value={String(team.memberCount)} />
-              <HeaderStat icon={Target} label="Monthly Target" value={String(d.totalTarget)} />
+              <HeaderStat icon={Target} label="Monthly Target" value={showFigure(d.totalTarget)} />
             </div>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <button className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted">
+            <button
+              type="button"
+              onClick={() => setDialog("edit")}
+              className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+            >
               <Pencil className="h-4 w-4" /> Edit Team
             </button>
-            <button className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted">
+            <button
+              type="button"
+              onClick={() => setDialog("members")}
+              className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+            >
               <UsersRound className="h-4 w-4" /> Manage Members
             </button>
-            <button className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover">
+            <button
+              type="button"
+              onClick={() => setDialog("transfer")}
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover"
+            >
               <ArrowRightLeft className="h-4 w-4" /> Transfer Team
             </button>
           </div>
@@ -372,9 +459,9 @@ function TeamProfilePage() {
         <TabsContent value="overview" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <KpiTile icon={Users} label="Total Counsellors" value={team.memberCount} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={FileText} label="Total Applications" value={d.totalApplications} accent="bg-indigo-500/10 text-indigo-600" />
-            <KpiTile icon={GraduationCap} label="Enrollments Pending" value={d.enrollmentsPending} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={TrendingUp} label="Conversion Rate" value={`${d.conversionRate}%`} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={FileText} label="Total Applications" value={showFigure(d.totalApplications)} accent="bg-indigo-500/10 text-indigo-600" />
+            <KpiTile icon={GraduationCap} label="Enrollments Pending" value={showFigure(d.enrollmentsPending)} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={TrendingUp} label="Conversion Rate" value={showPercent(d.totalAchieved, d.totalApplications)} accent="bg-emerald-500/10 text-emerald-600" />
           </div>
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SectionCard title="Team Information" icon={ShieldCheck}>
@@ -382,14 +469,7 @@ function TeamProfilePage() {
               <InfoRow label="Team Code" value={team.id} mono />
               <InfoRow label="Team Leader" value={team.leader} />
               <InfoRow label="Parent Group" value={team.group} />
-              <InfoRow
-                label="Created Date"
-                value={new Date(team.createdDate).toLocaleDateString("en-IN", {
-                  day: "2-digit",
-                  month: "short",
-                  year: "numeric",
-                })}
-              />
+              <InfoRow label="Created Date" value={formatDate(team.createdDate)} />
               <InfoRow
                 label="Status"
                 value={
@@ -406,11 +486,11 @@ function TeamProfilePage() {
               />
             </SectionCard>
             <SectionCard title="Performance Snapshot" icon={TrendingUp}>
-              <InfoRow label="Monthly Target" value={d.totalTarget} />
-              <InfoRow label="Admissions Achieved" value={d.totalAchieved} />
-              <InfoRow label="Pending Reg. Fee" value={d.pendingRegFee} />
-              <InfoRow label="Enrollments Completed" value={d.enrollmentsCompleted} />
-              <InfoRow label="Revenue" value={`₹${(d.totalRevenue / 100000).toFixed(1)}L`} />
+              <InfoRow label="Monthly Target" value={showFigure(d.totalTarget)} />
+              <InfoRow label="Admissions Achieved" value={showFigure(d.totalAchieved)} />
+              <InfoRow label="Pending Reg. Fee" value={showFigure(d.pendingRegFee)} />
+              <InfoRow label="Enrollments Completed" value={showFigure(d.enrollmentsCompleted)} />
+              <InfoRow label="Revenue" value={showLakhs(d.totalRevenue)} />
             </SectionCard>
           </div>
         </TabsContent>
@@ -419,65 +499,68 @@ function TeamProfilePage() {
         <TabsContent value="members">
           <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
             <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">
-              {team.memberCount} counsellors
+              {team.memberCount} {team.memberCount === 1 ? "counsellor" : "counsellors"}
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1100px] border-collapse text-sm">
+              {/* Columns are limited to what GET /sales-teams/:id actually
+                  returns per member. Designation / Group / Manager / Target /
+                  Achieved / Status were dropped: `users` has no designation or
+                  manager column at all, and members_details carries no region,
+                  status or target — so each of those could only have been
+                  rendered by inventing a value. */}
+              <table className="w-full min-w-[720px] border-collapse text-sm">
                 <thead className="bg-muted/60">
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-2.5 font-semibold">Emp ID</th>
                     <th className="px-4 py-2.5 font-semibold">Counsellor</th>
-                    <th className="px-4 py-2.5 font-semibold">Designation</th>
-                    <th className="px-4 py-2.5 font-semibold">Group</th>
-                    <th className="px-4 py-2.5 font-semibold">Manager</th>
-                    <th className="px-4 py-2.5 font-semibold">Target</th>
-                    <th className="px-4 py-2.5 font-semibold">Achieved</th>
-                    <th className="px-4 py-2.5 font-semibold">Status</th>
+                    <th className="px-4 py-2.5 font-semibold">Phone</th>
                     <th className="px-4 py-2.5 text-right font-semibold">Action</th>
                   </tr>
                 </thead>
                 <tbody>
+                  {/* members.length === memberCount by construction, so a
+                      non-zero count can no longer sit above an empty table. */}
                   {team.members.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                        {team.memberCount > 0
-                          ? "Member details are not available for this team yet."
-                          : "No counsellors assigned to this team."}
+                      <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                        No counsellors assigned to this team.
                       </td>
                     </tr>
                   )}
                   {team.members.map((c) => (
-                    <tr key={c.empId} className="border-b border-border last:border-0 hover:bg-muted/40">
+                    <tr key={c.id} className="border-b border-border last:border-0 hover:bg-muted/40">
                       <td className="px-4 py-3 font-mono text-xs font-semibold text-primary">{c.empId}</td>
                       <td className="px-4 py-3">
-                        <div className="text-sm font-semibold text-foreground">{c.name}</div>
-                        <div className="text-xs text-muted-foreground">{c.email}</div>
+                        {c.unknown ? (
+                          <>
+                            <div className="text-sm font-medium italic text-muted-foreground">{c.name}</div>
+                            <div className="text-xs text-amber-700">
+                              No such user — remove it with Manage Members
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-sm font-semibold text-foreground">{c.name}</div>
+                            <div className="text-xs text-muted-foreground">{c.email}</div>
+                          </>
+                        )}
                       </td>
-                      <td className="px-4 py-3 text-foreground">{c.designation}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{c.group}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{c.manager}</td>
-                      <td className="px-4 py-3 font-semibold text-foreground">{c.activeTarget}</td>
-                      <td className="px-4 py-3 font-semibold text-foreground">{c.achieved}</td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset",
-                            STATUS_STYLES[c.status],
-                          )}
-                        >
-                          <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[c.status])} />
-                          {c.status}
-                        </span>
-                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{c.phone}</td>
                       <td className="px-4 py-3 text-right">
-                        <Link
-                          to="/counsellors/profile/$empId"
-                          params={{ empId: c.empId }}
-                          title="View Profile"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Link>
+                        {c.unknown ? (
+                          <span className="text-xs text-muted-foreground">{EMPTY}</span>
+                        ) : (
+                          // Routed on the numeric users.id, never the display code.
+                          <Link
+                            to="/counsellors/profile/$empId"
+                            params={{ empId: String(c.id) }}
+                            title="View Profile"
+                            aria-label={`View ${c.name}`}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Link>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -490,9 +573,9 @@ function TeamProfilePage() {
         {/* PERFORMANCE */}
         <TabsContent value="performance" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-            <KpiTile icon={FileText} label="Applications Created" value={d.totalApplications} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={Wallet} label="Pending Registration Fee" value={d.pendingRegFee} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={GraduationCap} label="Enrollments Completed" value={d.enrollmentsCompleted} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={FileText} label="Applications Created" value={showFigure(d.totalApplications)} accent="bg-primary/10 text-primary" />
+            <KpiTile icon={Wallet} label="Pending Registration Fee" value={showFigure(d.pendingRegFee)} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={GraduationCap} label="Enrollments Completed" value={showFigure(d.enrollmentsCompleted)} accent="bg-emerald-500/10 text-emerald-600" />
           </div>
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SectionCard title="Monthly Admissions Trend" icon={TrendingUp}>
@@ -551,10 +634,10 @@ function TeamProfilePage() {
         {/* TARGETS */}
         <TabsContent value="targets" className="space-y-5">
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            <KpiTile icon={Target} label="Total Target" value={d.totalTarget} accent="bg-primary/10 text-primary" />
-            <KpiTile icon={CheckCircle2} label="Achieved" value={d.totalAchieved} accent="bg-emerald-500/10 text-emerald-600" />
-            <KpiTile icon={AlertTriangle} label="Pending" value={Math.max(0, d.totalTarget - d.totalAchieved)} accent="bg-amber-500/10 text-amber-600" />
-            <KpiTile icon={Award} label="Achievement %" value={`${d.totalTarget ? Math.round((d.totalAchieved / d.totalTarget) * 100) : 0}%`} accent="bg-indigo-500/10 text-indigo-600" />
+            <KpiTile icon={Target} label="Total Target" value={showFigure(d.totalTarget)} accent="bg-primary/10 text-primary" />
+            <KpiTile icon={CheckCircle2} label="Achieved" value={showFigure(d.totalAchieved)} accent="bg-emerald-500/10 text-emerald-600" />
+            <KpiTile icon={AlertTriangle} label="Pending" value={d.totalTarget == null || d.totalAchieved == null ? EMPTY : String(Math.max(0, d.totalTarget - d.totalAchieved))} accent="bg-amber-500/10 text-amber-600" />
+            <KpiTile icon={Award} label="Achievement %" value={showPercent(d.totalAchieved, d.totalTarget)} accent="bg-indigo-500/10 text-indigo-600" />
           </div>
           <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
             <div className="border-b border-border px-4 py-3 text-sm font-semibold text-foreground">Per-counsellor targets</div>
@@ -569,37 +652,15 @@ function TeamProfilePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {team.members.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                        Per-counsellor targets are not available for this team yet.
-                      </td>
-                    </tr>
-                  )}
-                  {team.members.map((m) => {
-                    const pct = m.activeTarget ? Math.round((m.achieved / m.activeTarget) * 100) : 0;
-                    return (
-                      <tr key={m.empId} className="border-b border-border last:border-0 hover:bg-muted/40">
-                        <td className="px-4 py-3 text-foreground">{m.name}</td>
-                        <td className="px-4 py-3 font-semibold text-foreground">{m.activeTarget}</td>
-                        <td className="px-4 py-3 font-semibold text-foreground">{m.achieved}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
-                              <div
-                                className={cn(
-                                  "h-full rounded-full",
-                                  pct >= 100 ? "bg-emerald-500" : pct >= 75 ? "bg-sky-500" : pct >= 50 ? "bg-amber-500" : "bg-rose-500",
-                                )}
-                                style={{ width: `${Math.min(100, pct)}%` }}
-                              />
-                            </div>
-                            <span className="text-xs font-semibold text-foreground">{pct}%</span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {/* No per-member target source exists (see buildTeamData),
+                      so the real roster is NOT listed here against 0 / 0 / 0%. */}
+                  <tr>
+                    <td colSpan={4} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                      {team.memberCount === 0
+                        ? "No counsellors assigned to this team."
+                        : "Per-counsellor targets are not available for this team yet."}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -749,6 +810,10 @@ function TeamProfilePage() {
           </SectionCard>
         </TabsContent>
       </Tabs>
+
+      <EditTeamDialog team={data} open={dialog === "edit"} onOpenChange={closeDialog} />
+      <ManageMembersDialog team={data} open={dialog === "members"} onOpenChange={closeDialog} />
+      <TransferTeamDialog team={data} open={dialog === "transfer"} onOpenChange={closeDialog} />
     </div>
   );
 }
@@ -799,7 +864,7 @@ function KpiTile({ icon: Icon, label, value, accent }: { icon: typeof Users; lab
   );
 }
 
-function PerformerList({ items, tone }: { items: Counsellor[]; tone: "emerald" | "rose" }) {
+function PerformerList({ items, tone }: { items: TeamMember[]; tone: "emerald" | "rose" }) {
   if (items.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-border bg-background px-3 py-6 text-center text-xs text-muted-foreground">
@@ -809,30 +874,24 @@ function PerformerList({ items, tone }: { items: Counsellor[]; tone: "emerald" |
   }
   return (
     <ul className="space-y-2">
-      {items.map((m) => {
-        const pct = m.activeTarget ? Math.round((m.achieved / m.activeTarget) * 100) : 0;
-        return (
-          <li key={m.empId} className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-foreground">{m.name}</div>
-              <div className="text-[11px] text-muted-foreground">{m.empId} · {m.designation}</div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">{m.achieved}/{m.activeTarget}</span>
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
-                  tone === "emerald"
-                    ? "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20"
-                    : "bg-rose-500/10 text-rose-700 ring-rose-500/20",
-                )}
-              >
-                {pct}%
-              </span>
-            </div>
-          </li>
-        );
-      })}
+      {items.map((m) => (
+        <li key={m.id} className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-foreground">{m.name}</div>
+            <div className="text-[11px] text-muted-foreground">{m.empId} · {m.email}</div>
+          </div>
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
+              tone === "emerald"
+                ? "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20"
+                : "bg-rose-500/10 text-rose-700 ring-rose-500/20",
+            )}
+          >
+            {EMPTY}
+          </span>
+        </li>
+      ))}
     </ul>
   );
 }

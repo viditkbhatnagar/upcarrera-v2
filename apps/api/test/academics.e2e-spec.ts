@@ -41,13 +41,18 @@ describe('Academics catalog (e2e)', () => {
   // lifecycle reads as one flow rather than depending on pre-seeded ids.
   let createdCourseId: number;
 
-  // All academics create fields are optional (legacy ported nothing), so this is
-  // a full, valid payload. total_amount / is_lms_course are @IsInt (numbers);
-  // total_duration is a @IsString column ('2' is intentional, not a typo).
+  // A full, valid payload. CreateCourseDto requires level, specialisations,
+  // total_duration (the magnitude) and duration (the unit) — see
+  // courses-catalog.e2e-spec.ts for those rules. total_amount / is_lms_course
+  // are @IsInt (numbers); total_duration is a @IsString column ('2' is
+  // intentional, not a typo).
   const newCourse = {
     title: 'E2E Course',
     short_name: 'E2EC',
     stream: 'Management',
+    level: 'PG',
+    specialisations: 'General',
+    duration: 'Year',
     total_duration: '2',
     total_amount: 1000,
     study_mode: 'Online',

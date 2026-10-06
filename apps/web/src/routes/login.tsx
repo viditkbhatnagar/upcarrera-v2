@@ -128,7 +128,7 @@ export function LoginPage() {
     setLoading(true);
     await new Promise((r) => setTimeout(r, 700));
     setLoading(false);
-    toast.success("OTP sent to your registered email.");
+    toast.error("Login OTP is not available yet — nothing was saved.");
     setScreen("forgot-otp");
   };
 
@@ -301,7 +301,7 @@ export function LoginPage() {
                   onOtp={setOtp}
                   onSubmit={handleVerifyOtp}
                   onBack={() => setScreen("forgot-email")}
-                  onResend={() => toast.success("A new OTP has been sent.")}
+                  onResend={() => toast.error("Login OTP is not available yet — nothing was saved.")}
                 />
               )}
 

@@ -30,12 +30,18 @@ import { CallsModule } from './calls/calls.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { MaintenanceModule } from './maintenance/maintenance.module';
 import { PermissionsGuard } from './common/guards/permissions.guard';
+import { CommonModule } from './common/common.module';
+import { WorkflowModule } from './workflow/workflow.module';
+import { FeeStructuresModule } from './finance/fee-structures/fee-structures.module';
+import { ApplicantModule } from './applicant/applicant.module';
+import { MasterSettingsModule } from './master-settings/master-settings.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
     PrismaModule,
+    CommonModule,
     HealthModule,
     AuthModule,
     LeadsModule,
@@ -60,6 +66,10 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
     ResourcesModule,
     CallsModule,
     MaintenanceModule,
+    WorkflowModule,
+    FeeStructuresModule,
+    ApplicantModule,
+    MasterSettingsModule,
   ],
   providers: [
     // Global JWT guard — every route is protected unless marked @Public().

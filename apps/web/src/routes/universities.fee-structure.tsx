@@ -1,30 +1,56 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { zodValidator, fallback } from "@tanstack/zod-adapter";
+import { z } from "zod";
+import { toast } from "sonner";
 import {
+  Plus,
   Download,
   Search,
-  Eye,
-  Save,
-  RotateCcw,
   Filter,
-  Columns3,
+  RotateCcw,
+  Eye,
+  Pencil,
   ChevronLeft,
   ChevronRight,
-  Building2,
   AlertTriangle,
+  Loader2,
+  MoreHorizontal,
+  CheckCircle2,
+  CalendarClock,
+  CopyPlus,
+  Ban,
+  Trash2,
+  Layers,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { ApiError } from "@/lib/api";
+import { getUser } from "@/lib/session";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { useUniversityOptions, useCourseOptions } from "@/components/applications/catalogs";
+import {
+  activateFeeStructure,
+  copyFeeStructure,
+  downloadFeeStructuresCsv,
+  feeStructureKeys,
+  formatInr,
+  listFeeStructures,
+  listIntakes,
+  type FeeStructureListItem,
+  type ListFeeStructuresParams,
+} from "@/lib/api/fee-structures";
+import { CollectionModelBadge, IntakeStatusBadge, StatusChip } from "@/components/fee-structure/badges";
+import {
+  CopyIntakeDialog,
+  CopyToIntakeDialog,
+  DeleteDialog,
+  ExpireDialog,
+} from "@/components/fee-structure/dialogs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -33,7 +59,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -43,725 +68,627 @@ import {
 } from "@/components/ui/select";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
-  DropdownMenuLabel,
+  DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
-import { Card, CardContent } from "@/components/ui/card";
-import { toast } from "sonner";
+
+const PAGE_SIZE = 20;
+/** Roles holding crm:fee-structures.manage: Super Admin (1) + Admin (7). */
+const MANAGE_ROLE_IDS = new Set([1, 7]);
+
+const strish = fallback(
+  z.union([z.string(), z.number()]).transform((v) => String(v)).optional(),
+  undefined,
+);
+
+const searchSchema = z.object({
+  q: strish,
+  university_id: strish,
+  course_id: strish,
+  intake_id: strish,
+  status: fallback(z.enum(["draft", "active", "expired"]).optional(), undefined),
+  fee_collection_model: fallback(
+    z.enum(["upcarrera_collects", "university_collects"]).optional(),
+    undefined,
+  ),
+  fee_min: strish,
+  fee_max: strish,
+  sort: fallback(
+    z.enum(["created_desc", "created_asc", "total_desc", "total_asc", "code_asc", "code_desc"]).optional(),
+    undefined,
+  ),
+  page: fallback(z.coerce.number().int().min(1).optional(), undefined),
+});
 
 export const Route = createFileRoute("/universities/fee-structure")({
+  validateSearch: zodValidator(searchSchema),
   head: () => ({ meta: [{ title: "Fee Structures — upCarrera" }] }),
   component: FeeStructuresPage,
 });
 
-type FeeStatus = "Active" | "Draft" | "Inactive" | "Expired";
-type UniversityType = "Type 1" | "Type 2";
-
-type FeeStructure = {
-  id: string;
-  university: string;
-  universityCode: string;
-  universityType: UniversityType;
-  course: string;
-  specialisation: string;
-  group: string;
-  intake: string;
-  registrationFee: number;
-  totalFee: number;
-  netPayable: number;
-  installmentEnabled: boolean;
-  status: FeeStatus;
-  createdDate: string; // ISO
-};
-
-// --- Live API wiring -------------------------------------------------------
-// There is no dedicated "fee structures" endpoint. Each course carries its own
-// fee definition, so the fee-structure list is sourced from GET /api/courses
-// ({ items, total, page, limit }) and decorated with the owning university's
-// name/code via GET /api/universities. Fields the schema doesn't carry
-// (intake, a distinct net-payable, the Type 1/Type 2 payment model) are
-// derived with sensible fallbacks — see mapCourseToFee below.
-const PAGE_SIZE = 100;
-
-interface ApiCourseRow {
-  id: number | string;
-  title: string | null;
-  short_name: string | null;
-  stream: string | null;
-  level: string | null;
-  specialisations: string | null;
-  payment_mode: string | null;
-  emi_facility: number | string | boolean | null;
-  total_amount: number | string | null;
-  fee_structure: number | string | null;
-  study_mode: string | null;
-  university_id: number | string | null;
-  status: number | string | null;
-  created_at: string | null;
+function errorMessage(err: unknown): string {
+  return err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
 }
-
-interface ApiUniversityRow {
-  id: number | string;
-  title: string | null;
-  category: string | null;
-}
-
-// Pull a numeric amount out of a possibly-string / possibly-null column.
-function toAmount(value: number | string | null | undefined): number {
-  if (value === null || value === undefined) return 0;
-  const n = typeof value === "number" ? value : Number(String(value).replace(/[^0-9.-]/g, ""));
-  return Number.isFinite(n) ? n : 0;
-}
-
-// Legacy course.status is typically 1 (active) / 0 (inactive); the screen has a
-// richer status vocabulary, so map what we can and bucket the rest to Draft.
-function mapCourseStatus(value: number | string | null): FeeStatus {
-  if (value === null || value === undefined) return "Draft";
-  const v = String(value).trim().toLowerCase();
-  if (v === "1" || v === "active" || v === "true") return "Active";
-  if (v === "0" || v === "inactive" || v === "false") return "Inactive";
-  if (v === "expired") return "Expired";
-  return "Draft";
-}
-
-// university.category is a free-text column; treat a "type 2"-ish label as the
-// student-pays-upCarrera model and everything else as Type 1.
-function mapUniversityType(category: string | null | undefined): UniversityType {
-  return category && category.toLowerCase().includes("2") ? "Type 2" : "Type 1";
-}
-
-// Build an MSU-style 3-letter code from a university title.
-function deriveCode(title: string | null | undefined, id: number | string): string {
-  if (!title?.trim()) return `U${String(id).padStart(2, "0")}`;
-  const words = title.trim().split(/\s+/).filter(Boolean);
-  const letters = (words.length >= 2 ? words.map((w) => w[0]).join("") : title.trim())
-    .replace(/[^A-Za-z]/g, "")
-    .toUpperCase();
-  return letters.slice(0, 3) || `U${String(id).padStart(2, "0")}`;
-}
-
-function mapCourseToFee(
-  r: ApiCourseRow,
-  uni: ApiUniversityRow | undefined,
-): FeeStructure {
-  const total = toAmount(r.total_amount) || toAmount(r.fee_structure);
-  // payment_mode often encodes the registration/booking amount; fall back to
-  // fee_structure when it isn't a parseable number.
-  const reg = toAmount(r.payment_mode) || toAmount(r.fee_structure);
-  // No separate net-payable column exists; net payable == total fee.
-  const net = total;
-  const uniTitle = uni?.title?.trim() ? String(uni.title) : `University #${r.university_id ?? "—"}`;
-  const installment =
-    r.emi_facility === true ||
-    String(r.emi_facility ?? "").trim().toLowerCase() === "1" ||
-    String(r.emi_facility ?? "").trim().toLowerCase() === "yes" ||
-    String(r.emi_facility ?? "").trim().toLowerCase() === "true";
-  return {
-    id: r.short_name?.trim() ? String(r.short_name) : `FEE-${String(r.id).padStart(4, "0")}`,
-    university: uniTitle,
-    universityCode: deriveCode(uni?.title, r.university_id ?? r.id),
-    universityType: mapUniversityType(uni?.category),
-    course: r.title?.trim() ? String(r.title) : `Course #${r.id}`,
-    specialisation: r.specialisations?.trim() ? String(r.specialisations) : "—",
-    // No "group" column on courses; reuse the stream/level as the group label.
-    group: r.stream?.trim() ? String(r.stream) : r.level?.trim() ? String(r.level) : "—",
-    // No intake/session is attached to a course's fee definition.
-    intake: r.study_mode?.trim() ? String(r.study_mode) : "—",
-    registrationFee: reg,
-    totalFee: total,
-    netPayable: net,
-    installmentEnabled: installment,
-    status: mapCourseStatus(r.status),
-    createdDate: r.created_at ? String(r.created_at).slice(0, 10) : "",
-  };
-}
-
-// Status vocabulary is a fixed enum on this screen (not sourced from the API).
-const STATUSES: FeeStatus[] = ["Active", "Draft", "Inactive", "Expired"];
-
-const STATUS_STYLES: Record<FeeStatus, string> = {
-  Active: "bg-emerald-100 text-emerald-700 ring-emerald-200",
-  Draft: "bg-slate-100 text-slate-700 ring-slate-200",
-  Inactive: "bg-orange-100 text-orange-700 ring-orange-200",
-  Expired: "bg-red-100 text-red-700 ring-red-200",
-};
-
-const TYPE_STYLES: Record<UniversityType, string> = {
-  "Type 1": "bg-primary/10 text-primary ring-primary/20",
-  "Type 2": "bg-violet-100 text-violet-700 ring-violet-200",
-};
-
-const TYPE_LABEL: Record<UniversityType, string> = {
-  "Type 1": "Type 1 · Student Pays University",
-  "Type 2": "Type 2 · Student Pays upCarrera",
-};
-
-const inr = (n: number) => "₹" + n.toLocaleString("en-IN");
-
-const fmtDate = (iso: string) => {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return `${String(d.getDate()).padStart(2, "0")} ${d.toLocaleString("en-US", { month: "short" })} ${d.getFullYear()}`;
-};
-
-type ColumnKey =
-  | "id"
-  | "university"
-  | "course"
-  | "intake"
-  | "type"
-  | "regFee"
-  | "totalFee"
-  | "netPayable"
-  | "installment"
-  | "status"
-  | "created"
-  | "action";
-
-const ALL_COLUMNS: { key: ColumnKey; label: string }[] = [
-  { key: "id", label: "Fee Structure ID" },
-  { key: "university", label: "University" },
-  { key: "course", label: "Course" },
-  { key: "intake", label: "Intake" },
-  { key: "type", label: "University Type" },
-  { key: "regFee", label: "Registration Fee" },
-  { key: "totalFee", label: "Total Fee" },
-  { key: "netPayable", label: "Net Payable" },
-  { key: "installment", label: "Installment" },
-  { key: "status", label: "Status" },
-  { key: "created", label: "Created Date" },
-  { key: "action", label: "Action" },
-];
 
 function FeeStructuresPage() {
-  const [q, setQ] = useState("");
-  const [uniQ, setUniQ] = useState("");
-  const [course, setCourse] = useState("all");
-  const [spec, setSpec] = useState("all");
-  const [intake, setIntake] = useState("all");
-  const [type, setType] = useState("all");
-  const [status, setStatus] = useState("all");
-  const [feeMin, setFeeMin] = useState("");
-  const [feeMax, setFeeMax] = useState("");
-  const [sortKey, setSortKey] = useState<ColumnKey>("created");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
-  const [visibleCols, setVisibleCols] = useState<Record<ColumnKey, boolean>>({
-    id: true, university: true, course: true, intake: true, type: true,
-    regFee: true, totalFee: true, netPayable: true, installment: true,
-    status: true, created: true, action: true,
-  });
-  const [viewing, setViewing] = useState<FeeStructure | null>(null);
-  const [editing, setEditing] = useState<FeeStructure | null>(null);
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
+  const qc = useQueryClient();
 
-  // Each course IS a fee structure; universities are fetched to resolve names.
-  const coursesQuery = useQuery({
-    queryKey: ["fee-structures-courses", { page: 1, limit: PAGE_SIZE }],
-    queryFn: () =>
-      apiGet<{ items: ApiCourseRow[]; total: number; page: number; limit: number }>("/courses", {
-        page: 1,
-        limit: PAGE_SIZE,
-      }),
-  });
-  const universitiesQuery = useQuery({
-    queryKey: ["fee-structures-universities", { page: 1, limit: PAGE_SIZE }],
-    queryFn: () =>
-      apiGet<{ items: ApiUniversityRow[]; total: number; page: number; limit: number }>(
-        "/universities",
-        { page: 1, limit: PAGE_SIZE },
-      ),
-  });
+  const user = getUser();
+  const canManage = user?.role_id != null && MANAGE_ROLE_IDS.has(user.role_id);
 
-  const isLoading = coursesQuery.isLoading || universitiesQuery.isLoading;
-  const isError = coursesQuery.isError;
+  const page = search.page ?? 1;
 
-  // Mapped live rows. Local edits (Edit dialog) are layered on top via `ALL`.
-  const mapped = useMemo<FeeStructure[]>(() => {
-    const uniById = new Map<string, ApiUniversityRow>(
-      (universitiesQuery.data?.items ?? []).map((u) => [String(u.id), u]),
-    );
-    return (coursesQuery.data?.items ?? []).map((c) =>
-      mapCourseToFee(c, uniById.get(String(c.university_id))),
-    );
-  }, [coursesQuery.data, universitiesQuery.data]);
-
-  const [ALL, setALL] = useState<FeeStructure[]>([]);
+  // Debounced free-text search -> URL.
+  const [draft, setDraft] = useState(search.q ?? "");
+  useEffect(() => setDraft(search.q ?? ""), [search.q]);
+  const debounced = useDebouncedValue(draft);
   useEffect(() => {
-    setALL(mapped);
-  }, [mapped]);
+    if (debounced !== (search.q ?? "")) {
+      navigate({ search: (prev) => ({ ...prev, q: debounced || undefined, page: undefined }) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced]);
 
-  // Filter option lists derived from the live rows (the API has no static
-  // enums for course group / specialisation / intake).
-  const GROUPS = useMemo(
-    () => Array.from(new Set(ALL.map((f) => f.group).filter((g) => g && g !== "—"))).sort(),
-    [ALL],
+  const universities = useUniversityOptions();
+  const courses = useCourseOptions(search.university_id ?? null, { strict: true });
+  const intakes = useQuery({ queryKey: ["intakes", "v2"], queryFn: listIntakes });
+  const intakeOptions = intakes.data?.items ?? [];
+
+  const listParams = useMemo<ListFeeStructuresParams>(
+    () => ({
+      page,
+      limit: PAGE_SIZE,
+      q: search.q || undefined,
+      university_id: search.university_id ? Number(search.university_id) : undefined,
+      course_id: search.course_id ? Number(search.course_id) : undefined,
+      intake_id: search.intake_id ? Number(search.intake_id) : undefined,
+      status: search.status,
+      fee_collection_model: search.fee_collection_model,
+      fee_min: search.fee_min ? Number(search.fee_min) : undefined,
+      fee_max: search.fee_max ? Number(search.fee_max) : undefined,
+      sort: search.sort,
+    }),
+    [search, page],
   );
-  const SPECS = useMemo(
-    () => Array.from(new Set(ALL.map((f) => f.specialisation).filter((s) => s && s !== "—"))).sort(),
-    [ALL],
-  );
-  const INTAKES = useMemo(
-    () => Array.from(new Set(ALL.map((f) => f.intake).filter((i) => i && i !== "—"))).sort(),
-    [ALL],
-  );
 
-  const filtered = useMemo(() => {
-    let rows = ALL.filter((f) => {
-      if (q && !f.id.toLowerCase().includes(q.toLowerCase())) return false;
-      if (uniQ && !f.university.toLowerCase().includes(uniQ.toLowerCase())) return false;
-      if (course !== "all" && f.group !== course) return false;
-      if (spec !== "all" && f.specialisation !== spec) return false;
-      if (intake !== "all" && f.intake !== intake) return false;
-      if (type !== "all" && f.universityType !== type) return false;
-      if (status !== "all" && f.status !== status) return false;
-      if (feeMin && f.totalFee < Number(feeMin)) return false;
-      if (feeMax && f.totalFee > Number(feeMax)) return false;
-      return true;
-    });
-    rows = [...rows].sort((a, b) => {
-      const dir = sortDir === "asc" ? 1 : -1;
-      const va: string | number =
-        sortKey === "regFee" ? a.registrationFee :
-        sortKey === "totalFee" ? a.totalFee :
-        sortKey === "netPayable" ? a.netPayable :
-        sortKey === "created" ? a.createdDate :
-        sortKey === "university" ? a.university :
-        sortKey === "course" ? a.course :
-        sortKey === "intake" ? a.intake :
-        sortKey === "type" ? a.universityType :
-        sortKey === "status" ? a.status :
-        a.id;
-      const vb: string | number =
-        sortKey === "regFee" ? b.registrationFee :
-        sortKey === "totalFee" ? b.totalFee :
-        sortKey === "netPayable" ? b.netPayable :
-        sortKey === "created" ? b.createdDate :
-        sortKey === "university" ? b.university :
-        sortKey === "course" ? b.course :
-        sortKey === "intake" ? b.intake :
-        sortKey === "type" ? b.universityType :
-        sortKey === "status" ? b.status :
-        b.id;
-      if (va < vb) return -1 * dir;
-      if (va > vb) return 1 * dir;
-      return 0;
-    });
-    return rows;
-  }, [q, uniQ, course, spec, intake, type, status, feeMin, feeMax, sortKey, sortDir, ALL]);
+  const query = useQuery({
+    queryKey: feeStructureKeys.list(listParams),
+    queryFn: () => listFeeStructures(listParams),
+    placeholderData: (prev) => prev,
+  });
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
+  const data = query.data;
+  const counts = data?.counts ?? { draft: 0, active: 0, expired: 0 };
+  const total = data?.total ?? 0;
+  const totalAll = counts.draft + counts.active + counts.expired;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const rows = data?.items ?? [];
 
-  const resetFilters = () => {
-    setQ(""); setUniQ(""); setCourse("all"); setSpec("all"); setIntake("all");
-    setType("all"); setStatus("all"); setFeeMin(""); setFeeMax(""); setPage(1);
-    toast.success("Filters reset");
+  const setFilter = (partial: Record<string, string | undefined>) =>
+    navigate({ search: (prev) => ({ ...prev, ...partial, page: undefined }) });
+
+  const setStatus = (next: "draft" | "active" | "expired" | undefined) =>
+    navigate({ search: (prev) => ({ ...prev, status: next, page: undefined }) });
+
+  const setPage = (p: number) =>
+    navigate({ search: (prev) => ({ ...prev, page: p <= 1 ? undefined : p }) });
+
+  const resetFilters = () => navigate({ search: () => ({}) });
+
+  // Dialog state.
+  const [copyIntakeOpen, setCopyIntakeOpen] = useState(false);
+  const [expireTarget, setExpireTarget] = useState<FeeStructureListItem | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<FeeStructureListItem | null>(null);
+  const [copyPickerTarget, setCopyPickerTarget] = useState<FeeStructureListItem | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: feeStructureKeys.all });
+
+  const activateMut = useMutation({
+    mutationFn: (id: number) => activateFeeStructure(id),
+    onSuccess: (res) => {
+      invalidate();
+      toast.success(`${res.code ?? "Fee structure"} activated.`);
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+
+  // MEDIUM-3: try to auto-resolve the next intake; when the server cannot (no later
+  // intake, or it would collide with the source), fall back to the explicit picker
+  // instead of just toasting an error, so the action stays usable.
+  const copyNextMut = useMutation({
+    mutationFn: (row: FeeStructureListItem) => copyFeeStructure(row.id),
+    onSuccess: (res) => {
+      invalidate();
+      toast.success(
+        `Copied to ${res.intake_name ?? "the next intake"} as ${res.code ?? "a new draft"}.`,
+      );
+    },
+    onError: (err, row) => {
+      if (err instanceof ApiError && /later intake|pick a target|different intake/i.test(err.message)) {
+        setCopyPickerTarget(row);
+        return;
+      }
+      toast.error(errorMessage(err));
+    },
+  });
+
+  const onExport = async () => {
+    setExporting(true);
+    try {
+      await downloadFeeStructuresCsv(listParams);
+      toast.success("Export ready.");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const toggleSort = (k: ColumnKey) => {
-    if (sortKey === k) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else { setSortKey(k); setSortDir("asc"); }
-  };
-
-  const exportCsv = () => {
-    const headers = ["ID","University","Course","Intake","Type","Registration","Total","Net Payable","Installment","Status","Created"];
-    const rows = filtered.map((f) => [
-      f.id, f.university, f.course, f.intake, f.universityType,
-      f.registrationFee, f.totalFee, f.netPayable,
-      f.installmentEnabled ? "Yes" : "No", f.status, fmtDate(f.createdDate),
-    ]);
-    const csv = [headers, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = "fee-structures.csv"; a.click();
-    URL.revokeObjectURL(url);
-    toast.success("Exported to CSV");
-  };
+  const hasFilters =
+    !!search.q ||
+    !!search.university_id ||
+    !!search.course_id ||
+    !!search.intake_id ||
+    !!search.status ||
+    !!search.fee_collection_model ||
+    !!search.fee_min ||
+    !!search.fee_max;
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-start justify-between gap-4">
+    <div className="space-y-6 p-6">
+      {/* Header + toolbar */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Fee Structures</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            View and compare all fee structures.
+          <p className="mt-1 text-sm text-muted-foreground">
+            One master per university × course × intake, with a Draft → Active → Expired lifecycle.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm">
-                <Download className="mr-1" /> Export
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={onExport} disabled={exporting}>
+            {exporting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Download className="mr-1 h-4 w-4" />}
+            Export CSV
+          </Button>
+          {canManage && (
+            <>
+              <Button variant="outline" size="sm" onClick={() => setCopyIntakeOpen(true)}>
+                <Layers className="mr-1 h-4 w-4" />
+                Copy intake…
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={exportCsv}>Export to Excel (CSV)</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => toast.message("PDF export queued")}>Export to PDF</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              <Button size="sm" asChild>
+                <Link to="/universities/fee-structure/new">
+                  <Plus className="mr-1 h-4 w-4" />
+                  New fee structure
+                </Link>
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
+      {/* Status cards from the server counts */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatusCard
+          label="All"
+          value={totalAll}
+          active={!search.status}
+          onClick={() => setStatus(undefined)}
+          accent="bg-foreground"
+        />
+        <StatusCard
+          label="Draft"
+          value={counts.draft}
+          active={search.status === "draft"}
+          onClick={() => setStatus("draft")}
+          accent="bg-slate-400"
+        />
+        <StatusCard
+          label="Active"
+          value={counts.active}
+          active={search.status === "active"}
+          onClick={() => setStatus("active")}
+          accent="bg-emerald-500"
+        />
+        <StatusCard
+          label="Expired"
+          value={counts.expired}
+          active={search.status === "expired"}
+          onClick={() => setStatus("expired")}
+          accent="bg-rose-500"
+        />
+      </div>
+
+      {/* Filters */}
       <Card>
-        <CardContent className="p-4 space-y-4">
+        <CardContent className="space-y-4 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
-            <Filter className="h-4 w-4 text-muted-foreground" /> Advanced Filters
+            <Filter className="h-4 w-4 text-muted-foreground" /> Filters
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3 lg:grid-cols-4">
             <div className="space-y-1">
-              <Label className="text-xs">Fee Structure ID</Label>
+              <Label className="text-xs">Search</Label>
               <div className="relative">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input className="pl-8" placeholder="FEE-1450" value={q} onChange={(e) => setQ(e.target.value)} />
+                <Input
+                  className="pl-8"
+                  placeholder="Code, university or course"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                />
               </div>
             </div>
+            <FilterSelect
+              label="University"
+              value={search.university_id ?? "all"}
+              onChange={(v) => setFilter({ university_id: v, course_id: undefined })}
+              placeholder="All universities"
+              options={universities.options}
+            />
+            <FilterSelect
+              label="Course"
+              value={search.course_id ?? "all"}
+              onChange={(v) => setFilter({ course_id: v })}
+              placeholder="All courses"
+              options={courses.options}
+            />
+            <FilterSelect
+              label="Intake"
+              value={search.intake_id ?? "all"}
+              onChange={(v) => setFilter({ intake_id: v })}
+              placeholder="All intakes"
+              options={intakeOptions.map((i) => ({ value: String(i.id), label: i.name ?? `Intake #${i.id}` }))}
+            />
+            <FilterSelect
+              label="Collection model"
+              value={search.fee_collection_model ?? "all"}
+              onChange={(v) => setFilter({ fee_collection_model: v })}
+              placeholder="Any model"
+              options={[
+                { value: "upcarrera_collects", label: "upCarrera collects" },
+                { value: "university_collects", label: "University collects" },
+              ]}
+            />
             <div className="space-y-1">
-              <Label className="text-xs">University</Label>
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input className="pl-8" placeholder="Search university" value={uniQ} onChange={(e) => setUniQ(e.target.value)} />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Course (Group)</Label>
-              <Select value={course} onValueChange={setCourse}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Courses</SelectItem>
-                  {GROUPS.map((g) => <SelectItem key={g} value={g}>{g}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Specialisation</Label>
-              <Select value={spec} onValueChange={setSpec}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Specialisations</SelectItem>
-                  {SPECS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Intake</Label>
-              <Select value={intake} onValueChange={setIntake}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Intakes</SelectItem>
-                  {INTAKES.map((i) => <SelectItem key={i} value={i}>{i}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">University Type</Label>
-              <Select value={type} onValueChange={setType}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Types</SelectItem>
-                  <SelectItem value="Type 1">Type 1 · Student Pays University</SelectItem>
-                  <SelectItem value="Type 2">Type 2 · Student Pays upCarrera</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Status</Label>
-              <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Statuses</SelectItem>
-                  {STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Fee Range (₹)</Label>
+              <Label className="text-xs">Total fee (₹)</Label>
               <div className="flex items-center gap-2">
-                <Input placeholder="Min" value={feeMin} onChange={(e) => setFeeMin(e.target.value)} />
-                <span className="text-muted-foreground text-xs">—</span>
-                <Input placeholder="Max" value={feeMax} onChange={(e) => setFeeMax(e.target.value)} />
+                <Input
+                  inputMode="numeric"
+                  placeholder="Min"
+                  defaultValue={search.fee_min ?? ""}
+                  onBlur={(e) => setFilter({ fee_min: e.target.value || undefined })}
+                />
+                <span className="text-xs text-muted-foreground">–</span>
+                <Input
+                  inputMode="numeric"
+                  placeholder="Max"
+                  defaultValue={search.fee_max ?? ""}
+                  onBlur={(e) => setFilter({ fee_max: e.target.value || undefined })}
+                />
               </div>
             </div>
+            <FilterSelect
+              label="Sort"
+              value={search.sort ?? "created_desc"}
+              onChange={(v) => setFilter({ sort: v === "created_desc" ? undefined : v })}
+              placeholder="Newest first"
+              includeAll={false}
+              options={[
+                { value: "created_desc", label: "Newest first" },
+                { value: "created_asc", label: "Oldest first" },
+                { value: "total_desc", label: "Total fee ↓" },
+                { value: "total_asc", label: "Total fee ↑" },
+                { value: "code_asc", label: "Code A–Z" },
+              ]}
+            />
             <div className="flex items-end">
-              <Button size="sm" variant="outline" onClick={resetFilters}>
-                <RotateCcw /> Reset
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={resetFilters}
+                disabled={!hasFilters}
+              >
+                <RotateCcw className="mr-1 h-4 w-4" /> Reset
               </Button>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 pt-2 border-t">
-            <div className="ml-auto flex items-center gap-2">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button size="sm" variant="outline"><Columns3 /> Columns</Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuLabel>Toggle Columns</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {ALL_COLUMNS.map((c) => (
-                    <DropdownMenuCheckboxItem
-                      key={c.key}
-                      checked={visibleCols[c.key]}
-                      onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, [c.key]: !!v }))}
-                    >
-                      {c.label}
-                    </DropdownMenuCheckboxItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
             </div>
           </div>
         </CardContent>
       </Card>
 
+      {/* Table */}
       <Card>
-        <div className="overflow-auto max-h-[640px]">
+        <div className="max-h-[640px] overflow-auto">
           <Table>
-            <TableHeader className="sticky top-0 bg-background z-10 shadow-[0_1px_0_0_hsl(var(--border))]">
+            <TableHeader className="sticky top-0 z-10 bg-background shadow-[0_1px_0_0_hsl(var(--border))]">
               <TableRow>
-                <TableHead className="w-16">Sl No</TableHead>
-                {visibleCols.id && <TableHead className="cursor-pointer" onClick={() => toggleSort("id")}>Fee Structure ID</TableHead>}
-                {visibleCols.university && <TableHead className="cursor-pointer" onClick={() => toggleSort("university")}>University</TableHead>}
-                {visibleCols.course && <TableHead className="cursor-pointer" onClick={() => toggleSort("course")}>Course</TableHead>}
-                {visibleCols.intake && <TableHead className="cursor-pointer" onClick={() => toggleSort("intake")}>Intake</TableHead>}
-                {visibleCols.type && <TableHead>Type</TableHead>}
-                {visibleCols.regFee && <TableHead className="text-right cursor-pointer" onClick={() => toggleSort("regFee")}>Registration Fee</TableHead>}
-                {visibleCols.totalFee && <TableHead className="text-right cursor-pointer" onClick={() => toggleSort("totalFee")}>Total Fee</TableHead>}
-                {visibleCols.netPayable && <TableHead className="text-right cursor-pointer" onClick={() => toggleSort("netPayable")}>Net Payable</TableHead>}
-                {visibleCols.installment && <TableHead>Installment</TableHead>}
-                {visibleCols.status && <TableHead>Status</TableHead>}
-                {visibleCols.created && <TableHead className="cursor-pointer" onClick={() => toggleSort("created")}>Created</TableHead>}
-                {visibleCols.action && <TableHead className="text-right">Action</TableHead>}
+                <TableHead className="w-12">#</TableHead>
+                <TableHead>Code</TableHead>
+                <TableHead>University</TableHead>
+                <TableHead>Course</TableHead>
+                <TableHead>Intake</TableHead>
+                <TableHead className="text-right">Total fee</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isLoading && (
+              {query.isLoading && (
                 <TableRow>
-                  <TableCell colSpan={13} className="text-center text-muted-foreground py-12">
-                    Loading…
+                  <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
+                    <Loader2 className="mx-auto h-5 w-5 animate-spin" />
                   </TableCell>
                 </TableRow>
               )}
-              {!isLoading && isError && (
+              {query.isError && !query.isLoading && (
                 <TableRow>
-                  <TableCell colSpan={13} className="text-center py-12">
+                  <TableCell colSpan={8} className="py-12 text-center">
                     <span className="inline-flex items-center gap-2 text-rose-600">
                       <AlertTriangle className="h-4 w-4" />
-                      Couldn’t load fee structures. Please try again.
+                      Couldn&apos;t load fee structures. Please try again.
                     </span>
                   </TableCell>
                 </TableRow>
               )}
-              {!isLoading && !isError && pageRows.map((f, i) => (
-                <TableRow key={f.id}>
-                  <TableCell className="text-sm tabular-nums text-muted-foreground">{i + 1}</TableCell>
-                  {visibleCols.id && <TableCell className="font-medium">{f.id}</TableCell>}
-                  {visibleCols.university && (
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <div className="h-7 w-7 rounded bg-primary/10 text-primary text-[10px] font-semibold grid place-content-center ring-1 ring-primary/20">
-                          {f.universityCode}
-                        </div>
-                        <span>{f.university}</span>
-                      </div>
-                    </TableCell>
-                  )}
-                  {visibleCols.course && <TableCell>{f.course}</TableCell>}
-                  {visibleCols.intake && <TableCell>{f.intake}</TableCell>}
-                  {visibleCols.type && (
-                    <TableCell>
-                      <Badge variant="secondary" className={`ring-1 ${TYPE_STYLES[f.universityType]}`}>{f.universityType}</Badge>
-                    </TableCell>
-                  )}
-                  {visibleCols.regFee && <TableCell className="text-right">{inr(f.registrationFee)}</TableCell>}
-                  {visibleCols.totalFee && <TableCell className="text-right font-medium">{inr(f.totalFee)}</TableCell>}
-                  {visibleCols.netPayable && <TableCell className="text-right">{inr(f.netPayable)}</TableCell>}
-                  {visibleCols.installment && (
-                    <TableCell>
-                      <Badge variant="secondary" className={f.installmentEnabled ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200" : "bg-slate-100 text-slate-700 ring-1 ring-slate-200"}>
-                        {f.installmentEnabled ? "Yes" : "No"}
-                      </Badge>
-                    </TableCell>
-                  )}
-                  {visibleCols.status && (
-                    <TableCell>
-                      <Badge variant="secondary" className={`ring-1 ${STATUS_STYLES[f.status]}`}>{f.status}</Badge>
-                    </TableCell>
-                  )}
-                  {visibleCols.created && <TableCell>{fmtDate(f.createdDate)}</TableCell>}
-                  {visibleCols.action && (
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="ghost" onClick={() => setViewing(f)}>
-                          <Eye /> View
-                        </Button>
-                      </div>
-                    </TableCell>
-                  )}
-                </TableRow>
-              ))}
-              {!isLoading && !isError && pageRows.length === 0 && (
+              {!query.isLoading &&
+                !query.isError &&
+                rows.map((row, i) => (
+                  <FeeRow
+                    key={row.id}
+                    row={row}
+                    index={(page - 1) * PAGE_SIZE + i + 1}
+                    canManage={canManage}
+                    onActivate={() => activateMut.mutate(row.id)}
+                    onCopyNext={() => copyNextMut.mutate(row)}
+                    onExpire={() => setExpireTarget(row)}
+                    onDelete={() => setDeleteTarget(row)}
+                    busy={
+                      (activateMut.isPending && activateMut.variables === row.id) ||
+                      (copyNextMut.isPending && copyNextMut.variables?.id === row.id)
+                    }
+                  />
+                ))}
+              {!query.isLoading && !query.isError && rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={13} className="text-center text-muted-foreground py-12">
-                    No fee structures match your filters.
+                  <TableCell colSpan={8} className="py-16 text-center">
+                    <div className="mx-auto max-w-sm space-y-2">
+                      <CalendarClock className="mx-auto h-8 w-8 text-muted-foreground/60" />
+                      <p className="font-medium">No fee structures yet</p>
+                      <p className="text-sm text-muted-foreground">
+                        {hasFilters
+                          ? "No structures match these filters."
+                          : "Create one to set registration and course fees for an intake."}
+                      </p>
+                      {canManage && !hasFilters && (
+                        <Button size="sm" asChild className="mt-1">
+                          <Link to="/universities/fee-structure/new">
+                            <Plus className="mr-1 h-4 w-4" /> New fee structure
+                          </Link>
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
         </div>
-        <div className="flex items-center justify-between px-4 py-3 border-t">
+        <div className="flex items-center justify-between border-t px-4 py-3">
           <div className="text-xs text-muted-foreground">
-            Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}
+            {total > 0
+              ? `Showing ${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, total)} of ${total}`
+              : "No results"}
           </div>
           <div className="flex items-center gap-2">
-            <Select value={String(pageSize)} onValueChange={(v) => { setPageSize(Number(v)); setPage(1); }}>
-              <SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {[10, 25, 50, 100].map((n) => <SelectItem key={n} value={String(n)}>{n} / page</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Button size="sm" variant="outline" disabled={page === 1} onClick={() => setPage((p) => p - 1)}>
-              <ChevronLeft />
+            <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+              <ChevronLeft className="h-4 w-4" />
             </Button>
-            <div className="text-xs">Page {page} of {totalPages}</div>
-            <Button size="sm" variant="outline" disabled={page === totalPages} onClick={() => setPage((p) => p + 1)}>
-              <ChevronRight />
+            <span className="text-xs">
+              Page {page} of {totalPages}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={page >= totalPages}
+              onClick={() => setPage(page + 1)}
+            >
+              <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
         </div>
       </Card>
 
-      <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Fee Structure Details</DialogTitle>
-            <DialogDescription>Read-only view of the fee structure.</DialogDescription>
-          </DialogHeader>
-          {viewing && (
-            <div className="space-y-5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="h-12 w-12 rounded-md bg-primary/10 text-primary font-semibold grid place-content-center ring-1 ring-primary/20">
-                    {viewing.universityCode}
-                  </div>
-                  <div>
-                    <div className="font-medium flex items-center gap-2">
-                      <Building2 className="h-4 w-4 text-muted-foreground" />
-                      {viewing.university}
-                    </div>
-                    <div className="text-xs text-muted-foreground">{viewing.id}</div>
-                  </div>
-                </div>
-                <Badge variant="secondary" className={`ring-1 ${STATUS_STYLES[viewing.status]}`}>{viewing.status}</Badge>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <Field label="Course" value={viewing.course} />
-                <Field label="Specialisation" value={`${viewing.group} - ${viewing.specialisation}`} />
-                <Field label="Intake" value={viewing.intake} />
-                <Field label="University Type" value={TYPE_LABEL[viewing.universityType]} />
-                <Field label="Registration Fee" value={inr(viewing.registrationFee)} />
-                <Field label="Total Fee" value={inr(viewing.totalFee)} />
-                <Field label="Net Payable Fee" value={inr(viewing.netPayable)} highlight />
-                <Field label="Installment Enabled" value={viewing.installmentEnabled ? "Yes" : "No"} />
-                <Field label="Created Date" value={fmtDate(viewing.createdDate)} />
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Edit Fee Structure</DialogTitle>
-            <DialogDescription>Update the fee structure details below.</DialogDescription>
-          </DialogHeader>
-          {editing && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <Label>University</Label>
-                  <Input value={editing.university} disabled className="mt-1" />
-                </div>
-                <div>
-                  <Label>Fee Structure ID</Label>
-                  <Input value={editing.id} disabled className="mt-1" />
-                </div>
-                <div>
-                  <Label>Course</Label>
-                  <Input value={editing.course} onChange={(e) => setEditing({ ...editing, course: e.target.value })} className="mt-1" />
-                </div>
-                <div>
-                  <Label>Intake</Label>
-                  <Select value={editing.intake} onValueChange={(v) => setEditing({ ...editing, intake: v })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {INTAKES.map((i) => <SelectItem key={i} value={i}>{i}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Registration Fee</Label>
-                  <Input type="number" value={editing.registrationFee} onChange={(e) => setEditing({ ...editing, registrationFee: Number(e.target.value) })} className="mt-1" />
-                </div>
-                <div>
-                  <Label>Total Fee</Label>
-                  <Input type="number" value={editing.totalFee} onChange={(e) => setEditing({ ...editing, totalFee: Number(e.target.value) })} className="mt-1" />
-                </div>
-                <div>
-                  <Label>Net Payable</Label>
-                  <Input type="number" value={editing.netPayable} onChange={(e) => setEditing({ ...editing, netPayable: Number(e.target.value) })} className="mt-1" />
-                </div>
-                <div>
-                  <Label>Status</Label>
-                  <Select value={editing.status} onValueChange={(v) => setEditing({ ...editing, status: v as FeeStatus })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Installment Enabled</Label>
-                  <Select value={editing.installmentEnabled ? "yes" : "no"} onValueChange={(v) => setEditing({ ...editing, installmentEnabled: v === "yes" })}>
-                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="yes">Yes</SelectItem>
-                      <SelectItem value="no">No</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
-                <Button onClick={() => {
-                  setALL((prev) => prev.map((x) => x.id === editing.id ? editing : x));
-                  setEditing(null);
-                  toast.success("Fee structure updated");
-                }}>
-                  <Save /> Save Changes
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <CopyIntakeDialog open={copyIntakeOpen} onClose={() => setCopyIntakeOpen(false)} />
+      <CopyToIntakeDialog
+        item={copyPickerTarget}
+        open={!!copyPickerTarget}
+        onClose={() => setCopyPickerTarget(null)}
+      />
+      <ExpireDialog item={expireTarget} open={!!expireTarget} onClose={() => setExpireTarget(null)} />
+      <DeleteDialog item={deleteTarget} open={!!deleteTarget} onClose={() => setDeleteTarget(null)} />
     </div>
   );
 }
 
-function Field({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+function StatusCard({
+  label,
+  value,
+  active,
+  onClick,
+  accent,
+}: {
+  label: string;
+  value: number;
+  active: boolean;
+  onClick: () => void;
+  accent: string;
+}) {
   return (
-    <div className="rounded-md border p-3">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-0.5 ${highlight ? "text-base font-semibold text-primary" : "font-medium"}`}>{value}</div>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "group relative overflow-hidden rounded-xl border bg-card p-4 text-left transition-all hover:shadow-sm",
+        active ? "border-foreground/40 ring-1 ring-foreground/20" : "border-border",
+      )}
+    >
+      <div className={cn("absolute inset-x-0 top-0 h-1", accent)} />
+      <div className="text-2xl font-semibold tabular-nums">{value}</div>
+      <div className="mt-0.5 text-xs text-muted-foreground">{label}</div>
+    </button>
+  );
+}
+
+interface Option {
+  value: string;
+  label: string;
+}
+
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  placeholder,
+  options,
+  includeAll = true,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string | undefined) => void;
+  placeholder: string;
+  options: Option[];
+  includeAll?: boolean;
+}) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs">{label}</Label>
+      <Select
+        value={value}
+        onValueChange={(v) => onChange(v === "all" ? undefined : v)}
+      >
+        <SelectTrigger>
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {includeAll && <SelectItem value="all">{placeholder}</SelectItem>}
+          {options.map((o) => (
+            <SelectItem key={o.value} value={o.value}>
+              {o.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
+  );
+}
+
+function FeeRow({
+  row,
+  index,
+  canManage,
+  onActivate,
+  onCopyNext,
+  onExpire,
+  onDelete,
+  busy,
+}: {
+  row: FeeStructureListItem;
+  index: number;
+  canManage: boolean;
+  onActivate: () => void;
+  onCopyNext: () => void;
+  onExpire: () => void;
+  onDelete: () => void;
+  busy: boolean;
+}) {
+  const detailLink = { to: "/universities/fee-structure/$id", params: { id: String(row.id) } } as const;
+  // LOW-9: the server gate stays the source of truth, but disable the row Activate
+  // when the cheap per-row check says it would be rejected, with the first reason as
+  // its tooltip. Defaults to enabled if the field is missing (older API payloads).
+  const activationOk = row.activation?.ok ?? true;
+  const activationReason = row.activation?.reasons?.[0];
+  return (
+    <TableRow>
+      <TableCell className="text-sm tabular-nums text-muted-foreground">{index}</TableCell>
+      <TableCell className="font-medium">
+        <Link {...detailLink} className="hover:underline">
+          {row.code ?? `#${row.id}`}
+        </Link>
+      </TableCell>
+      <TableCell>
+        <div className="flex flex-col gap-1">
+          <span>{row.university_title ?? `University #${row.university_id}`}</span>
+          <CollectionModelBadge model={row.fee_collection_model} universityId={row.university_id} />
+        </div>
+      </TableCell>
+      <TableCell className="max-w-[220px] truncate">{row.course_title ?? `Course #${row.course_id}`}</TableCell>
+      <TableCell>
+        <div className="flex flex-col gap-1">
+          <span className="text-sm">{row.intake_name ?? `Intake #${row.intake_id}`}</span>
+          <IntakeStatusBadge status={row.intake_status} />
+        </div>
+      </TableCell>
+      <TableCell className="text-right font-medium tabular-nums">{formatInr(row.total_fee)}</TableCell>
+      <TableCell>
+        <StatusChip status={row.status} />
+      </TableCell>
+      <TableCell className="text-right">
+        <div className="flex items-center justify-end gap-1">
+          <Button size="sm" variant="ghost" asChild>
+            <Link {...detailLink}>
+              <Eye className="h-4 w-4" />
+              <span className="sr-only">View</span>
+            </Link>
+          </Button>
+          {canManage && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="ghost" disabled={busy}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem asChild>
+                  <Link {...detailLink}>
+                    <Pencil className="mr-2 h-4 w-4" /> Edit
+                  </Link>
+                </DropdownMenuItem>
+                {row.status === "draft" && (
+                  <DropdownMenuItem
+                    onClick={activationOk ? onActivate : undefined}
+                    disabled={!activationOk}
+                    title={!activationOk ? activationReason : undefined}
+                  >
+                    <CheckCircle2 className="mr-2 h-4 w-4" /> Activate
+                  </DropdownMenuItem>
+                )}
+                {row.status === "active" && (
+                  <DropdownMenuItem onClick={onExpire}>
+                    <Ban className="mr-2 h-4 w-4" /> Expire
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onClick={onCopyNext}>
+                  <CopyPlus className="mr-2 h-4 w-4" /> Copy to next intake
+                </DropdownMenuItem>
+                {row.status === "draft" && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={onDelete}
+                      className="text-rose-600 focus:text-rose-600"
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" /> Delete
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
+      </TableCell>
+    </TableRow>
   );
 }

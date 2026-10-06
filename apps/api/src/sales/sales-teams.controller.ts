@@ -76,6 +76,21 @@ export class SalesTeamsController {
     return this.sales.updateTeam(id, dto, userId);
   }
 
+  /**
+   * Take one id off a team's roster — the path for ids whose user no longer
+   * exists, which PATCH /consultants/:id/team cannot reach. See
+   * SalesService.removeTeamMember.
+   */
+  @Delete(':id/members/:memberId')
+  @ResponseMessage('Team member removed')
+  removeMember(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('memberId', ParseIntPipe) memberId: number,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.sales.removeTeamMember(id, memberId, userId);
+  }
+
   @Delete(':id')
   @ResponseMessage('Sales Team Deleted Successfully!')
   remove(

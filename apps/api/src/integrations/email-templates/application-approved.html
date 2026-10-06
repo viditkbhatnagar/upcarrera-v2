@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="x-apple-disable-message-reformatting">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light only">
+  <title>Your application is approved: {{application_id}}</title>
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <style>table,td,p,a,h1{font-family:Georgia,'Times New Roman',serif !important;}</style>
+  <![endif]-->
+  <style>
+    /* Palette
+       Plum (header/footer) #2E1747
+       Royal purple (button)  #5B2A86
+       Gold (accents)         #C9A227
+       Lavender (page bg)     #F3EEF8
+       Ink (body text)        #2A2233
+    */
+    body { margin:0; padding:0; width:100% !important; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table { border-collapse:collapse; mso-table-lspace:0; mso-table-rspace:0; }
+    img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; display:block; }
+    a { color:#5B2A86; }
+    .btn a:hover { background-color:#4A2170 !important; }
+    @media only screen and (max-width:620px) {
+      .container { width:100% !important; }
+      .px { padding-left:24px !important; padding-right:24px !important; }
+      .h1 { font-size:26px !important; line-height:34px !important; }
+      .stack { display:block !important; width:100% !important; }
+      .stack-gap { padding-top:12px !important; }
+    }
+  </style>
+</head>
+<body style="margin:0; padding:0; background-color:#F3EEF8;">
+
+  <!-- Preheader: shows as preview text in the inbox, hidden in the body -->
+  <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:#F3EEF8; opacity:0;">
+    Good news: your {{course}} application at {{university}} has been approved.
+    &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F3EEF8;">
+    <tr>
+      <td align="center" style="padding:32px 12px;">
+
+        <table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#FFFFFF; border-radius:10px; overflow:hidden;">
+
+          <!-- ============ HEADER / LOGO ============ -->
+          <tr>
+            <td class="px" style="background-color:#2E1747; padding:28px 40px; border-bottom:3px solid #C9A227;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="left" valign="middle">
+                    <!--
+                      LOGO: replace this whole <table> with your hosted logo, e.g.
+                      <img src="{{logo_url}}" width="160" alt="Upcarrera" style="width:160px; height:auto;">
+                      Use a white or gold version of the logo so it reads on the plum background.
+                    -->
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td valign="middle" style="width:36px; height:36px; background-color:#C9A227; border-radius:8px; text-align:center; font-family:Georgia,'Times New Roman',serif; font-size:22px; line-height:36px; font-weight:bold; color:#2E1747;">u</td>
+                        <td valign="middle" style="padding-left:10px; font-family:Georgia,'Times New Roman',serif; font-size:22px; line-height:36px; color:#FFFFFF; letter-spacing:0.3px;">upcarrera</td>
+                      </tr>
+                    </table>
+                  </td>
+                  <td align="right" valign="middle" style="font-family:Arial,Helvetica,sans-serif; font-size:13px; color:#D9CBEA;">
+                    Application {{application_id}}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- ============ CELEBRATION BANNER ============ -->
+          <tr>
+            <td class="px" align="center" style="padding:40px 40px 0 40px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                <td style="width:64px; height:64px; background-color:#2E1747; border-radius:32px; border:3px solid #C9A227; text-align:center; font-family:Arial,Helvetica,sans-serif; font-size:30px; line-height:64px; font-weight:bold; color:#C9A227;">&#10003;</td>
+              </tr></table>
+            </td>
+          </tr>
+
+          <!-- ============ GREETING ============ -->
+          <tr>
+            <td class="px" align="center" style="padding:20px 40px 8px 40px;">
+              <p style="margin:0 0 10px 0; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:18px; font-weight:bold; letter-spacing:1.5px; text-transform:uppercase; color:#A8861A;">
+                Application approved
+              </p>
+              <h1 class="h1" style="margin:0 0 16px 0; font-family:Georgia,'Times New Roman',serif; font-size:30px; line-height:38px; font-weight:normal; color:#2E1747;">
+                Congratulations, {{first_name}}!
+              </h1>
+              <p style="margin:0 0 16px 0; font-family:Arial,Helvetica,sans-serif; font-size:16px; line-height:26px; color:#2A2233;">
+                Our registration team has reviewed your application and documents, and everything is in order. You're one step closer to starting {{course}} at {{university}}.
+              </p>
+            </td>
+          </tr>
+
+          <!-- ============ APPLICATION SUMMARY ============ -->
+          <tr>
+            <td class="px" style="padding:8px 40px 8px 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8F4FC; border-left:3px solid #C9A227; border-radius:6px;">
+                <tr>
+                  <td style="padding:18px 22px;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td style="padding:5px 0; width:120px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Application ID</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{application_id}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:120px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Approved on</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{approved_at}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:120px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">University</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{university}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:120px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Programme</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{course}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:120px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Specialisation</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{specialisation}}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:5px 0; width:120px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80; vertical-align:top;">Intake</td>
+                        <td style="padding:5px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:#2A2233; font-weight:bold;">{{intake}}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- ============ WHAT HAPPENS NEXT ============
+               Placeholder steps: edit these to match your process after approval. -->
+          <tr>
+            <td class="px" style="padding:28px 40px 28px 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #E7DEF1;">
+                <tr>
+                  <td style="padding-top:24px;">
+                    <p style="margin:0 0 8px 0; font-family:Georgia,'Times New Roman',serif; font-size:18px; line-height:26px; color:#2E1747;">
+                      What happens next
+                    </p>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td style="padding:8px 14px 8px 0; width:28px; vertical-align:top;">
+                          <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                            <td style="width:28px; height:28px; background-color:#2E1747; border-radius:14px; text-align:center; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:28px; font-weight:bold; color:#C9A227;">1</td>
+                          </tr></table>
+                        </td>
+                        <td style="padding:8px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:22px; color:#2A2233;">
+                          <strong>Your counsellor will contact you</strong><br><span style="color:#6E5F80;">They'll confirm the next steps for your admission, including any fees and deadlines.</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:8px 14px 8px 0; width:28px; vertical-align:top;">
+                          <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                            <td style="width:28px; height:28px; background-color:#2E1747; border-radius:14px; text-align:center; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:28px; font-weight:bold; color:#C9A227;">2</td>
+                          </tr></table>
+                        </td>
+                        <td style="padding:8px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:22px; color:#2A2233;">
+                          <strong>The university confirms your admission</strong><br><span style="color:#6E5F80;">{{university}} completes your enrolment and issues your enrolment details.</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:8px 14px 8px 0; width:28px; vertical-align:top;">
+                          <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                            <td style="width:28px; height:28px; background-color:#2E1747; border-radius:14px; text-align:center; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:28px; font-weight:bold; color:#C9A227;">3</td>
+                          </tr></table>
+                        </td>
+                        <td style="padding:8px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:22px; color:#2A2233;">
+                          <strong>You get your student login</strong><br><span style="color:#6E5F80;">We'll email your enrolment number and how to access your classes before {{intake}} begins.</span>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- ============ COUNSELLOR CONTACT ============ -->
+          <tr>
+            <td class="px" style="padding:0 40px 36px 40px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #E7DEF1;">
+                <tr>
+                  <td style="padding-top:24px;">
+                    <p style="margin:0 0 14px 0; font-family:Georgia,'Times New Roman',serif; font-size:18px; line-height:26px; color:#2E1747;">
+                      Questions about what comes next?
+                    </p>
+                    <p style="margin:0 0 14px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:22px; color:#2A2233;">
+                      Your counsellor <strong>{{counsellor_name}}</strong> can walk you through the next steps.
+                    </p>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td class="stack" valign="top" width="50%" style="font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:22px; color:#2A2233;">
+                          <span style="color:#6E5F80;">Call or WhatsApp</span><br>
+                          <a href="tel:{{counsellor_phone}}" style="color:#5B2A86; font-weight:bold; text-decoration:none;">{{counsellor_phone}}</a>
+                        </td>
+                        <td class="stack stack-gap" valign="top" width="50%" style="font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:22px; color:#2A2233;">
+                          <span style="color:#6E5F80;">Email</span><br>
+                          <a href="mailto:{{counsellor_email}}" style="color:#5B2A86; font-weight:bold; text-decoration:none;">{{counsellor_email}}</a>
+                        </td>
+                      </tr>
+                    </table>
+                    <p style="margin:14px 0 0 0; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:20px; color:#6E5F80;">
+                      Can't reach your counsellor? Email <a href="mailto:{{support_email}}" style="color:#5B2A86;">{{support_email}}</a> or call {{support_phone}}.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- ============ FOOTER ============ -->
+          <tr>
+            <td class="px" style="background-color:#2E1747; padding:24px 40px; border-top:3px solid #C9A227;">
+              <p style="margin:0 0 6px 0; font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:18px; color:#D9CBEA;">
+                You received this email because your application for {{course}} at {{university}} was reviewed through Upcarrera.
+              </p>
+              <p style="margin:0; font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:18px; color:#A894C2;">
+                &copy; {{year}} Upcarrera. All rights reserved.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

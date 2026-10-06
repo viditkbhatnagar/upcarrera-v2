@@ -52,6 +52,11 @@ jobs:
       DATABASE_URL: "mysql://root:root@127.0.0.1:3306/upcarrera"
       JWT_SECRET: "ci-test-secret-not-for-production"
       JWT_EXPIRES_IN: "7d"
+      # WS5 ApplicantConfig fail-fasts without these (must be >=32 chars and differ
+      # from JWT_SECRET). CI test values only — real secrets live in the server .env.
+      APPLICANT_SESSION_SECRET: "ci-applicant-session-secret-not-for-production-32+"
+      APPLICANT_PORTAL_URL: "http://localhost:3001/apply"
+      MAGIC_LINK_TTL_HOURS: "168"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -73,6 +78,11 @@ jobs:
       - name: Seed CI database
         working-directory: apps/api
         run: pnpm exec prisma db execute --file ../../database/ci-seed.sql --schema prisma/schema.prisma
+      # 002's tables and columns already exist from db push (its guards skip them);
+      # this adds the role keys, roles 101-104 and the crm: grants the API checks.
+      - name: Apply migration 002 (roles and grants)
+        working-directory: apps/api
+        run: pnpm exec prisma db execute --file ../../database/migrations/002-phase1-admission.sql --schema prisma/schema.prisma
       - name: Run e2e tests (Jest + Supertest)
         working-directory: apps/api
         run: pnpm exec jest --config ./test/jest-e2e.json --runInBand

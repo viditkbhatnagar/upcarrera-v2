@@ -11,6 +11,14 @@ const TOKEN_SKEW_MS = 60_000;
 const DEFAULT_FROM_ADDRESS = 'hello@upcarrera.com';
 const DEFAULT_FROM_NAME = 'upCarrera';
 
+/** A single Graph fileAttachment (base64 contentBytes). Kept small (<= 3 MB). */
+export interface EmailAttachment {
+  filename: string;
+  contentType: string;
+  /** base64-encoded file contents. */
+  contentBytes: string;
+}
+
 export interface SendEmailParams {
   /** recipient email address */
   to: string;
@@ -19,7 +27,18 @@ export interface SendEmailParams {
   subject: string;
   /** HTML body */
   html: string;
+  /** Optional attachments (e.g. the submitted-application summary PDF). */
+  attachments?: EmailAttachment[];
+  /**
+   * Whether Graph keeps a copy in the shared mailbox's Sent Items. Defaults to
+   * true (unchanged for existing callers). The magic-link and reopened emails
+   * pass FALSE so a tokenised link is never copied into hello@ Sent Items.
+   */
+  saveToSentItems?: boolean;
 }
+
+/** Max total attachment payload for Graph's simple sendMail (3 MB base64 budget). */
+const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
 
 /**
  * Transactional email via Microsoft Graph (Office 365 / Exchange Online),
@@ -117,6 +136,8 @@ export class EmailService {
       this.fromAddress,
     )}/sendMail`;
 
+    const attachments = this.buildAttachments(params.attachments);
+
     const payload = {
       message: {
         subject: params.subject,
@@ -127,8 +148,11 @@ export class EmailService {
         from: {
           emailAddress: { address: this.fromAddress, name: this.fromName },
         },
+        ...(attachments.length ? { attachments } : {}),
       },
-      saveToSentItems: true,
+      // Default true (unchanged for existing callers); magic-link / reopened pass
+      // false so a tokenised link is never copied into the shared Sent Items.
+      saveToSentItems: params.saveToSentItems ?? true,
     };
 
     let res: Response;
@@ -156,5 +180,32 @@ export class EmailService {
     }
 
     return {};
+  }
+
+  /**
+   * Map our attachments to Graph fileAttachment objects, dropping any that would
+   * push the total payload past the 3 MB budget (logged, never thrown — the email
+   * body still goes out). Callers keep attachments small (the summary PDF).
+   */
+  private buildAttachments(
+    attachments: EmailAttachment[] | undefined,
+  ): Array<Record<string, string>> {
+    if (!attachments?.length) return [];
+    const out: Array<Record<string, string>> = [];
+    let total = 0;
+    for (const a of attachments) {
+      total += a.contentBytes.length;
+      if (total > MAX_ATTACHMENT_BYTES) {
+        this.logger.warn(`Attachment "${a.filename}" skipped: over the 3 MB budget`);
+        continue;
+      }
+      out.push({
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name: a.filename,
+        contentType: a.contentType,
+        contentBytes: a.contentBytes,
+      });
+    }
+    return out;
   }
 }

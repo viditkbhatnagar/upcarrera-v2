@@ -20,6 +20,7 @@ import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as CounsellorsRouteImport } from './routes/counsellors'
 import { Route as CommissionsRouteImport } from './routes/commissions'
 import { Route as CallsRouteImport } from './routes/calls'
+import { Route as ApplyRouteImport } from './routes/apply'
 import { Route as AdministrationRouteImport } from './routes/administration'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as UniversitiesIndexRouteImport } from './routes/universities.index'
@@ -35,6 +36,7 @@ import { Route as UniversitiesCoursesRouteImport } from './routes/universities.c
 import { Route as StudentsStudentsRouteImport } from './routes/students.students'
 import { Route as StudentsApplicationsRouteImport } from './routes/students.applications'
 import { Route as FeesSummaryRouteImport } from './routes/fees.summary'
+import { Route as FeesRegistrationVerificationRouteImport } from './routes/fees.registration-verification'
 import { Route as FeesPaymentVerificationRouteImport } from './routes/fees.payment-verification'
 import { Route as FeesDashboardRouteImport } from './routes/fees.dashboard'
 import { Route as FeesCollectionRouteImport } from './routes/fees.collection'
@@ -49,10 +51,14 @@ import { Route as CounsellorsCounsellorsRouteImport } from './routes/counsellors
 import { Route as AdministrationUsersRouteImport } from './routes/administration.users'
 import { Route as AdministrationSystemSettingsRouteImport } from './routes/administration.system-settings'
 import { Route as AdministrationRolesRouteImport } from './routes/administration.roles'
+import { Route as AdministrationEligibilityRulesRouteImport } from './routes/administration.eligibility-rules'
+import { Route as AdministrationDocumentChecklistRouteImport } from './routes/administration.document-checklist'
 import { Route as AdministrationAuditLogsRouteImport } from './routes/administration.audit-logs'
 import { Route as StudentsStudentsIndexRouteImport } from './routes/students.students.index'
 import { Route as StudentsApplicationsIndexRouteImport } from './routes/students.applications.index'
 import { Route as UniversitiesUniversitiesCodeRouteImport } from './routes/universities.universities_.$code'
+import { Route as UniversitiesFeeStructureNewRouteImport } from './routes/universities.fee-structure_.new'
+import { Route as UniversitiesFeeStructureIdRouteImport } from './routes/universities.fee-structure_.$id'
 import { Route as StudentsStudentsIdRouteImport } from './routes/students.students.$id'
 import { Route as StudentsApplicationsNewRouteImport } from './routes/students.applications.new'
 import { Route as StudentsApplicationsAppIdRouteImport } from './routes/students.applications.$appId'
@@ -112,6 +118,11 @@ const CommissionsRoute = CommissionsRouteImport.update({
 const CallsRoute = CallsRouteImport.update({
   id: '/calls',
   path: '/calls',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApplyRoute = ApplyRouteImport.update({
+  id: '/apply',
+  path: '/apply',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdministrationRoute = AdministrationRouteImport.update({
@@ -191,6 +202,12 @@ const FeesSummaryRoute = FeesSummaryRouteImport.update({
   path: '/summary',
   getParentRoute: () => FeesRoute,
 } as any)
+const FeesRegistrationVerificationRoute =
+  FeesRegistrationVerificationRouteImport.update({
+    id: '/registration-verification',
+    path: '/registration-verification',
+    getParentRoute: () => FeesRoute,
+  } as any)
 const FeesPaymentVerificationRoute = FeesPaymentVerificationRouteImport.update({
   id: '/payment-verification',
   path: '/payment-verification',
@@ -264,6 +281,18 @@ const AdministrationRolesRoute = AdministrationRolesRouteImport.update({
   path: '/roles',
   getParentRoute: () => AdministrationRoute,
 } as any)
+const AdministrationEligibilityRulesRoute =
+  AdministrationEligibilityRulesRouteImport.update({
+    id: '/eligibility-rules',
+    path: '/eligibility-rules',
+    getParentRoute: () => AdministrationRoute,
+  } as any)
+const AdministrationDocumentChecklistRoute =
+  AdministrationDocumentChecklistRouteImport.update({
+    id: '/document-checklist',
+    path: '/document-checklist',
+    getParentRoute: () => AdministrationRoute,
+  } as any)
 const AdministrationAuditLogsRoute = AdministrationAuditLogsRouteImport.update({
   id: '/audit-logs',
   path: '/audit-logs',
@@ -284,6 +313,18 @@ const UniversitiesUniversitiesCodeRoute =
   UniversitiesUniversitiesCodeRouteImport.update({
     id: '/universities_/$code',
     path: '/universities/$code',
+    getParentRoute: () => UniversitiesRoute,
+  } as any)
+const UniversitiesFeeStructureNewRoute =
+  UniversitiesFeeStructureNewRouteImport.update({
+    id: '/fee-structure_/new',
+    path: '/fee-structure/new',
+    getParentRoute: () => UniversitiesRoute,
+  } as any)
+const UniversitiesFeeStructureIdRoute =
+  UniversitiesFeeStructureIdRouteImport.update({
+    id: '/fee-structure_/$id',
+    path: '/fee-structure/$id',
     getParentRoute: () => UniversitiesRoute,
   } as any)
 const StudentsStudentsIdRoute = StudentsStudentsIdRouteImport.update({
@@ -317,6 +358,7 @@ const CounsellorsProfileEmpIdRoute = CounsellorsProfileEmpIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/administration': typeof AdministrationRouteWithChildren
+  '/apply': typeof ApplyRoute
   '/calls': typeof CallsRoute
   '/commissions': typeof CommissionsRoute
   '/counsellors': typeof CounsellorsRouteWithChildren
@@ -329,6 +371,8 @@ export interface FileRoutesByFullPath {
   '/support': typeof SupportRoute
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
+  '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
+  '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
   '/administration/roles': typeof AdministrationRolesRoute
   '/administration/system-settings': typeof AdministrationSystemSettingsRoute
   '/administration/users': typeof AdministrationUsersRoute
@@ -343,6 +387,7 @@ export interface FileRoutesByFullPath {
   '/fees/collection': typeof FeesCollectionRoute
   '/fees/dashboard': typeof FeesDashboardRoute
   '/fees/payment-verification': typeof FeesPaymentVerificationRoute
+  '/fees/registration-verification': typeof FeesRegistrationVerificationRoute
   '/fees/summary': typeof FeesSummaryRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
@@ -361,12 +406,15 @@ export interface FileRoutesByFullPath {
   '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
+  '/universities/fee-structure/$id': typeof UniversitiesFeeStructureIdRoute
+  '/universities/fee-structure/new': typeof UniversitiesFeeStructureNewRoute
   '/universities/universities/$code': typeof UniversitiesUniversitiesCodeRoute
   '/students/applications/': typeof StudentsApplicationsIndexRoute
   '/students/students/': typeof StudentsStudentsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/apply': typeof ApplyRoute
   '/calls': typeof CallsRoute
   '/commissions': typeof CommissionsRoute
   '/dashboard': typeof DashboardRoute
@@ -374,6 +422,8 @@ export interface FileRoutesByTo {
   '/reports': typeof ReportsRoute
   '/support': typeof SupportRoute
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
+  '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
+  '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
   '/administration/roles': typeof AdministrationRolesRoute
   '/administration/system-settings': typeof AdministrationSystemSettingsRoute
   '/administration/users': typeof AdministrationUsersRoute
@@ -388,6 +438,7 @@ export interface FileRoutesByTo {
   '/fees/collection': typeof FeesCollectionRoute
   '/fees/dashboard': typeof FeesDashboardRoute
   '/fees/payment-verification': typeof FeesPaymentVerificationRoute
+  '/fees/registration-verification': typeof FeesRegistrationVerificationRoute
   '/fees/summary': typeof FeesSummaryRoute
   '/universities/courses': typeof UniversitiesCoursesRoute
   '/universities/fee-structure': typeof UniversitiesFeeStructureRoute
@@ -404,6 +455,8 @@ export interface FileRoutesByTo {
   '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
+  '/universities/fee-structure/$id': typeof UniversitiesFeeStructureIdRoute
+  '/universities/fee-structure/new': typeof UniversitiesFeeStructureNewRoute
   '/universities/universities/$code': typeof UniversitiesUniversitiesCodeRoute
   '/students/applications': typeof StudentsApplicationsIndexRoute
   '/students/students': typeof StudentsStudentsIndexRoute
@@ -412,6 +465,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/administration': typeof AdministrationRouteWithChildren
+  '/apply': typeof ApplyRoute
   '/calls': typeof CallsRoute
   '/commissions': typeof CommissionsRoute
   '/counsellors': typeof CounsellorsRouteWithChildren
@@ -424,6 +478,8 @@ export interface FileRoutesById {
   '/support': typeof SupportRoute
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
+  '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
+  '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
   '/administration/roles': typeof AdministrationRolesRoute
   '/administration/system-settings': typeof AdministrationSystemSettingsRoute
   '/administration/users': typeof AdministrationUsersRoute
@@ -438,6 +494,7 @@ export interface FileRoutesById {
   '/fees/collection': typeof FeesCollectionRoute
   '/fees/dashboard': typeof FeesDashboardRoute
   '/fees/payment-verification': typeof FeesPaymentVerificationRoute
+  '/fees/registration-verification': typeof FeesRegistrationVerificationRoute
   '/fees/summary': typeof FeesSummaryRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
@@ -456,6 +513,8 @@ export interface FileRoutesById {
   '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
+  '/universities/fee-structure_/$id': typeof UniversitiesFeeStructureIdRoute
+  '/universities/fee-structure_/new': typeof UniversitiesFeeStructureNewRoute
   '/universities/universities_/$code': typeof UniversitiesUniversitiesCodeRoute
   '/students/applications/': typeof StudentsApplicationsIndexRoute
   '/students/students/': typeof StudentsStudentsIndexRoute
@@ -465,6 +524,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/administration'
+    | '/apply'
     | '/calls'
     | '/commissions'
     | '/counsellors'
@@ -477,6 +537,8 @@ export interface FileRouteTypes {
     | '/support'
     | '/universities'
     | '/administration/audit-logs'
+    | '/administration/document-checklist'
+    | '/administration/eligibility-rules'
     | '/administration/roles'
     | '/administration/system-settings'
     | '/administration/users'
@@ -491,6 +553,7 @@ export interface FileRouteTypes {
     | '/fees/collection'
     | '/fees/dashboard'
     | '/fees/payment-verification'
+    | '/fees/registration-verification'
     | '/fees/summary'
     | '/students/applications'
     | '/students/students'
@@ -509,12 +572,15 @@ export interface FileRouteTypes {
     | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
+    | '/universities/fee-structure/$id'
+    | '/universities/fee-structure/new'
     | '/universities/universities/$code'
     | '/students/applications/'
     | '/students/students/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/apply'
     | '/calls'
     | '/commissions'
     | '/dashboard'
@@ -522,6 +588,8 @@ export interface FileRouteTypes {
     | '/reports'
     | '/support'
     | '/administration/audit-logs'
+    | '/administration/document-checklist'
+    | '/administration/eligibility-rules'
     | '/administration/roles'
     | '/administration/system-settings'
     | '/administration/users'
@@ -536,6 +604,7 @@ export interface FileRouteTypes {
     | '/fees/collection'
     | '/fees/dashboard'
     | '/fees/payment-verification'
+    | '/fees/registration-verification'
     | '/fees/summary'
     | '/universities/courses'
     | '/universities/fee-structure'
@@ -552,6 +621,8 @@ export interface FileRouteTypes {
     | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
+    | '/universities/fee-structure/$id'
+    | '/universities/fee-structure/new'
     | '/universities/universities/$code'
     | '/students/applications'
     | '/students/students'
@@ -559,6 +630,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/administration'
+    | '/apply'
     | '/calls'
     | '/commissions'
     | '/counsellors'
@@ -571,6 +643,8 @@ export interface FileRouteTypes {
     | '/support'
     | '/universities'
     | '/administration/audit-logs'
+    | '/administration/document-checklist'
+    | '/administration/eligibility-rules'
     | '/administration/roles'
     | '/administration/system-settings'
     | '/administration/users'
@@ -585,6 +659,7 @@ export interface FileRouteTypes {
     | '/fees/collection'
     | '/fees/dashboard'
     | '/fees/payment-verification'
+    | '/fees/registration-verification'
     | '/fees/summary'
     | '/students/applications'
     | '/students/students'
@@ -603,6 +678,8 @@ export interface FileRouteTypes {
     | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
+    | '/universities/fee-structure_/$id'
+    | '/universities/fee-structure_/new'
     | '/universities/universities_/$code'
     | '/students/applications/'
     | '/students/students/'
@@ -611,6 +688,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdministrationRoute: typeof AdministrationRouteWithChildren
+  ApplyRoute: typeof ApplyRoute
   CallsRoute: typeof CallsRoute
   CommissionsRoute: typeof CommissionsRoute
   CounsellorsRoute: typeof CounsellorsRouteWithChildren
@@ -701,6 +779,13 @@ declare module '@tanstack/react-router' {
       path: '/calls'
       fullPath: '/calls'
       preLoaderRoute: typeof CallsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/apply': {
+      id: '/apply'
+      path: '/apply'
+      fullPath: '/apply'
+      preLoaderRoute: typeof ApplyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/administration': {
@@ -808,6 +893,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof FeesSummaryRouteImport
       parentRoute: typeof FeesRoute
     }
+    '/fees/registration-verification': {
+      id: '/fees/registration-verification'
+      path: '/registration-verification'
+      fullPath: '/fees/registration-verification'
+      preLoaderRoute: typeof FeesRegistrationVerificationRouteImport
+      parentRoute: typeof FeesRoute
+    }
     '/fees/payment-verification': {
       id: '/fees/payment-verification'
       path: '/payment-verification'
@@ -906,6 +998,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdministrationRolesRouteImport
       parentRoute: typeof AdministrationRoute
     }
+    '/administration/eligibility-rules': {
+      id: '/administration/eligibility-rules'
+      path: '/eligibility-rules'
+      fullPath: '/administration/eligibility-rules'
+      preLoaderRoute: typeof AdministrationEligibilityRulesRouteImport
+      parentRoute: typeof AdministrationRoute
+    }
+    '/administration/document-checklist': {
+      id: '/administration/document-checklist'
+      path: '/document-checklist'
+      fullPath: '/administration/document-checklist'
+      preLoaderRoute: typeof AdministrationDocumentChecklistRouteImport
+      parentRoute: typeof AdministrationRoute
+    }
     '/administration/audit-logs': {
       id: '/administration/audit-logs'
       path: '/audit-logs'
@@ -932,6 +1038,20 @@ declare module '@tanstack/react-router' {
       path: '/universities/$code'
       fullPath: '/universities/universities/$code'
       preLoaderRoute: typeof UniversitiesUniversitiesCodeRouteImport
+      parentRoute: typeof UniversitiesRoute
+    }
+    '/universities/fee-structure_/new': {
+      id: '/universities/fee-structure_/new'
+      path: '/fee-structure/new'
+      fullPath: '/universities/fee-structure/new'
+      preLoaderRoute: typeof UniversitiesFeeStructureNewRouteImport
+      parentRoute: typeof UniversitiesRoute
+    }
+    '/universities/fee-structure_/$id': {
+      id: '/universities/fee-structure_/$id'
+      path: '/fee-structure/$id'
+      fullPath: '/universities/fee-structure/$id'
+      preLoaderRoute: typeof UniversitiesFeeStructureIdRouteImport
       parentRoute: typeof UniversitiesRoute
     }
     '/students/students/$id': {
@@ -974,6 +1094,8 @@ declare module '@tanstack/react-router' {
 
 interface AdministrationRouteChildren {
   AdministrationAuditLogsRoute: typeof AdministrationAuditLogsRoute
+  AdministrationDocumentChecklistRoute: typeof AdministrationDocumentChecklistRoute
+  AdministrationEligibilityRulesRoute: typeof AdministrationEligibilityRulesRoute
   AdministrationRolesRoute: typeof AdministrationRolesRoute
   AdministrationSystemSettingsRoute: typeof AdministrationSystemSettingsRoute
   AdministrationUsersRoute: typeof AdministrationUsersRoute
@@ -982,6 +1104,8 @@ interface AdministrationRouteChildren {
 
 const AdministrationRouteChildren: AdministrationRouteChildren = {
   AdministrationAuditLogsRoute: AdministrationAuditLogsRoute,
+  AdministrationDocumentChecklistRoute: AdministrationDocumentChecklistRoute,
+  AdministrationEligibilityRulesRoute: AdministrationEligibilityRulesRoute,
   AdministrationRolesRoute: AdministrationRolesRoute,
   AdministrationSystemSettingsRoute: AdministrationSystemSettingsRoute,
   AdministrationUsersRoute: AdministrationUsersRoute,
@@ -1040,6 +1164,7 @@ interface FeesRouteChildren {
   FeesCollectionRoute: typeof FeesCollectionRoute
   FeesDashboardRoute: typeof FeesDashboardRoute
   FeesPaymentVerificationRoute: typeof FeesPaymentVerificationRoute
+  FeesRegistrationVerificationRoute: typeof FeesRegistrationVerificationRoute
   FeesSummaryRoute: typeof FeesSummaryRoute
   FeesIndexRoute: typeof FeesIndexRoute
 }
@@ -1048,6 +1173,7 @@ const FeesRouteChildren: FeesRouteChildren = {
   FeesCollectionRoute: FeesCollectionRoute,
   FeesDashboardRoute: FeesDashboardRoute,
   FeesPaymentVerificationRoute: FeesPaymentVerificationRoute,
+  FeesRegistrationVerificationRoute: FeesRegistrationVerificationRoute,
   FeesSummaryRoute: FeesSummaryRoute,
   FeesIndexRoute: FeesIndexRoute,
 }
@@ -1104,6 +1230,8 @@ interface UniversitiesRouteChildren {
   UniversitiesIntakesRoute: typeof UniversitiesIntakesRoute
   UniversitiesUniversitiesRoute: typeof UniversitiesUniversitiesRoute
   UniversitiesIndexRoute: typeof UniversitiesIndexRoute
+  UniversitiesFeeStructureIdRoute: typeof UniversitiesFeeStructureIdRoute
+  UniversitiesFeeStructureNewRoute: typeof UniversitiesFeeStructureNewRoute
   UniversitiesUniversitiesCodeRoute: typeof UniversitiesUniversitiesCodeRoute
 }
 
@@ -1113,6 +1241,8 @@ const UniversitiesRouteChildren: UniversitiesRouteChildren = {
   UniversitiesIntakesRoute: UniversitiesIntakesRoute,
   UniversitiesUniversitiesRoute: UniversitiesUniversitiesRoute,
   UniversitiesIndexRoute: UniversitiesIndexRoute,
+  UniversitiesFeeStructureIdRoute: UniversitiesFeeStructureIdRoute,
+  UniversitiesFeeStructureNewRoute: UniversitiesFeeStructureNewRoute,
   UniversitiesUniversitiesCodeRoute: UniversitiesUniversitiesCodeRoute,
 }
 
@@ -1123,6 +1253,7 @@ const UniversitiesRouteWithChildren = UniversitiesRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdministrationRoute: AdministrationRouteWithChildren,
+  ApplyRoute: ApplyRoute,
   CallsRoute: CallsRoute,
   CommissionsRoute: CommissionsRoute,
   CounsellorsRoute: CounsellorsRouteWithChildren,

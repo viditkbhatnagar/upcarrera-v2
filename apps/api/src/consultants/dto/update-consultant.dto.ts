@@ -1,11 +1,17 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
 } from 'class-validator';
+import {
+  IsConsultantPhone,
+  transformConsultantPhone,
+} from '../consultant-phone';
+import { trimEmployeeCode } from './employee-code';
 
 /**
  * Port of Consultant::edit. Every field is optional (the legacy edit was a
@@ -31,10 +37,30 @@ export class UpdateConsultantDto {
   @IsInt()
   code?: number;
 
+  // Normalised before validation (QA C08): "87146 89444", "09072238556" and
+  // "+91 98765 43210" are all stored as the bare 10-digit national number,
+  // so new rows stop adding to the mixed formats already in the column.
   @IsOptional()
+  @Transform(transformConsultantPhone)
   @IsString()
   @MaxLength(30)
+  @IsConsultantPhone()
   phone?: string;
+
+  /**
+   * Hand-entered employee id, e.g. "UC-1024" (users.employee_code, migration
+   * 001). Unique across all users; a clash is a 409. On update an empty string
+   * clears it, and the list falls back to showing `UC-<users.id>`.
+   */
+  @IsOptional()
+  @Transform(trimEmployeeCode)
+  @IsString()
+  @MaxLength(32)
+  @Matches(/^$|^[A-Za-z0-9][A-Za-z0-9\-_/]*$/, {
+    message:
+      'employee_code may contain only letters, digits, "-", "_" and "/", and must start with a letter or digit',
+  })
+  employee_code?: string;
 
   @IsOptional()
   @IsString()

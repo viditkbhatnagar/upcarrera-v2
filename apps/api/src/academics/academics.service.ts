@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCourseDto } from './dto/create-course.dto';
@@ -26,10 +31,16 @@ import { CreateCountryDto } from './dto/create-country.dto';
 import { UpdateCountryDto } from './dto/update-country.dto';
 import { CreateVisaTypeDto } from './dto/create-visa-type.dto';
 import { UpdateVisaTypeDto } from './dto/update-visa-type.dto';
-import { CreateIntakeDto } from './dto/create-intake.dto';
+import {
+  CreateIntakeDto,
+  MAX_INTAKE_YEAR,
+  MIN_INTAKE_YEAR,
+} from './dto/create-intake.dto';
 import { UpdateIntakeDto } from './dto/update-intake.dto';
 import { CreateGroupCourseDto } from './dto/create-group-course.dto';
 import { UpdateGroupCourseDto } from './dto/update-group-course.dto';
+import { IntakeListQueryDto } from './dto/intake-list-query.dto';
+import { UniversityCourseService } from './university-course.service';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -53,6 +64,55 @@ export interface Paginated<T> {
 }
 
 /**
+ * Normalise a catalog name for duplicate detection: trimmed, inner whitespace
+ * collapsed, lower-cased. "MSC", " msc " and "M SC"-free variants of the same
+ * spelling compare equal; genuinely different spellings ("Manchine Learning")
+ * do not — no code can infer the intended spelling of a typo.
+ */
+export function normaliseCatalogName(value: string | null | undefined): string {
+  return (value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Names held in the free-form `course.specialisations` Text column.
+ *
+ * The legacy React admin wrote it as a JSON array of objects
+ * (`[{"id":"specialisation-1737981364926","name":"Marketing",...}]`), other
+ * writers as a JSON array of strings, and the CRM as a plain string — possibly
+ * comma-separated. All three are read here; anything unparseable degrades to
+ * the plain-string reading, never to a throw.
+ */
+export function parseSpecialisationNames(raw: string | null | undefined): string[] {
+  const text = (raw ?? '').trim();
+  if (text === '') return [];
+  const fromItem = (item: unknown): string => {
+    if (typeof item === 'string') return item;
+    if (item && typeof item === 'object') {
+      const rec = item as Record<string, unknown>;
+      const name = rec.name ?? rec.title ?? rec.label;
+      return typeof name === 'string' ? name : '';
+    }
+    return '';
+  };
+  if (text.startsWith('[') || text.startsWith('{') || text.startsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      return items
+        .map(fromItem)
+        .map((n) => n.trim())
+        .filter((n) => n !== '');
+    } catch {
+      // fall through to the plain-string reading
+    }
+  }
+  return text
+    .split(/[,\n]/)
+    .map((n) => n.trim())
+    .filter((n) => n !== '');
+}
+
+/**
  * Academic catalog service. Ports the CI4 App\Course / University / Subjects /
  * Semester / Specialisation / College / Country / Visa_type controllers.
  *
@@ -64,7 +124,10 @@ export interface Paginated<T> {
  */
 @Injectable()
 export class AcademicsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly universityCourse: UniversityCourseService,
+  ) {}
 
   /** Resolves page/limit into a normalised { page, limit, skip, take }. */
   private resolvePaging(query: Pagination) {
@@ -117,7 +180,59 @@ export class AcademicsService {
       }),
       this.prisma.course.count({ where }),
     ]);
-    return this.paginated(items, total, page, limit);
+    const [names, mappedCounts] = await Promise.all([
+      this.universityNames(items.map((c) => c.university_id)),
+      // IN04: real count of universities that OFFER (tag) this course, from the
+      // university_course mapping table (ONE bulk groupBy, no N+1). Replaces the
+      // hardcoded `mappedUniversities: 0` the Courses screen used to display.
+      this.universityCourse.mappedUniversitiesCountByCourse(items.map((c) => c.id)),
+    ]);
+    // Additive: every row gains `university_name` (the legacy single FK, kept for
+    // back-compat) and `mapped_universities_count` (the M:N mapping truth).
+    const decorated = items.map((c) => ({
+      ...c,
+      university_name:
+        c.university_id != null ? (names.get(c.university_id) ?? null) : null,
+      mapped_universities_count: mappedCounts.get(c.id) ?? 0,
+    }));
+    return this.paginated(decorated, total, page, limit);
+  }
+
+  /** id -> title for the given university ids, in ONE query (no N+1). */
+  private async universityNames(
+    ids: (number | null | undefined)[],
+  ): Promise<Map<number, string | null>> {
+    const unique = [
+      ...new Set(ids.filter((u): u is number => u != null)),
+    ];
+    if (unique.length === 0) return new Map();
+    const rows = await this.prisma.university.findMany({
+      where: { id: { in: unique }, deleted_at: null },
+      select: { id: true, title: true },
+    });
+    return new Map(rows.map((u) => [u.id, u.title]));
+  }
+
+  /**
+   * GET /courses/:id — the course row plus read-only context for the detail
+   * view: `university_name` and `semesters_count` (the number of live
+   * `semester` rows for this course; there is no semesters column on
+   * `course`). Additive over the plain row getCourse returns.
+   */
+  async getCourseDetail(id: number) {
+    const course = await this.getCourse(id);
+    const [names, semestersCount] = await Promise.all([
+      this.universityNames([course.university_id]),
+      this.prisma.semester.count({ where: { course_id: id, deleted_at: null } }),
+    ]);
+    return {
+      ...course,
+      university_name:
+        course.university_id != null
+          ? (names.get(course.university_id) ?? null)
+          : null,
+      semesters_count: semestersCount,
+    };
   }
 
   /**
@@ -220,7 +335,6 @@ export class AcademicsService {
         // The legacy app stored blanks when unfilled, so we mirror that.
         short_name: dto.short_name ?? '',
         stream: dto.stream ?? '',
-        total_duration: dto.total_duration ?? '',
         study_mode: dto.study_mode ?? '',
         created_at: now,
         updated_at: now,
@@ -249,38 +363,6 @@ export class AcademicsService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Derive the number of intakes from the free-form `university.intakes` Text
-   * blob. The legacy column is a textarea blob with no fixed format, so we parse
-   * leniently:
-   *   - a JSON array -> its length
-   *   - otherwise -> count of non-empty tokens split on commas/newlines/pipes
-   *   - null / empty / unparseable -> 0
-   */
-  private deriveIntakesCount(raw: string | null | undefined): number {
-    if (raw == null) return 0;
-    const trimmed = raw.trim();
-    if (trimmed === '') return 0;
-
-    if (trimmed.startsWith('[')) {
-      try {
-        const parsed: unknown = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) {
-          return parsed.filter(
-            (v) => v != null && String(v).trim() !== '',
-          ).length;
-        }
-      } catch {
-        // fall through to delimiter-based counting
-      }
-    }
-
-    return trimmed
-      .split(/[\n,|]+/)
-      .map((s) => s.trim())
-      .filter((s) => s !== '').length;
-  }
-
-  /**
    * GET /universities — paginated catalog of active universities, each item
    * decorated with:
    *   - tagged_courses_count: number of active (deleted_at null) `course` rows
@@ -303,34 +385,23 @@ export class AcademicsService {
       this.prisma.university.count({ where: { deleted_at: null } }),
     ]);
 
-    // Collect the page's university ids and resolve tagged-course counts in a
-    // single bulk groupBy keyed by course.university_id.
+    // IN04: tagged_courses_count and intakes_count now come from the mapping
+    // tables (university_course / university_course_intake), not from the legacy
+    // course.university_id column or the free-text university.intakes blob.
+    //   - tagged_courses_count: live university_course rows for the university.
+    //   - intakes_count:        distinct OPEN offering intakes for the university.
+    // Both resolved in bulk (no N+1) by UniversityCourseService.
     const universityIds = rows.map((u) => u.id);
-    const courseCounts =
-      universityIds.length > 0
-        ? await this.prisma.course.groupBy({
-            by: ['university_id'],
-            where: {
-              university_id: { in: universityIds },
-              deleted_at: null,
-            },
-            _count: { _all: true },
-          })
-        : [];
-    const taggedCountByUniversityId = new Map<number, number>(
-      courseCounts
-        .filter(
-          (c): c is typeof c & { university_id: number } =>
-            c.university_id != null,
-        )
-        .map((c) => [c.university_id, c._count._all]),
-    );
+    const counts = await this.universityCourse.universityCatalogCounts(universityIds);
 
-    const items = rows.map((university) => ({
-      ...university,
-      tagged_courses_count: taggedCountByUniversityId.get(university.id) ?? 0,
-      intakes_count: this.deriveIntakesCount(university.intakes),
-    }));
+    const items = rows.map((university) => {
+      const c = counts.get(university.id);
+      return {
+        ...university,
+        tagged_courses_count: c?.tagged_courses ?? 0,
+        intakes_count: c?.open_intakes ?? 0,
+      };
+    });
 
     return this.paginated(items, total, page, limit);
   }
@@ -346,6 +417,11 @@ export class AcademicsService {
   }
 
   async createUniversity(dto: CreateUniversityDto) {
+    // Spec 3.4: the collection model is required up front — activation of any fee
+    // structure for this university is blocked until it is set.
+    if (!dto.fee_collection_model) {
+      throw new BadRequestException('Fee collection model is required.');
+    }
     const now = new Date();
     return this.prisma.university.create({
       data: {
@@ -364,6 +440,13 @@ export class AcademicsService {
 
   async updateUniversity(id: number, dto: UpdateUniversityDto) {
     await this.getUniversity(id);
+    // Spec 3.4: the collection model can be SET (unset -> a valid value) but never
+    // cleared once present. @IsOptional lets an explicit null through validation, so
+    // guard it here: the key present but null/empty is a 400, an omitted key leaves
+    // the stored value untouched.
+    if ('fee_collection_model' in dto && !dto.fee_collection_model) {
+      throw new BadRequestException('Fee collection model cannot be cleared once set.');
+    }
     return this.prisma.university.update({
       where: { id },
       data: { ...dto, updated_at: new Date() },
@@ -528,7 +611,110 @@ export class AcademicsService {
       }),
       this.prisma.specialisations.count({ where: { deleted_at: null } }),
     ]);
-    return this.paginated(items, total, page, limit);
+    const counts = await this.specialisationCourseCounts(items);
+    // Additive: every row gains a LIVE `courses_count`.
+    const decorated = items.map((row) => ({
+      ...row,
+      courses_count: counts.get(row.id) ?? 0,
+    }));
+    return this.paginated(decorated, total, page, limit);
+  }
+
+  /**
+   * LIVE number of courses that use each specialisation, for one page of rows,
+   * in at most TWO queries over `course` (no N+1).
+   *
+   * The table holds two kinds of row, counted differently:
+   *   - a per-course CHILD row (`course_id` set, e.g. one "General" per course)
+   *     belongs to exactly that course: 1 when it is live, else 0. It is NOT
+   *     name-matched — otherwise every child "General" row would report every
+   *     course that mentions "General".
+   *   - a MASTER row (`course_id` NULL) counts the live courses whose
+   *     free-form `specialisations` column names it (the JSON blob the legacy
+   *     admin wrote, or the plain string the CRM writes), matched
+   *     case-insensitively and whitespace-normalised. A course is counted once.
+   * The name scan reads only courses with a non-blank `specialisations`, and
+   * only runs when the page actually contains a master row.
+   */
+  private async specialisationCourseCounts(
+    rows: { id: number; course_id: number | null; title: string | null }[],
+  ): Promise<Map<number, number>> {
+    if (rows.length === 0) return new Map();
+    const childCourseIds = [
+      ...new Set(
+        rows.map((r) => r.course_id).filter((id): id is number => id != null),
+      ),
+    ];
+    const hasMasterRows = rows.some((r) => r.course_id == null);
+    const [liveChildCourses, namedCourses] = await Promise.all([
+      childCourseIds.length > 0
+        ? this.prisma.course.findMany({
+            where: { id: { in: childCourseIds }, deleted_at: null },
+            select: { id: true },
+          })
+        : Promise.resolve([] as { id: number }[]),
+      hasMasterRows
+        ? this.prisma.course.findMany({
+            where: {
+              deleted_at: null,
+              AND: [{ specialisations: { not: null } }, { specialisations: { not: '' } }],
+            },
+            select: { id: true, specialisations: true },
+          })
+        : Promise.resolve([] as { id: number; specialisations: string | null }[]),
+    ]);
+    const liveChild = new Set(liveChildCourses.map((c) => c.id));
+    const byName = new Map<string, Set<number>>();
+    for (const course of namedCourses) {
+      for (const name of parseSpecialisationNames(course.specialisations)) {
+        const key = normaliseCatalogName(name);
+        const bucket = byName.get(key) ?? new Set<number>();
+        bucket.add(course.id);
+        byName.set(key, bucket);
+      }
+    }
+    const counts = new Map<number, number>();
+    for (const row of rows) {
+      const count =
+        row.course_id != null
+          ? liveChild.has(row.course_id)
+            ? 1
+            : 0
+          : (byName.get(normaliseCatalogName(row.title))?.size ?? 0);
+      counts.set(row.id, count);
+    }
+    return counts;
+  }
+
+  /**
+   * 409 when another live specialisation with the same `course_id` (NULL = the
+   * shared master list the Specialisations tab creates into) already has this
+   * title, compared case-insensitively and whitespace-normalised. The key
+   * includes course_id because the table is ALSO a per-course child table:
+   * one "General" row per course is legitimate, two master "Marketing" rows
+   * are not.
+   */
+  private async assertSpecialisationUnique(
+    title: string,
+    courseId: number | null,
+    excludeId?: number,
+  ) {
+    const key = normaliseCatalogName(title);
+    if (key === '') return;
+    const candidates = await this.prisma.specialisations.findMany({
+      where: {
+        deleted_at: null,
+        course_id: courseId,
+        ...(excludeId != null ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true, title: true },
+    });
+    const clash = candidates.find((c) => normaliseCatalogName(c.title) === key);
+    if (clash) {
+      throw new ConflictException(
+        `A specialisation named "${clash.title?.trim() ?? title}" already exists (SPC-${String(clash.id).padStart(3, '0')})`,
+      );
+    }
   }
 
   async getSpecialisation(id: number) {
@@ -542,6 +728,7 @@ export class AcademicsService {
   }
 
   async createSpecialisation(dto: CreateSpecialisationDto) {
+    await this.assertSpecialisationUnique(dto.title, dto.course_id ?? null);
     const now = new Date();
     return this.prisma.specialisations.create({
       data: { ...dto, created_at: now, updated_at: now },
@@ -549,7 +736,17 @@ export class AcademicsService {
   }
 
   async updateSpecialisation(id: number, dto: UpdateSpecialisationDto) {
-    await this.getSpecialisation(id);
+    const current = await this.getSpecialisation(id);
+    // Only a change of name or course is checked, so an existing duplicate can
+    // still have its description edited without first being merged.
+    const nextTitle = dto.title !== undefined ? dto.title : current.title;
+    const nextCourseId =
+      dto.course_id !== undefined ? dto.course_id : current.course_id;
+    const renamed =
+      normaliseCatalogName(nextTitle) !== normaliseCatalogName(current.title);
+    if ((renamed || nextCourseId !== current.course_id) && nextTitle) {
+      await this.assertSpecialisationUnique(nextTitle, nextCourseId ?? null, id);
+    }
     return this.prisma.specialisations.update({
       where: { id },
       data: { ...dto, updated_at: new Date() },
@@ -1016,14 +1213,66 @@ export class AcademicsService {
       }));
   }
 
-  /** Decorate a raw group_courses row with its resolved `courses` array. */
-  private async decorateGroupCourse(group: {
-    course_ids: string | null;
-    [key: string]: unknown;
-  }) {
-    const ids = this.parseCourseIds(group.course_ids);
-    const courses = await this.coursesForGroup(ids);
-    return { ...group, courses };
+  /**
+   * Decorate group_courses rows with their resolved `courses` array and a LIVE
+   * `courses_count` (distinct referenced courses that still exist).
+   *
+   * Every row on the page is resolved together — ONE course query and ONE
+   * university query for the whole page, not two per row (the previous
+   * per-row decoration was an N+1).
+   */
+  private async decorateGroupCourses<
+    T extends { course_ids: string | null; [key: string]: unknown },
+  >(groups: T[]) {
+    const idsByGroup = groups.map((g) => this.parseCourseIds(g.course_ids));
+    const resolved = await this.coursesForGroup([
+      ...new Set(idsByGroup.flat()),
+    ]);
+    const byId = new Map(resolved.map((c) => [c.id, c]));
+    return groups.map((group, i) => {
+      // Stored order, ids that no longer resolve dropped — as before.
+      const courses = idsByGroup[i]
+        .map((id) => byId.get(id))
+        .filter((c): c is NonNullable<typeof c> => c != null);
+      return {
+        ...group,
+        courses,
+        courses_count: new Set(courses.map((c) => c.id)).size,
+      };
+    });
+  }
+
+  /** Decorate a single group_courses row (see decorateGroupCourses). */
+  private async decorateGroupCourse<
+    T extends { course_ids: string | null; [key: string]: unknown },
+  >(group: T) {
+    const [decorated] = await this.decorateGroupCourses([group]);
+    return decorated;
+  }
+
+  /**
+   * 409 when another live course group already has this name, compared
+   * case-insensitively and whitespace-normalised. `group_courses` has no
+   * level column, so the name alone is the key.
+   */
+  private async assertGroupNameUnique(name: string, excludeId?: number) {
+    const key = normaliseCatalogName(name);
+    if (key === '') return;
+    const candidates = await this.prisma.group_courses.findMany({
+      where: {
+        deleted_at: null,
+        ...(excludeId != null ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true, group_name: true },
+    });
+    const clash = candidates.find(
+      (g) => normaliseCatalogName(g.group_name) === key,
+    );
+    if (clash) {
+      throw new ConflictException(
+        `A course group named "${clash.group_name.trim()}" already exists (GRP-${String(clash.id).padStart(3, '0')})`,
+      );
+    }
   }
 
   async listGroupCourses(query: Pagination): Promise<Paginated<unknown>> {
@@ -1037,9 +1286,7 @@ export class AcademicsService {
       }),
       this.prisma.group_courses.count({ where: { deleted_at: null } }),
     ]);
-    const items = await Promise.all(
-      rows.map((row) => this.decorateGroupCourse(row)),
-    );
+    const items = await this.decorateGroupCourses(rows);
     return this.paginated(items, total, page, limit);
   }
 
@@ -1054,6 +1301,7 @@ export class AcademicsService {
   }
 
   async createGroupCourse(dto: CreateGroupCourseDto) {
+    await this.assertGroupNameUnique(dto.group_name);
     const now = new Date();
     const created = await this.prisma.group_courses.create({
       data: {
@@ -1069,7 +1317,16 @@ export class AcademicsService {
   }
 
   async updateGroupCourse(id: number, dto: UpdateGroupCourseDto) {
-    await this.getGroupCourseRow(id);
+    const current = await this.getGroupCourseRow(id);
+    // Only a real rename is checked, so an existing duplicate (e.g. the second
+    // "MSC") can still be edited without first being merged.
+    if (
+      dto.group_name !== undefined &&
+      normaliseCatalogName(dto.group_name) !==
+        normaliseCatalogName(current.group_name)
+    ) {
+      await this.assertGroupNameUnique(dto.group_name, id);
+    }
     const data: {
       group_name?: string;
       description?: string | null;
@@ -1196,23 +1453,45 @@ export class AcademicsService {
 
   // ---- intakes (admission cycles) ----------------------------------------
 
-  async listIntakes(query: Pagination): Promise<Paginated<unknown>> {
+  async listIntakes(query: IntakeListQueryDto): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
+
+    // IN04 ?university_id: keep only intakes that have a live offering for that
+    // university (the Intakes screen's server-side universities filter).
+    const where: { deleted_at: null; id?: { in: number[] } } = { deleted_at: null };
+    if (query.university_id != null) {
+      const intakeIds = await this.universityCourse.intakeIdsForUniversity(
+        query.university_id,
+      );
+      if (intakeIds.length === 0) {
+        return this.paginated([], 0, page, limit);
+      }
+      where.id = { in: intakeIds };
+    }
+
     const [rows, total] = await Promise.all([
       this.prisma.intake.findMany({
-        where: { deleted_at: null },
+        where,
         orderBy: { id: 'desc' },
         skip,
         take,
       }),
-      this.prisma.intake.count({ where: { deleted_at: null } }),
+      this.prisma.intake.count({ where }),
     ]);
-    // No intake<->university/course mapping tables yet, so counts are 0.
-    const items = rows.map((r) => ({
-      ...r,
-      mapped_universities: 0,
-      mapped_courses: 0,
-    }));
+
+    // IN04: real mapped counts from university_course_intake (bulk, no N+1),
+    // replacing the hardcoded zeros.
+    const counts = await this.universityCourse.intakeOfferingCounts(
+      rows.map((r) => r.id),
+    );
+    const items = rows.map((r) => {
+      const c = counts.get(r.id);
+      return {
+        ...r,
+        mapped_universities: c?.universities ?? 0,
+        mapped_courses: c?.courses ?? 0,
+      };
+    });
     return this.paginated(items, total, page, limit);
   }
 
@@ -1226,7 +1505,62 @@ export class AcademicsService {
     return intake;
   }
 
+  /**
+   * Validates an intake schedule's dates. Each date that is SENT must be a real
+   * calendar day whose year is inside the intake window; the window as it will
+   * stand after the write (sent value, else the stored one) must not close
+   * before it starts. A stored date that is already out of range is not
+   * re-validated unless it is being replaced, so a legacy row stays editable.
+   */
+  private assertIntakeDates(
+    dto: { start_date?: string; closing_date?: string },
+    stored?: { start_date: Date | null; closing_date: Date | null },
+  ) {
+    const check = (label: string, value: string | undefined) => {
+      if (value === undefined || value === '') return;
+      const [y, m, d] = value.split('-').map(Number);
+      if (y < MIN_INTAKE_YEAR || y > MAX_INTAKE_YEAR) {
+        throw new BadRequestException(
+          `${label} must fall between ${MIN_INTAKE_YEAR} and ${MAX_INTAKE_YEAR} (got ${value})`,
+        );
+      }
+      // Year is 2020–2035 here, so Date.UTC's 0–99 => 19xx quirk cannot apply.
+      const parsed = new Date(Date.UTC(y, m - 1, d));
+      const real =
+        parsed.getUTCFullYear() === y &&
+        parsed.getUTCMonth() === m - 1 &&
+        parsed.getUTCDate() === d;
+      if (!real) {
+        throw new BadRequestException(`${label} ${value} is not a real date`);
+      }
+    };
+    check('Start date', dto.start_date);
+    check('Admission closing date', dto.closing_date);
+
+    const inWindow = (iso: string | null) => {
+      if (!iso) return null;
+      const year = Number(iso.slice(0, 4));
+      return year >= MIN_INTAKE_YEAR && year <= MAX_INTAKE_YEAR ? iso : null;
+    };
+    const storedIso = (d: Date | null | undefined) =>
+      d ? d.toISOString().slice(0, 10) : null;
+    const start = inWindow(
+      dto.start_date !== undefined ? dto.start_date || null : storedIso(stored?.start_date),
+    );
+    const closing = inWindow(
+      dto.closing_date !== undefined
+        ? dto.closing_date || null
+        : storedIso(stored?.closing_date),
+    );
+    if (start && closing && closing < start) {
+      throw new BadRequestException(
+        'Admission closing date must be on or after the start date.',
+      );
+    }
+  }
+
   async createIntake(dto: CreateIntakeDto) {
+    this.assertIntakeDates(dto);
     const now = new Date();
     return this.prisma.intake.create({
       data: {
@@ -1243,7 +1577,8 @@ export class AcademicsService {
   }
 
   async updateIntake(id: number, dto: UpdateIntakeDto) {
-    await this.getIntake(id);
+    const stored = await this.getIntake(id);
+    this.assertIntakeDates(dto, stored);
     return this.prisma.intake.update({
       where: { id },
       data: {

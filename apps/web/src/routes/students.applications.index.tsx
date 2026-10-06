@@ -1,344 +1,250 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api";
+import { zodValidator, fallback } from "@tanstack/zod-adapter";
+import { z } from "zod";
+import { toast } from "sonner";
 import {
   Plus,
   Download,
   Search,
   Filter,
   RefreshCcw,
-  Bookmark,
   Eye,
   Pencil,
   Phone,
   MessageCircle,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
   X,
-  FileText,
-  ArrowRight,
-  MoreHorizontal,
-  Mail,
-  CalendarDays,
-  Building2,
-  BookOpen,
-  Layers,
-  User as UserIcon,
-  Sparkles,
-  Trash2,
   CheckCircle2,
   UserPlus,
   AlertTriangle,
+  Loader2,
+  Pause,
+  ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ApiError } from "@/lib/api";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+  listApplications,
+  applicationKeys,
+  STAGES,
+  type Stage,
+} from "@/lib/api/applications";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { useStartCall, type CallHealth } from "@/components/calls/calls-ui";
+import { apiGet } from "@/lib/api";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  useCounsellorOptions,
+  useCourseOptions,
+  useIntakeOptions,
+  useUniversityOptions,
+  useTeamOptions,
+  useGroupOptions,
+} from "@/components/applications/catalogs";
+import { useAccess, canFilterByOwner } from "@/components/applications/use-access";
+import { PIPELINE_STAGES, STAGE_META } from "@/components/applications/stage-model";
+import { AddLeadDialog } from "@/components/applications/lead-dialog";
+import { EditApplicationDialog } from "@/components/applications/edit-application-dialog";
+import {
+  type ListRowView,
+  type ApplicationListResponse,
+  EMPTY,
+  PAGE_SIZE,
+  mapRow,
+  CSV_COLUMNS,
+  exportFilename,
+} from "@/components/applications/list-model";
+import { FilterInput, FilterSelect, IconBtn, BulkBtn, EmptyState } from "@/components/applications/list-bits";
+import { downloadCsv, EXPORT_ROW_CAP, toCsv } from "@/components/applications/export-csv";
+
+const strish = fallback(
+  z.union([z.string(), z.number(), z.boolean()]).transform((v) => String(v)).optional(),
+  undefined,
+);
+
+const searchSchema = z.object({
+  search: strish,
+  university_id: strish,
+  course_id: strish,
+  session_id: strish,
+  counsellor_id: strish,
+  team_id: strish,
+  group_id: strish,
+  on_hold: strish,
+  followup_due: strish,
+  stage: fallback(z.enum(STAGES).optional(), undefined),
+  page: fallback(z.coerce.number().int().min(1).optional(), undefined),
+});
 
 export const Route = createFileRoute("/students/applications/")({
+  validateSearch: zodValidator(searchSchema),
   head: () => ({ meta: [{ title: "Applications — upCarrera" }] }),
   component: ApplicationsPage,
 });
 
-/* ---------------- Types & Data ---------------- */
-
-type AppStatus =
-  | "New Lead"
-  | "Registration Fee Pending"
-  | "Registration Fee Paid"
-  | "Form Pending"
-  | "Admin Verification Pending"
-  | "Enrolled"
-  | "Rejected";
-
-type FeeStatus = "Pending" | "Partially Paid" | "Paid" | "Refunded";
-
-interface Application {
-  id: string;
-  date: string;
-  name: string;
-  email: string;
-  phone: string;
-  whatsapp: boolean;
-  university: string;
-  course: string;
-  batch: string;
-  counsellor: string;
-  counsellorInitials: string;
-  feeStatus: FeeStatus;
-  status: AppStatus;
-}
-
-const STATUS_ORDER: AppStatus[] = [
-  "New Lead",
-  "Registration Fee Pending",
-  "Registration Fee Paid",
-  "Form Pending",
-  "Admin Verification Pending",
-  "Enrolled",
-  "Rejected",
-];
-
-const STATUS_STYLES: Record<AppStatus, string> = {
-  "New Lead": "bg-sky-100 text-sky-700 ring-sky-200",
-  "Registration Fee Pending": "bg-orange-100 text-orange-700 ring-orange-200",
-  "Registration Fee Paid": "bg-emerald-100 text-emerald-700 ring-emerald-200",
-  "Form Pending": "bg-purple-100 text-purple-700 ring-purple-200",
-  "Admin Verification Pending": "bg-yellow-100 text-yellow-800 ring-yellow-200",
-  Enrolled: "bg-primary/10 text-primary ring-primary/20",
-  Rejected: "bg-red-100 text-red-700 ring-red-200",
-};
-
-const STATUS_DOT: Record<AppStatus, string> = {
-  "New Lead": "bg-sky-500",
-  "Registration Fee Pending": "bg-orange-500",
-  "Registration Fee Paid": "bg-emerald-500",
-  "Form Pending": "bg-purple-500",
-  "Admin Verification Pending": "bg-yellow-500",
-  Enrolled: "bg-primary",
-  Rejected: "bg-red-500",
-};
-
-const FEE_STYLES: Record<FeeStatus, string> = {
-  Pending: "bg-orange-100 text-orange-700 ring-orange-200",
-  "Partially Paid": "bg-amber-100 text-amber-800 ring-amber-200",
-  Paid: "bg-emerald-100 text-emerald-700 ring-emerald-200",
-  Refunded: "bg-slate-100 text-slate-700 ring-slate-200",
-};
-
-const UNIVERSITIES = [
-  "Amity University Online",
-  "Manipal University",
-  "Jain University",
-  "LPU Online",
-  "NMIMS Global",
-  "DY Patil University",
-];
-const COURSES = ["MBA", "BBA", "MCA", "BCA", "M.Com", "B.Com", "MA Psychology"];
-const BATCHES = ["Jan 2026", "Apr 2026", "Jul 2026", "Oct 2026"];
-const COUNSELLORS = [
-  { name: "Priya Sharma", initials: "PS" },
-  { name: "Rahul Verma", initials: "RV" },
-  { name: "Aisha Khan", initials: "AK" },
-  { name: "Karan Mehta", initials: "KM" },
-  { name: "Neha Iyer", initials: "NI" },
-];
-
-/* ---------------- Live API wiring (GET /api/applications) ----------------
- * The list endpoint returns the raw `applications` row decorated server-side with
- * its joined display fields (applications.controller.ts -> students.service.ts
- * listApplications + decorateApplications):
- *   application_id, applicant_name/email/phone, whatsapp_no, custom_application_id,
- *   enrollment_id, created_at, enrollment_date, course_title, university_title,
- *   consultant_name, amount, paid_date, is_converted, is_archived, status,
- *   status_label.
- * We map those real values into the SAME `Application` shape the design renders.
- * The endpoint paginates (page/limit); the page's name / phone / id / dropdown
- * filters refine the fetched page client-side over real values.            */
-
-const EMPTY = "—";
-
-interface ApiApplicationRow {
-  application_id: number | string;
-  custom_application_id: string | null;
-  enrollment_id: string | null;
-  applicant_name: string | null;
-  applicant_email: string | null;
-  applicant_phone: string | null;
-  whatsapp_no: string | null;
-  created_at: string | null;
-  enrollment_date: string | null;
-  university_title: string | null;
-  course_title: string | null;
-  consultant_name: string | null;
-  amount: number | string | null;
-  paid_date: string | null;
-  is_converted: number | null;
-  is_archived: boolean | null;
-  status: boolean | null;
-  status_label: string | null;
-}
-
-interface ApplicationsListResponse {
-  items: ApiApplicationRow[];
-  total: number;
-  page: number;
-  limit: number;
-}
-
-function asText(value: string | null | undefined): string {
-  return value != null && String(value).trim() !== "" ? String(value) : EMPTY;
-}
-
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "—";
-  return parts
-    .map((w) => w[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
-
-function formatDate(value: string | null): string {
-  if (!value) return EMPTY;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-// Map the API's coarse lifecycle (status_label / is_converted / is_archived /
-// status) onto the design's pipeline stages. Converted applications became
-// enrolled students; archived/inactive map to Rejected; everything else is a
-// live lead. No fabricated intermediate stages — the source row only carries
-// these signals.
-function toAppStatus(r: ApiApplicationRow): AppStatus {
-  if (r.is_converted === 1 || r.status_label === "Converted") return "Enrolled";
-  if (r.is_archived || r.status_label === "Archived" || r.status === false) return "Rejected";
-  return "New Lead";
-}
-
-// Derive a fee status from the real payment signals on the row: a paid_date marks
-// a paid registration fee; an amount with no paid_date is still pending.
-function toFeeStatus(r: ApiApplicationRow): FeeStatus {
-  if (r.paid_date) return "Paid";
-  return "Pending";
-}
-
-function mapApiRow(r: ApiApplicationRow): Application {
-  const name = asText(r.applicant_name);
-  const counsellor = asText(r.consultant_name);
-  const displayId =
-    r.custom_application_id != null && String(r.custom_application_id).trim() !== ""
-      ? String(r.custom_application_id)
-      : r.enrollment_id != null && String(r.enrollment_id).trim() !== ""
-        ? String(r.enrollment_id)
-        : `APP-${r.application_id}`;
-  return {
-    id: displayId,
-    date: formatDate(r.created_at),
-    name,
-    email: asText(r.applicant_email),
-    phone: r.applicant_phone != null ? String(r.applicant_phone) : "",
-    whatsapp: r.whatsapp_no != null && String(r.whatsapp_no).trim() !== "",
-    university: asText(r.university_title),
-    course: asText(r.course_title),
-    batch: formatDate(r.enrollment_date),
-    counsellor,
-    counsellorInitials: counsellor === EMPTY ? "—" : initials(counsellor),
-    feeStatus: toFeeStatus(r),
-    status: toAppStatus(r),
-  };
-}
-
-/* ---------------- Page ---------------- */
-
 function ApplicationsPage() {
-  const [statusFilter, setStatusFilter] = useState<AppStatus | "All">("All");
-  const [feeFilter, setFeeFilter] = useState<FeeStatus | "All">("All");
-  const [search, setSearch] = useState("");
-  const [phone, setPhone] = useState("");
-  const [appId, setAppId] = useState("");
-  const [university, setUniversity] = useState("All");
-  const [course, setCourse] = useState("All");
-  const [batch, setBatch] = useState("All");
-  const [counsellor, setCounsellor] = useState("All");
-  const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [leadOpen, setLeadOpen] = useState(false);
-  const PAGE_SIZE = 10;
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const access = useAccess();
+  const showOwnerFilters = canFilterByOwner(access.data);
 
-  // Live applications list. The API paginates server-side (page/limit). The page's
-  // text + dropdown filters refine the fetched page client-side over real values.
+  const page = search.page ?? 1;
+  const stage = search.stage;
+  const onHold = search.on_hold === "true";
+  const followupDue = search.followup_due === "true";
+
+  const [draft, setDraft] = useState(search.search ?? "");
+  useEffect(() => {
+    setDraft(search.search ?? "");
+  }, [search.search]);
+  const debounced = useDebouncedValue(draft);
+  useEffect(() => {
+    const current = search.search ?? "";
+    if (debounced !== current) {
+      navigate({ search: (prev) => ({ ...prev, search: debounced || undefined, page: undefined }) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced]);
+
+  const universities = useUniversityOptions();
+  const courses = useCourseOptions(search.university_id ?? null);
+  const intakes = useIntakeOptions();
+  const counsellors = useCounsellorOptions();
+  const teams = useTeamOptions();
+  const groups = useGroupOptions();
+
+  const setFilter = (partial: Record<string, string | undefined>) =>
+    navigate({ search: (prev) => ({ ...prev, ...partial, page: undefined }) });
+
+  const setStage = (next: Stage | undefined) =>
+    navigate({ search: (prev) => ({ ...prev, stage: next, page: undefined }) });
+
+  const setPage = (p: number) =>
+    navigate({ search: (prev) => ({ ...prev, page: p <= 1 ? undefined : p }) });
+
+  const resetFilters = () =>
+    navigate({
+      search: () => ({}),
+    });
+
+  const [selected, setSelected] = useState<Map<number, ListRowView>>(new Map());
+  const [leadOpen, setLeadOpen] = useState(false);
+  const [editing, setEditing] = useState<ListRowView | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const listParams = useMemo(
+    () => ({
+      page,
+      limit: PAGE_SIZE,
+      ...(search.search ? { search: search.search } : {}),
+      ...(search.university_id ? { university_id: search.university_id } : {}),
+      ...(search.course_id ? { course_id: search.course_id } : {}),
+      ...(search.session_id ? { session_id: search.session_id } : {}),
+      ...(search.counsellor_id ? { consultant_id: search.counsellor_id } : {}),
+      ...(search.team_id ? { team_id: search.team_id } : {}),
+      ...(search.group_id ? { group_id: search.group_id } : {}),
+      ...(stage ? { stage } : {}),
+      ...(onHold ? { on_hold: "true" as const } : {}),
+      ...(followupDue ? { followup_due: "true" as const } : {}),
+    }),
+    [search, page, stage, onHold, followupDue],
+  );
+
   const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: ["applications", "list", { page, limit: PAGE_SIZE }],
-    queryFn: () =>
-      apiGet<ApplicationsListResponse>("/applications", { page, limit: PAGE_SIZE }),
+    queryKey: [...applicationKeys.list, listParams],
+    queryFn: () => listApplications(listParams),
+    placeholderData: (prev) => prev,
   });
 
+  const { data: callHealth } = useQuery({
+    queryKey: ["calls", "health"],
+    queryFn: () => apiGet<CallHealth>("/calls/health"),
+    staleTime: 5 * 60 * 1000,
+  });
+  const callsOn = callHealth?.configured ?? false;
+  const { callingPhone, start } = useStartCall();
+
   const apiTotal = data?.total ?? 0;
-  const allRows = useMemo(() => (data?.items ?? []).map(mapApiRow), [data]);
+  const rows = useMemo(() => (data?.items ?? []).map(mapRow), [data]);
+  const counts = data?.counts;
+  const onHoldCount = data?.on_hold ?? 0;
 
-  const filtered = useMemo(() => {
-    return allRows.filter((a) => {
-      if (statusFilter !== "All" && a.status !== statusFilter) return false;
-      if (feeFilter !== "All" && a.feeStatus !== feeFilter) return false;
-      if (search && !a.name.toLowerCase().includes(search.toLowerCase())) return false;
-      if (phone && !a.phone.includes(phone)) return false;
-      if (appId && !a.id.toLowerCase().includes(appId.toLowerCase())) return false;
-      if (university !== "All" && a.university !== university) return false;
-      if (course !== "All" && a.course !== course) return false;
-      if (batch !== "All" && a.batch !== batch) return false;
-      if (counsellor !== "All" && a.counsellor !== counsellor) return false;
-      return true;
-    });
-  }, [allRows, statusFilter, feeFilter, search, phone, appId, university, course, batch, counsellor]);
-
-  // Server-side pagination: the table shows the fetched page (refined client-side),
-  // and the pager walks pages over the API's total.
   const totalPages = Math.max(1, Math.ceil(apiTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const pageRows = filtered;
 
-  const counts = useMemo(() => {
-    const map: Record<AppStatus, number> = {
-      "New Lead": 0,
-      "Registration Fee Pending": 0,
-      "Registration Fee Paid": 0,
-      "Form Pending": 0,
-      "Admin Verification Pending": 0,
-      Enrolled: 0,
-      Rejected: 0,
-    };
-    allRows.forEach((a) => (map[a.status] += 1));
-    return map;
-  }, [allRows]);
+  // A sliding window of page buttons around the current page (plus first/last with
+  // ellipses), so later pages stay reachable on large result sets — the pager used
+  // to hard-cap at pages 1–5, stranding everything beyond page 5.
+  const PAGE_WINDOW = 5;
+  const pageList: (number | "ellipsis")[] = (() => {
+    if (totalPages <= PAGE_WINDOW + 2) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+    const start = Math.max(2, Math.min(currentPage - 2, totalPages - PAGE_WINDOW + 1));
+    const end = Math.min(totalPages - 1, start + PAGE_WINDOW - 1);
+    const list: (number | "ellipsis")[] = [1];
+    if (start > 2) list.push("ellipsis");
+    for (let p = start; p <= end; p++) list.push(p);
+    if (end < totalPages - 1) list.push("ellipsis");
+    list.push(totalPages);
+    return list;
+  })();
 
   const toggleAll = () => {
-    if (pageRows.every((r) => selected.has(r.id))) {
-      const next = new Set(selected);
-      pageRows.forEach((r) => next.delete(r.id));
-      setSelected(next);
-    } else {
-      const next = new Set(selected);
-      pageRows.forEach((r) => next.add(r.id));
-      setSelected(next);
-    }
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (rows.length > 0 && rows.every((r) => next.has(r.rowId))) {
+        rows.forEach((r) => next.delete(r.rowId));
+      } else {
+        rows.forEach((r) => next.set(r.rowId, r));
+      }
+      return next;
+    });
   };
-  const toggleOne = (id: string) => {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelected(next);
+  const toggleOne = (row: ListRowView) => {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (next.has(row.rowId)) next.delete(row.rowId);
+      else next.set(row.rowId, row);
+      return next;
+    });
   };
 
-  const resetFilters = () => {
-    setStatusFilter("All");
-    setFeeFilter("All");
-    setSearch("");
-    setPhone("");
-    setAppId("");
-    setUniversity("All");
-    setCourse("All");
-    setBatch("All");
-    setCounsellor("All");
-    setPage(1);
+  const showInList = (displayId: string) =>
+    navigate({ search: () => ({ search: displayId }) });
+
+  const exportFiltered = async () => {
+    if (apiTotal === 0 || exporting) return;
+    setExporting(true);
+    try {
+      const all = await apiGet<ApplicationListResponse>("/applications", {
+        ...listParams,
+        page: 1,
+        limit: Math.min(apiTotal, EXPORT_ROW_CAP),
+      });
+      const exportRows = all.items.map(mapRow);
+      downloadCsv(exportFilename("filtered"), toCsv(exportRows, CSV_COLUMNS));
+      if (all.total > exportRows.length) {
+        toast.warning(
+          `Exported the first ${exportRows.length.toLocaleString()} of ${all.total.toLocaleString()} matching applications.`,
+        );
+      } else {
+        toast.success(`Exported ${exportRows.length.toLocaleString()} applications.`);
+      }
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Could not export applications.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const exportSelected = () => {
+    const sel = [...selected.values()];
+    if (sel.length === 0) return;
+    downloadCsv(exportFilename("selected"), toCsv(sel, CSV_COLUMNS));
+    toast.success(`Exported ${sel.length.toLocaleString()} selected applications.`);
   };
 
   return (
@@ -349,31 +255,33 @@ function ApplicationsPage() {
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Student Management
           </div>
-          <h1 className="mt-1 text-2xl sm:text-3xl font-semibold tracking-tight text-foreground">
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
             Applications
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Manage and track all student applications.
+            The admission pipeline — every lead from capture to conversion.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-semibold text-foreground transition hover:bg-muted">
-            <Download className="h-4 w-4" />
-            Export
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={exportFiltered}
+            disabled={apiTotal === 0 || exporting}
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-semibold text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {exporting ? "Exporting…" : "Export CSV"}
           </button>
           <button
             onClick={() => setLeadOpen(true)}
             className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-accent-foreground shadow-card transition hover:bg-accent-hover"
           >
-            <UserPlus className="h-4 w-4" />
-            Add Lead
+            <UserPlus className="h-4 w-4" /> Add Lead
           </button>
           <Link
             to="/students/applications/new"
             className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-accent-foreground shadow-card transition hover:bg-accent-hover"
           >
-            <Plus className="h-4 w-4" />
-            New Application
+            <Plus className="h-4 w-4" /> New Application
           </Link>
         </div>
       </div>
@@ -382,12 +290,12 @@ function ApplicationsPage() {
       <div className="rounded-2xl border border-border bg-surface p-5 shadow-card">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <div className="text-sm font-semibold text-foreground">Application Pipeline</div>
+            <div className="text-sm font-semibold text-foreground">Application pipeline</div>
             <div className="text-xs text-muted-foreground">Click a stage to filter the table</div>
           </div>
-          {statusFilter !== "All" && (
+          {stage && (
             <button
-              onClick={() => setStatusFilter("All")}
+              onClick={() => setStage(undefined)}
               className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
             >
               <X className="h-3 w-3" /> Clear stage
@@ -395,78 +303,112 @@ function ApplicationsPage() {
           )}
         </div>
         <div className="flex items-stretch gap-1 overflow-x-auto scrollbar-thin pb-1">
-          {STATUS_ORDER.map((s, i) => {
-            const active = statusFilter === s;
-            const total = allRows.length || 1;
-            const pct = (counts[s] / total) * 100;
-            return (
-              <div key={s} className="flex min-w-[160px] flex-1 items-center gap-1">
-                <button
-                  onClick={() => {
-                    setStatusFilter(active ? "All" : s);
-                    setPage(1);
-                  }}
-                  className={cn(
-                    "group relative flex w-full flex-col gap-2 rounded-xl border bg-background p-3 text-left transition hover:border-primary/40",
-                    active ? "border-primary ring-2 ring-primary/20" : "border-border",
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className={cn("h-2 w-2 rounded-full", STATUS_DOT[s])} />
-                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                      Stage {i + 1}
-                    </span>
-                  </div>
-                  <div className="text-xs font-semibold leading-tight text-foreground">{s}</div>
-                  <div className="flex items-end justify-between">
-                    <div className="text-xl font-bold tracking-tight text-foreground">
-                      {counts[s]}
-                    </div>
-                    <div className="text-[11px] text-muted-foreground">{pct.toFixed(0)}%</div>
-                  </div>
-                  <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
-                    <div
-                      className={cn("h-full rounded-full", STATUS_DOT[s])}
-                      style={{ width: `${Math.max(pct, 4)}%` }}
-                    />
-                  </div>
-                </button>
-                {i < STATUS_ORDER.length - 1 && (
-                  <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground/60" />
-                )}
-              </div>
-            );
-          })}
+          {PIPELINE_STAGES.map((s, i) => (
+            <div key={s} className="flex min-w-[150px] flex-1 items-center gap-1">
+              <StageCard
+                stage={s}
+                count={counts?.[s] ?? 0}
+                active={stage === s}
+                loading={isLoading}
+                onClick={() => setStage(stage === s ? undefined : s)}
+              />
+              {i < PIPELINE_STAGES.length - 1 && (
+                <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground/50" />
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <SiblingCard
+            label="Rejected"
+            count={counts?.rejected ?? 0}
+            dot={STAGE_META.rejected.dot}
+            active={stage === "rejected"}
+            onClick={() => setStage(stage === "rejected" ? undefined : "rejected")}
+          />
+          <SiblingCard
+            label="On hold"
+            count={onHoldCount}
+            dot="bg-amber-500"
+            icon={<Pause className="h-3.5 w-3.5" />}
+            active={onHold}
+            onClick={() =>
+              setFilter({ on_hold: onHold ? undefined : "true", followup_due: undefined })
+            }
+          />
+          {onHold && (
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-xs font-medium text-foreground">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 rounded border-border"
+                checked={followupDue}
+                onChange={(e) => setFilter({ followup_due: e.target.checked ? "true" : undefined })}
+              />
+              Follow-up due only
+            </label>
+          )}
         </div>
       </div>
 
       {/* Filters */}
       <div className="rounded-2xl border border-border bg-surface p-4 shadow-card">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
-          <Filter className="h-4 w-4 text-muted-foreground" />
-          Filters
+          <Filter className="h-4 w-4 text-muted-foreground" /> Filters
         </div>
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-          <FilterInput icon={Search} placeholder="Student name" value={search} onChange={setSearch} />
-          <FilterInput icon={Phone} placeholder="Phone number" value={phone} onChange={setPhone} />
-          <FilterInput icon={FileText} placeholder="Application ID" value={appId} onChange={setAppId} />
-          <FilterSelect value={university} onChange={setUniversity} options={["All", ...UNIVERSITIES]} placeholder="University" />
-          <FilterSelect value={course} onChange={setCourse} options={["All", ...COURSES]} placeholder="Course" />
-          <FilterSelect value={batch} onChange={setBatch} options={["All", ...BATCHES]} placeholder="Batch" />
-          <FilterSelect value={counsellor} onChange={setCounsellor} options={["All", ...COUNSELLORS.map((c) => c.name)]} placeholder="Counsellor" />
+          <FilterInput icon={Search} placeholder="Name, phone or app ID" value={draft} onChange={setDraft} />
           <FilterSelect
-            value={feeFilter}
-            onChange={(v) => setFeeFilter(v as FeeStatus | "All")}
-            options={["All", "Pending", "Partially Paid", "Paid", "Refunded"]}
-            placeholder="Fee Status"
+            value={search.university_id ?? ""}
+            onChange={(v) => setFilter({ university_id: v || undefined, course_id: undefined })}
+            options={universities.options}
+            placeholder="Universities"
+            loading={universities.isLoading}
           />
+          <FilterSelect
+            value={search.course_id ?? ""}
+            onChange={(v) => setFilter({ course_id: v || undefined })}
+            options={courses.options}
+            placeholder="Courses"
+            loading={courses.isLoading}
+          />
+          <FilterSelect
+            value={search.session_id ?? ""}
+            onChange={(v) => setFilter({ session_id: v || undefined })}
+            options={intakes.options}
+            placeholder="Intakes"
+            loading={intakes.isLoading}
+          />
+          {showOwnerFilters && (
+            <>
+              <FilterSelect
+                value={search.counsellor_id ?? ""}
+                onChange={(v) => setFilter({ counsellor_id: v || undefined })}
+                options={counsellors.all}
+                placeholder="Counsellors"
+                loading={counsellors.isLoading}
+              />
+              <FilterSelect
+                value={search.team_id ?? ""}
+                onChange={(v) => setFilter({ team_id: v || undefined })}
+                options={teams.options}
+                placeholder="Teams"
+                loading={teams.isLoading}
+              />
+              <FilterSelect
+                value={search.group_id ?? ""}
+                onChange={(v) => setFilter({ group_id: v || undefined })}
+                options={groups.options}
+                placeholder="Groups"
+                loading={groups.isLoading}
+              />
+            </>
+          )}
           <div className="flex items-end">
             <button
               onClick={resetFilters}
               className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted"
             >
-              <RefreshCcw className="h-3.5 w-3.5" />
-              Reset
+              <RefreshCcw className="h-3.5 w-3.5" /> Reset
             </button>
           </div>
         </div>
@@ -478,16 +420,11 @@ function ApplicationsPage() {
           <div className="flex items-center gap-2 text-sm">
             <CheckCircle2 className="h-4 w-4 text-primary" />
             <span className="font-semibold text-foreground">{selected.size} selected</span>
-            <button onClick={() => setSelected(new Set())} className="text-xs text-muted-foreground hover:text-foreground">
+            <button onClick={() => setSelected(new Map())} className="text-xs text-muted-foreground hover:text-foreground">
               Clear
             </button>
           </div>
-          <div className="flex items-center gap-2">
-            <BulkBtn icon={UserIcon} label="Assign counsellor" />
-            <BulkBtn icon={Mail} label="Email" />
-            <BulkBtn icon={Download} label="Export" />
-            <BulkBtn icon={Trash2} label="Delete" danger />
-          </div>
+          <BulkBtn icon={Download} label="Export selected (CSV)" onClick={exportSelected} />
         </div>
       )}
 
@@ -496,80 +433,68 @@ function ApplicationsPage() {
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="text-sm font-semibold text-foreground">
             {isLoading ? "Loading…" : `${apiTotal.toLocaleString()} applications`}
-            {statusFilter !== "All" && (
+            {stage && (
               <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
-                {statusFilter}
-                <button onClick={() => setStatusFilter("All")}>
+                {STAGE_META[stage].label}
+                <button onClick={() => setStage(undefined)} title="Clear stage">
                   <X className="h-3 w-3" />
                 </button>
               </span>
             )}
             {isFetching && !isLoading && (
-              <RefreshCcw className="ml-2 inline h-3.5 w-3.5 animate-spin text-muted-foreground/60 align-text-bottom" />
+              <RefreshCcw className="ml-2 inline h-3.5 w-3.5 animate-spin align-text-bottom text-muted-foreground/60" />
             )}
           </div>
           <div className="text-xs text-muted-foreground">
-            Sorted by <span className="font-medium text-foreground">Application Date</span> · Newest first
+            Sorted by <span className="font-medium text-foreground">newest first</span>
           </div>
         </div>
 
         <div className="overflow-x-auto scrollbar-thin">
           {isLoading ? (
-            <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
-              <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
-              <div className="text-sm font-semibold text-foreground">Loading applications…</div>
-            </div>
+            <LoadingRows />
           ) : isError ? (
-            <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
-              <AlertTriangle className="h-10 w-10 text-red-500/60" />
-              <div className="text-sm font-semibold text-foreground">Couldn't load applications</div>
-              <div className="text-xs text-muted-foreground">
-                {error instanceof Error ? error.message : "Please try again."}
-              </div>
-            </div>
-          ) : pageRows.length === 0 ? (
-            <EmptyState onCreate={() => {}} />
+            <ErrorRows message={error instanceof Error ? error.message : "Please try again."} />
+          ) : rows.length === 0 ? (
+            <EmptyState onCreate={() => setLeadOpen(true)} />
           ) : (
-            <table className="w-full min-w-[1100px] text-sm">
+            <table className="w-full min-w-[1120px] text-sm">
               <thead className="sticky top-0 z-10 bg-muted/60 backdrop-blur">
                 <tr className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   <th className="px-3 py-3">
                     <input
                       type="checkbox"
+                      aria-label="Select all on this page"
                       className="h-4 w-4 rounded border-border"
-                      checked={pageRows.length > 0 && pageRows.every((r) => selected.has(r.id))}
+                      checked={rows.length > 0 && rows.every((r) => selected.has(r.rowId))}
                       onChange={toggleAll}
                     />
                   </th>
-                  <th className="px-3 py-3 w-12">Sl No</th>
                   <th className="px-3 py-3">App ID</th>
                   <th className="px-3 py-3">Date</th>
                   <th className="px-3 py-3">Student</th>
-                  <th className="px-3 py-3">Phone</th>
+                  <th className="px-3 py-3">Mobile</th>
                   <th className="px-3 py-3">University</th>
                   <th className="px-3 py-3">Course</th>
-                  <th className="px-3 py-3">Batch</th>
+                  <th className="px-3 py-3">Intake</th>
                   <th className="px-3 py-3">Counsellor</th>
-                  <th className="px-3 py-3">Fee</th>
-                  <th className="px-3 py-3">Status</th>
+                  <th className="px-3 py-3">Stage</th>
+                  <th className="px-3 py-3 text-right" title="Days in current stage">Days</th>
                   <th className="px-3 py-3 text-right">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {pageRows.map((a, i) => (
-                  <tr
-                    key={a.id}
-                    className="border-t border-border transition hover:bg-muted/40"
-                  >
+                {rows.map((a) => (
+                  <tr key={a.rowId} className="border-t border-border transition hover:bg-muted/40">
                     <td className="px-3 py-3">
                       <input
                         type="checkbox"
+                        aria-label={`Select ${a.id}`}
                         className="h-4 w-4 rounded border-border"
-                        checked={selected.has(a.id)}
-                        onChange={() => toggleOne(a.id)}
+                        checked={selected.has(a.rowId)}
+                        onChange={() => toggleOne(a)}
                       />
                     </td>
-                    <td className="px-3 py-3 text-xs tabular-nums text-muted-foreground">{i + 1}</td>
                     <td className="px-3 py-3 font-mono text-xs font-semibold text-primary">{a.id}</td>
                     <td className="px-3 py-3 text-xs text-muted-foreground">{a.date}</td>
                     <td className="px-3 py-3">
@@ -578,20 +503,31 @@ function ApplicationsPage() {
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-xs text-foreground">{a.phone}</span>
+                        <span className="text-xs text-foreground">{a.phone || EMPTY}</span>
                         {a.whatsapp && (
                           <span title="WhatsApp" className="grid h-5 w-5 place-items-center rounded-full bg-emerald-100 text-emerald-600">
                             <MessageCircle className="h-3 w-3" />
                           </span>
                         )}
-                        <button title="Call" className="grid h-5 w-5 place-items-center rounded-full bg-sky-100 text-sky-600 hover:bg-sky-200">
-                          <Phone className="h-3 w-3" />
-                        </button>
+                        {callsOn && a.phone && (
+                          <button
+                            title={`Call ${a.phone}`}
+                            onClick={() => start(a.phone || null)}
+                            disabled={callingPhone === a.phone}
+                            className="grid h-5 w-5 place-items-center rounded-full bg-sky-100 text-sky-600 hover:bg-sky-200 disabled:opacity-60"
+                          >
+                            {callingPhone === a.phone ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Phone className="h-3 w-3" />
+                            )}
+                          </button>
+                        )}
                       </div>
                     </td>
                     <td className="px-3 py-3 text-xs text-foreground">{a.university}</td>
                     <td className="px-3 py-3 text-xs font-medium text-foreground">{a.course}</td>
-                    <td className="px-3 py-3 text-xs text-muted-foreground">{a.batch}</td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">{a.intake}</td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-2">
                         <span className="grid h-7 w-7 place-items-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
@@ -601,37 +537,32 @@ function ApplicationsPage() {
                       </div>
                     </td>
                     <td className="px-3 py-3">
-                      <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1", FEE_STYLES[a.feeStatus])}>
-                        {a.feeStatus}
-                      </span>
-                    </td>
-                    <td className="px-3 py-3">
                       <button
-                        onClick={() => {
-                          setStatusFilter(a.status);
-                          setPage(1);
-                        }}
+                        onClick={() => setStage(a.stage)}
                         className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 transition hover:opacity-80",
-                          STATUS_STYLES[a.status],
+                          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset transition hover:opacity-80",
+                          STAGE_META[a.stage].badge,
                         )}
                       >
-                        <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[a.status])} />
-                        {a.status}
+                        <span className={cn("h-1.5 w-1.5 rounded-full", STAGE_META[a.stage].dot)} />
+                        {a.stageLabel}
+                        {a.onHold && <Pause className="h-3 w-3" />}
                       </button>
+                    </td>
+                    <td className="px-3 py-3 text-right text-xs tabular-nums text-muted-foreground">
+                      {a.daysInStage}
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex items-center justify-end gap-1">
                         <Link
                           to="/students/applications/$appId"
-                          params={{ appId: a.id }}
+                          params={{ appId: String(a.rowId) }}
                           title="View"
-                          className="group grid h-8 w-8 place-items-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-muted hover:text-foreground"
+                          className="grid h-8 w-8 place-items-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-muted hover:text-foreground"
                         >
                           <Eye className="h-3.5 w-3.5" />
                         </Link>
-                        <IconBtn title="Edit" icon={Pencil} />
-                        <IconBtn title="More" icon={MoreHorizontal} />
+                        <IconBtn title="Edit" icon={Pencil} onClick={() => setEditing(a)} />
                       </div>
                     </td>
                   </tr>
@@ -641,7 +572,6 @@ function ApplicationsPage() {
           )}
         </div>
 
-        {/* Pagination */}
         {!isLoading && !isError && apiTotal > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3">
             <div className="text-xs text-muted-foreground">
@@ -657,21 +587,26 @@ function ApplicationsPage() {
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
-              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => i + 1).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setPage(p)}
-                  className={cn(
-                    "grid h-8 min-w-8 place-items-center rounded-lg border px-2 text-xs font-semibold transition",
-                    p === currentPage
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border bg-surface text-foreground hover:bg-muted",
-                  )}
-                >
-                  {p}
-                </button>
-              ))}
-              {totalPages > 5 && <span className="px-1 text-muted-foreground">…</span>}
+              {pageList.map((p, i) =>
+                p === "ellipsis" ? (
+                  <span key={`gap-${i}`} className="px-1 text-muted-foreground">
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={p}
+                    onClick={() => setPage(p)}
+                    className={cn(
+                      "grid h-8 min-w-8 place-items-center rounded-lg border px-2 text-xs font-semibold transition",
+                      p === currentPage
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border bg-surface text-foreground hover:bg-muted",
+                    )}
+                  >
+                    {p}
+                  </button>
+                ),
+              )}
               <button
                 onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
                 disabled={currentPage === totalPages}
@@ -684,631 +619,103 @@ function ApplicationsPage() {
         )}
       </div>
 
-      <AddLeadDialog open={leadOpen} onClose={() => setLeadOpen(false)} />
-    </div>
-  );
-}
-
-/* ---------------- Bits ---------------- */
-
-function FilterInput({
-  icon: Icon,
-  placeholder,
-  value,
-  onChange,
-}: {
-  icon: typeof Search;
-  placeholder: string;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="relative">
-      <Icon className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="h-9 w-full rounded-lg border border-border bg-background pl-8 pr-3 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+      <AddLeadDialog open={leadOpen} onClose={() => setLeadOpen(false)} onShowInList={showInList} />
+      <EditApplicationDialog
+        applicationId={editing?.rowId ?? null}
+        displayId={editing?.id ?? null}
+        onClose={() => setEditing(null)}
       />
     </div>
   );
 }
 
-function FilterSelect({
-  value,
-  onChange,
-  options,
-  placeholder,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: string[];
-  placeholder: string;
-}) {
-  return (
-    <div className="relative">
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-9 w-full appearance-none rounded-lg border border-border bg-background px-3 pr-8 text-xs font-medium text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o === "All" ? `All ${placeholder}` : o}
-          </option>
-        ))}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-    </div>
-  );
-}
-
-function IconBtn({
-  icon: Icon,
-  title,
+function StageCard({
+  stage,
+  count,
+  active,
+  loading,
   onClick,
 }: {
-  icon: typeof Eye;
-  title: string;
-  onClick?: () => void;
+  stage: Stage;
+  count: number;
+  active: boolean;
+  loading: boolean;
+  onClick: () => void;
 }) {
+  const meta = STAGE_META[stage];
+  const Icon = meta.icon;
   return (
     <button
-      title={title}
       onClick={onClick}
-      className="group grid h-8 w-8 place-items-center rounded-lg border border-transparent text-muted-foreground transition hover:border-border hover:bg-muted hover:text-foreground"
-    >
-      <Icon className="h-3.5 w-3.5" />
-    </button>
-  );
-}
-
-function BulkBtn({
-  icon: Icon,
-  label,
-  danger,
-}: {
-  icon: typeof Eye;
-  label: string;
-  danger?: boolean;
-}) {
-  return (
-    <button
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2.5 py-1.5 text-xs font-semibold transition",
-        danger
-          ? "border-red-200 text-red-600 hover:bg-red-50"
-          : "border-border text-foreground hover:bg-muted",
+        "group flex w-full flex-col gap-2 rounded-xl border bg-background p-3 text-left transition hover:border-primary/40",
+        active ? "border-primary ring-2 ring-primary/20" : "border-border",
       )}
     >
-      <Icon className="h-3.5 w-3.5" />
-      {label}
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1.5">
+          <span className={cn("h-2 w-2 rounded-full", meta.dot)} />
+          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Stage {meta.no}
+          </span>
+        </span>
+        <Icon className="h-3.5 w-3.5 text-muted-foreground/60" />
+      </div>
+      <div className="text-xs font-semibold leading-tight text-foreground">{meta.label}</div>
+      <div className="text-xl font-bold tracking-tight text-foreground">
+        {loading ? "—" : count.toLocaleString()}
+      </div>
     </button>
   );
 }
 
-function EmptyState({ onCreate }: { onCreate: () => void }) {
-  return (
-    <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-      <div className="grid h-20 w-20 place-items-center rounded-3xl bg-primary/5 text-primary">
-        <FileText className="h-10 w-10" />
-      </div>
-      <div className="mt-5 text-base font-semibold text-foreground">No applications found</div>
-      <div className="mt-1 max-w-sm text-sm text-muted-foreground">
-        Try adjusting your filters or create a new application to get started.
-      </div>
-      <button
-        onClick={onCreate}
-        className="mt-5 inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-card hover:bg-primary-hover"
-      >
-        <Plus className="h-4 w-4" />
-        Create First Application
-      </button>
-    </div>
-  );
-}
-
-/* ---------------- Drawer ---------------- */
-
-function DetailsDrawer({ app, onClose }: { app: Application; onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50">
-      <div
-        className="absolute inset-0 bg-foreground/30 backdrop-blur-sm animate-in fade-in duration-200"
-        onClick={onClose}
-      />
-      <div className="absolute right-0 top-0 flex h-full w-full max-w-xl flex-col bg-surface shadow-2xl animate-in slide-in-from-right duration-300">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
-          <div>
-            <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-              <span className="font-mono text-primary">{app.id}</span>
-              <span>·</span>
-              <span>{app.date}</span>
-            </div>
-            <div className="mt-1 text-lg font-semibold text-foreground">{app.name}</div>
-            <div className="text-xs text-muted-foreground">{app.email}</div>
-          </div>
-          <button
-            onClick={onClose}
-            className="grid h-9 w-9 place-items-center rounded-lg border border-border text-muted-foreground hover:bg-muted"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto scrollbar-thin px-6 py-5 space-y-6">
-          {/* Current Status */}
-          <Section title="Current Status">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={cn("inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1", STATUS_STYLES[app.status])}>
-                <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[app.status])} />
-                {app.status}
-              </span>
-              <span className={cn("inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ring-1", FEE_STYLES[app.feeStatus])}>
-                Fee: {app.feeStatus}
-              </span>
-            </div>
-          </Section>
-
-          <Section title="Student Information">
-            <Grid2>
-              <Field icon={UserIcon} label="Full Name" value={app.name} />
-              <Field icon={Mail} label="Email" value={app.email} />
-              <Field icon={Phone} label="Phone" value={app.phone} />
-              <Field icon={MessageCircle} label="WhatsApp" value={app.whatsapp ? "Available" : "Not available"} />
-            </Grid2>
-          </Section>
-
-          <Section title="University & Course">
-            <Grid2>
-              <Field icon={Building2} label="University" value={app.university} />
-              <Field icon={BookOpen} label="Course" value={app.course} />
-              <Field icon={Layers} label="Batch" value={app.batch} />
-              <Field icon={UserIcon} label="Counsellor" value={app.counsellor} />
-            </Grid2>
-          </Section>
-
-          <Section title="Fee Information">
-            <div className="grid grid-cols-3 gap-2">
-              <Stat label="Total Fee" value="₹85,000" />
-              <Stat label="Paid" value="₹12,000" />
-              <Stat label="Balance" value="₹73,000" accent />
-            </div>
-          </Section>
-
-          <Section title="Application Timeline">
-            <ol className="relative space-y-4 border-l border-border pl-5">
-              {[
-                { t: "Application created", d: app.date, by: app.counsellor },
-                { t: "Registration fee initiated", d: "12 Mar 2026", by: app.counsellor },
-                { t: "Document upload pending", d: "13 Mar 2026", by: "System" },
-                { t: "Counsellor follow-up", d: "14 Mar 2026", by: app.counsellor },
-              ].map((e, i) => (
-                <li key={i} className="relative">
-                  <span className="absolute -left-[26px] top-1 grid h-3 w-3 place-items-center rounded-full bg-primary ring-4 ring-primary/15" />
-                  <div className="text-sm font-medium text-foreground">{e.t}</div>
-                  <div className="text-[11px] text-muted-foreground">{e.d} · {e.by}</div>
-                </li>
-              ))}
-            </ol>
-          </Section>
-
-          <Section title="Latest Notes">
-            <div className="rounded-xl border border-border bg-background p-3 text-sm text-foreground">
-              Student requested follow-up regarding scholarship eligibility. Documents shared via WhatsApp.
-              <div className="mt-2 text-[11px] text-muted-foreground">— {app.counsellor}, 2 hours ago</div>
-            </div>
-          </Section>
-        </div>
-
-        {/* Footer actions */}
-        <div className="flex items-center justify-between gap-2 border-t border-border bg-background/50 px-6 py-3">
-          <button className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted">
-            <Sparkles className="h-3.5 w-3.5" /> Add Note
-          </button>
-          <div className="flex items-center gap-2">
-            <button className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted">
-              Change Status
-            </button>
-            <button className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary-hover">
-              <Pencil className="h-3.5 w-3.5" /> Edit Application
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Grid2({ children }: { children: React.ReactNode }) {
-  return <div className="grid grid-cols-2 gap-2">{children}</div>;
-}
-
-function Field({
-  icon: Icon,
+function SiblingCard({
   label,
-  value,
+  count,
+  dot,
+  icon,
+  active,
+  onClick,
 }: {
-  icon: typeof Eye;
   label: string;
-  value: string;
+  count: number;
+  dot: string;
+  icon?: React.ReactNode;
+  active: boolean;
+  onClick: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-background p-3">
-      <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-        <Icon className="h-3 w-3" />
-        {label}
-      </div>
-      <div className="mt-1 text-sm font-semibold text-foreground">{value}</div>
+    <button
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-2 rounded-xl border bg-background px-3 py-2 text-left transition hover:border-primary/40",
+        active ? "border-primary ring-2 ring-primary/20" : "border-border",
+      )}
+    >
+      <span className={cn("grid h-6 w-6 place-items-center rounded-full text-white", dot)}>
+        {icon ?? <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+      </span>
+      <span className="text-xs font-semibold text-foreground">{label}</span>
+      <span className="text-sm font-bold tabular-nums text-foreground">{count.toLocaleString()}</span>
+    </button>
+  );
+}
+
+function LoadingRows() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+      <RefreshCcw className="h-8 w-8 animate-spin text-muted-foreground/50" />
+      <div className="text-sm font-semibold text-foreground">Loading applications…</div>
     </div>
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function ErrorRows({ message }: { message: string }) {
   return (
-    <div className={cn("rounded-xl border p-3", accent ? "border-accent/30 bg-accent/5" : "border-border bg-background")}>
-      <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
-      <div className={cn("mt-1 text-base font-bold", accent ? "text-accent" : "text-foreground")}>{value}</div>
+    <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+      <AlertTriangle className="h-10 w-10 text-red-500/60" />
+      <div className="text-sm font-semibold text-foreground">Couldn't load applications</div>
+      <div className="text-xs text-muted-foreground">{message}</div>
     </div>
-  );
-}
-
-/* ---------------- Add Lead Dialog ---------------- */
-
-interface AddLeadDialogProps {
-  open: boolean;
-  onClose: () => void;
-}
-
-function AddLeadDialog({ open, onClose }: AddLeadDialogProps) {
-  const [step, setStep] = useState<"form" | "success">("form");
-  const [leadId, setLeadId] = useState("");
-  const [leadName, setLeadName] = useState("");
-  const [leadUni, setLeadUni] = useState("");
-  const [leadCourse, setLeadCourse] = useState("");
-
-  const [form, setForm] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    university: "",
-    course: "",
-    specialisation: "",
-    intake: "",
-    source: "",
-    referredBy: "",
-    remarks: "",
-    counsellor: "Priya Sharma",
-  });
-
-  const [errors, setErrors] = useState<Record<string, string>>({});
-
-  const reset = () => {
-    setStep("form");
-    setLeadId("");
-    setLeadName("");
-    setLeadUni("");
-    setLeadCourse("");
-    setForm({
-      name: "",
-      email: "",
-      phone: "",
-      university: "",
-      course: "",
-      specialisation: "",
-      intake: "",
-      source: "",
-      referredBy: "",
-      remarks: "",
-      counsellor: "Priya Sharma",
-    });
-    setErrors({});
-  };
-
-  const handleClose = () => {
-    reset();
-    onClose();
-  };
-
-  const validate = () => {
-    const next: Record<string, string> = {};
-    if (!form.name.trim()) next.name = "Lead name is required";
-    if (!form.email.trim()) next.email = "Email is required";
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) next.email = "Invalid email address";
-    if (!form.phone.trim()) next.phone = "Contact number is required";
-    if (!form.university) next.university = "University is required";
-    if (!form.course) next.course = "Course is required";
-    if (!form.intake) next.intake = "Intake is required";
-    if (!form.source) next.source = "Source is required";
-    if (form.source === "Referral" && !form.referredBy.trim()) next.referredBy = "Referred by is required";
-    setErrors(next);
-    return Object.keys(next).length === 0;
-  };
-
-  const handleSave = () => {
-    if (!validate()) return;
-    const id = `LEAD-2026-${String(Math.floor(Math.random() * 900000) + 100000).padStart(6, "0")}`;
-    setLeadId(id);
-    setLeadName(form.name);
-    setLeadUni(form.university);
-    setLeadCourse(form.course);
-    setStep("success");
-  };
-
-  const update = (field: keyof typeof form, value: string) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
-    if (errors[field]) {
-      setErrors((prev) => {
-        const next = { ...prev };
-        delete next[field];
-        return next;
-      });
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
-      <DialogContent className="max-w-xl p-0 overflow-hidden">
-        {step === "form" ? (
-          <>
-            <DialogHeader className="px-6 pt-6 pb-0">
-              <DialogTitle className="text-xl font-semibold">Add New Lead</DialogTitle>
-              <DialogDescription>Capture basic enquiry information.</DialogDescription>
-            </DialogHeader>
-            <div className="px-6 py-5 space-y-4">
-              {/* Lead Name */}
-              <div className="space-y-1.5">
-                <Label htmlFor="lead-name">Lead Name <span className="text-accent">*</span></Label>
-                <Input
-                  id="lead-name"
-                  placeholder="Enter student name"
-                  value={form.name}
-                  onChange={(e) => update("name", e.target.value)}
-                  className={cn(errors.name && "border-red-400 focus-visible:ring-red-300")}
-                />
-                {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Email */}
-                <div className="space-y-1.5">
-                  <Label htmlFor="lead-email">Email Address <span className="text-accent">*</span></Label>
-                  <Input
-                    id="lead-email"
-                    type="email"
-                    placeholder="student@email.com"
-                    value={form.email}
-                    onChange={(e) => update("email", e.target.value)}
-                    className={cn(errors.email && "border-red-400 focus-visible:ring-red-300")}
-                  />
-                  {errors.email && <p className="text-xs text-red-500">{errors.email}</p>}
-                </div>
-                {/* Phone */}
-                <div className="space-y-1.5">
-                  <Label htmlFor="lead-phone">Contact Number <span className="text-accent">*</span></Label>
-                  <Input
-                    id="lead-phone"
-                    placeholder="+91 98765 43210"
-                    value={form.phone}
-                    onChange={(e) => update("phone", e.target.value)}
-                    className={cn(errors.phone && "border-red-400 focus-visible:ring-red-300")}
-                  />
-                  {errors.phone && <p className="text-xs text-red-500">{errors.phone}</p>}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* University */}
-                <div className="space-y-1.5">
-                  <Label>University <span className="text-accent">*</span></Label>
-                  <Select value={form.university} onValueChange={(v) => update("university", v)}>
-                    <SelectTrigger className={cn(errors.university && "border-red-400 focus:ring-red-300")}>
-                      <SelectValue placeholder="Select university" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {UNIVERSITIES.map((u) => (
-                        <SelectItem key={u} value={u}>{u}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {errors.university && <p className="text-xs text-red-500">{errors.university}</p>}
-                </div>
-                {/* Course */}
-                <div className="space-y-1.5">
-                  <Label>Course <span className="text-accent">*</span></Label>
-                  <Select value={form.course} onValueChange={(v) => update("course", v)}>
-                    <SelectTrigger className={cn(errors.course && "border-red-400 focus:ring-red-300")}>
-                      <SelectValue placeholder="Select course" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {COURSES.map((c) => (
-                        <SelectItem key={c} value={c}>{c}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {errors.course && <p className="text-xs text-red-500">{errors.course}</p>}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Specialisation */}
-                <div className="space-y-1.5">
-                  <Label htmlFor="lead-spec">Specialisation</Label>
-                  <Input
-                    id="lead-spec"
-                    placeholder="e.g. Finance, HR"
-                    value={form.specialisation}
-                    onChange={(e) => update("specialisation", e.target.value)}
-                  />
-                </div>
-                {/* Intake */}
-                <div className="space-y-1.5">
-                  <Label>Intake <span className="text-accent">*</span></Label>
-                  <Select value={form.intake} onValueChange={(v) => update("intake", v)}>
-                    <SelectTrigger className={cn(errors.intake && "border-red-400 focus:ring-red-300")}>
-                      <SelectValue placeholder="Select intake" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {BATCHES.map((b) => (
-                        <SelectItem key={b} value={b}>{b}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {errors.intake && <p className="text-xs text-red-500">{errors.intake}</p>}
-                </div>
-              </div>
-
-              {/* Source */}
-              <div className="space-y-1.5">
-                <Label>Source <span className="text-accent">*</span></Label>
-                <Select value={form.source} onValueChange={(v) => update("source", v)}>
-                  <SelectTrigger className={cn(errors.source && "border-red-400 focus:ring-red-300")}>
-                    <SelectValue placeholder="Select source" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {["Website", "Walk-in", "Phone Enquiry", "Referral", "Social Media", "Email Campaign", "Education Fair", "Google Ads"].map((s) => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {errors.source && <p className="text-xs text-red-500">{errors.source}</p>}
-              </div>
-
-              {/* Referred By - conditional */}
-              {form.source === "Referral" && (
-                <div className="space-y-1.5">
-                  <Label htmlFor="lead-referred">Referred By <span className="text-accent">*</span></Label>
-                  <Input
-                    id="lead-referred"
-                    placeholder="Search student or enter referrer name"
-                    value={form.referredBy}
-                    onChange={(e) => update("referredBy", e.target.value)}
-                    className={cn(errors.referredBy && "border-red-400 focus-visible:ring-red-300")}
-                  />
-                  {errors.referredBy && <p className="text-xs text-red-500">{errors.referredBy}</p>}
-                </div>
-              )}
-
-              {/* Remarks */}
-              <div className="space-y-1.5">
-                <Label htmlFor="lead-remarks">Quick Notes</Label>
-                <Textarea
-                  id="lead-remarks"
-                  placeholder="Add enquiry notes, student requirements, preferred timing, or counsellor observations."
-                  rows={3}
-                  value={form.remarks}
-                  onChange={(e) => update("remarks", e.target.value)}
-                />
-              </div>
-
-              {/* Assigned Counsellor */}
-              <div className="space-y-1.5">
-                <Label>Assigned Counsellor</Label>
-                <Select value={form.counsellor} onValueChange={(v) => update("counsellor", v)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {COUNSELLORS.map((c) => (
-                      <SelectItem key={c.name} value={c.name}>{c.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* Footer actions */}
-            <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-6 py-4">
-              <button
-                onClick={handleClose}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-muted"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSave}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow transition hover:bg-accent-hover"
-              >
-                <CheckCircle2 className="h-4 w-4" />
-                Save Lead
-              </button>
-            </div>
-          </>
-        ) : (
-          /* Success State */
-          <div className="flex flex-col items-center px-6 py-10 text-center">
-            <div className="mb-4 grid h-14 w-14 place-items-center rounded-full bg-emerald-100">
-              <CheckCircle2 className="h-7 w-7 text-emerald-600" />
-            </div>
-            <DialogTitle className="text-xl font-semibold">Lead Created Successfully</DialogTitle>
-            <DialogDescription className="mt-1 text-sm text-muted-foreground">
-              New lead has been captured and assigned.
-            </DialogDescription>
-
-            <div className="mt-6 w-full space-y-3">
-              <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-sm">
-                <span className="text-muted-foreground">Lead ID</span>
-                <span className="font-mono font-semibold text-foreground">{leadId}</span>
-              </div>
-              <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-sm">
-                <span className="text-muted-foreground">Lead Name</span>
-                <span className="font-semibold text-foreground">{leadName}</span>
-              </div>
-              <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-sm">
-                <span className="text-muted-foreground">University</span>
-                <span className="font-semibold text-foreground">{leadUni}</span>
-              </div>
-              <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-sm">
-                <span className="text-muted-foreground">Course</span>
-                <span className="font-semibold text-foreground">{leadCourse}</span>
-              </div>
-              <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-sm">
-                <span className="text-muted-foreground">Status</span>
-                <span className="inline-flex items-center gap-1.5 rounded-md bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-700">
-                  <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
-                  New Lead
-                </span>
-              </div>
-              <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-sm">
-                <span className="text-muted-foreground">Created On</span>
-                <span className="font-semibold text-foreground">{new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</span>
-              </div>
-            </div>
-
-            <div className="mt-6 flex items-center gap-2">
-              <button
-                onClick={handleClose}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground transition hover:bg-muted"
-              >
-                Close
-              </button>
-              <button
-                onClick={() => {
-                  reset();
-                  setStep("form");
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow transition hover:bg-accent-hover"
-              >
-                <Eye className="h-4 w-4" />
-                View Lead
-              </button>
-            </div>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }

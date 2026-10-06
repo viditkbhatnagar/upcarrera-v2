@@ -12,11 +12,22 @@ export type CsvValue = string | number | boolean | null | undefined;
 /** One CSV row keyed by column name. */
 export type CsvRow = Record<string, CsvValue>;
 
+/**
+ * Neutralize CSV formula injection: a spreadsheet treats a cell beginning with
+ * =, +, -, @ (or a leading tab / carriage return) as a formula, so an untrusted
+ * string starting with one is prefixed with a single quote. Applied to STRING
+ * cells only — numbers and booleans are not attacker-controlled and must not be
+ * mangled (e.g. a negative number stays a number).
+ */
+function neutralizeFormula(str: string): string {
+  return /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
+}
+
 function escapeCell(value: CsvValue): string {
   if (value === null || value === undefined) {
     return '';
   }
-  const str = String(value);
+  const str = typeof value === 'string' ? neutralizeFormula(value) : String(value);
   if (/[",\n\r]/.test(str)) {
     return `"${str.replace(/"/g, '""')}"`;
   }
