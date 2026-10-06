@@ -35,6 +35,7 @@ import { STAGE_META } from "@/components/applications/stage-model";
 import { StageStepper } from "@/components/applications/stage-stepper";
 import { StageActionBar } from "@/components/applications/stage-action-bar";
 import { SummaryTab } from "@/components/applications/summary-tab";
+import { MagicLinkCard } from "@/components/applications/magic-link-card";
 import { ApplicationFormTab } from "@/components/applications/application-form-tab";
 import { DocumentsTab } from "@/components/applications/documents-tab";
 import { RegistrationFeeTab } from "@/components/applications/registration-fee-tab";
@@ -290,7 +291,8 @@ function ApplicationProfilePage() {
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="summary" className="mt-5">
+            <TabsContent value="summary" className="mt-5 space-y-5">
+              <MagicLinkCard appId={app.application_id} stage={app.effective_stage} />
               <SummaryTab app={app} />
             </TabsContent>
             <TabsContent value="form" className="mt-5">

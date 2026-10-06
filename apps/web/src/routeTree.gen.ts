@@ -20,6 +20,7 @@ import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as CounsellorsRouteImport } from './routes/counsellors'
 import { Route as CommissionsRouteImport } from './routes/commissions'
 import { Route as CallsRouteImport } from './routes/calls'
+import { Route as ApplyRouteImport } from './routes/apply'
 import { Route as AdministrationRouteImport } from './routes/administration'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as UniversitiesIndexRouteImport } from './routes/universities.index'
@@ -115,6 +116,11 @@ const CommissionsRoute = CommissionsRouteImport.update({
 const CallsRoute = CallsRouteImport.update({
   id: '/calls',
   path: '/calls',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApplyRoute = ApplyRouteImport.update({
+  id: '/apply',
+  path: '/apply',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdministrationRoute = AdministrationRouteImport.update({
@@ -338,6 +344,7 @@ const CounsellorsProfileEmpIdRoute = CounsellorsProfileEmpIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/administration': typeof AdministrationRouteWithChildren
+  '/apply': typeof ApplyRoute
   '/calls': typeof CallsRoute
   '/commissions': typeof CommissionsRoute
   '/counsellors': typeof CounsellorsRouteWithChildren
@@ -391,6 +398,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/apply': typeof ApplyRoute
   '/calls': typeof CallsRoute
   '/commissions': typeof CommissionsRoute
   '/dashboard': typeof DashboardRoute
@@ -439,6 +447,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/administration': typeof AdministrationRouteWithChildren
+  '/apply': typeof ApplyRoute
   '/calls': typeof CallsRoute
   '/commissions': typeof CommissionsRoute
   '/counsellors': typeof CounsellorsRouteWithChildren
@@ -495,6 +504,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/administration'
+    | '/apply'
     | '/calls'
     | '/commissions'
     | '/counsellors'
@@ -548,6 +558,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/apply'
     | '/calls'
     | '/commissions'
     | '/dashboard'
@@ -595,6 +606,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/administration'
+    | '/apply'
     | '/calls'
     | '/commissions'
     | '/counsellors'
@@ -650,6 +662,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdministrationRoute: typeof AdministrationRouteWithChildren
+  ApplyRoute: typeof ApplyRoute
   CallsRoute: typeof CallsRoute
   CommissionsRoute: typeof CommissionsRoute
   CounsellorsRoute: typeof CounsellorsRouteWithChildren
@@ -740,6 +753,13 @@ declare module '@tanstack/react-router' {
       path: '/calls'
       fullPath: '/calls'
       preLoaderRoute: typeof CallsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/apply': {
+      id: '/apply'
+      path: '/apply'
+      fullPath: '/apply'
+      preLoaderRoute: typeof ApplyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/administration': {
@@ -1189,6 +1209,7 @@ const UniversitiesRouteWithChildren = UniversitiesRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdministrationRoute: AdministrationRouteWithChildren,
+  ApplyRoute: ApplyRoute,
   CallsRoute: CallsRoute,
   CommissionsRoute: CommissionsRoute,
   CounsellorsRoute: CounsellorsRouteWithChildren,

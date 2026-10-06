@@ -14,6 +14,13 @@ import { getToken } from "../lib/session";
 
 const PUBLIC_PATHS = new Set(["/", "/login"]);
 
+/** Public (no-auth, no-AppShell) paths: the login/landing set, plus the applicant
+ * form under /apply. The applicant form authenticates with its own session, never
+ * the staff token, so it must bypass the staff token guard and the AppShell. */
+function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PATHS.has(pathname) || pathname === "/apply" || pathname.startsWith("/apply/");
+}
+
 function NotFoundComponent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -73,7 +80,7 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   // Guard: every non-public route requires a token, else bounce to /login.
   beforeLoad: ({ location }) => {
-    if (!PUBLIC_PATHS.has(location.pathname) && !getToken()) {
+    if (!isPublicPath(location.pathname) && !getToken()) {
       throw redirect({ to: "/login" });
     }
   },
@@ -85,7 +92,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 function RootComponent() {
   const router = useRouter();
   const path = router.state.location.pathname;
-  const isLogin = path === "/login" || path === "/";
+  // The login/landing pages and the public applicant form render bare (no AppShell,
+  // so no staff /auth/me calls or sidebar). Toaster stays mounted for both.
+  const isLogin = path === "/login" || path === "/" || isPublicPath(path);
 
   // sonner renders nothing unless <Toaster /> is on the page. It had never been
   // mounted, so all 101 toast.success/toast.error calls across the app were

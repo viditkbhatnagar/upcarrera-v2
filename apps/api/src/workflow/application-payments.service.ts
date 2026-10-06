@@ -17,6 +17,18 @@ import { EmailTemplatesService } from '../integrations/email-templates.service';
 import { AuditService } from './audit.service';
 import { RecordAccessService, AccessUser, AccessScope } from './record-access.service';
 import { StageEngineService, StageActor } from './stage-engine.service';
+import { ProgramReferenceService } from '../applicant/program-reference.service';
+import {
+  EM_DASH,
+  adminApplicationUrl,
+  feeTypeLabel,
+  firstNameOr,
+  formatInr,
+  fullNameOr,
+  istDate,
+  istDateTime,
+  orDash,
+} from './email-vars';
 import { lmsPaidTo, lmsPaymentMode, normalizeTxnRef, effectiveStage } from './stages';
 import { validateProof } from './proof-file';
 import { istTodayIso, dateOnly } from './ist-date';
@@ -49,6 +61,7 @@ export class ApplicationPaymentsService {
     private readonly access: RecordAccessService,
     private readonly email: EmailService,
     private readonly templates: EmailTemplatesService,
+    private readonly programRef: ProgramReferenceService,
   ) {}
 
   // ---- counsellor records the registration fee -----------------------------
@@ -121,7 +134,7 @@ export class ApplicationPaymentsService {
             proof_size: proof.size ?? null,
             proof_original_name: proof.originalname ?? null,
             status: 'pending',
-            entered_by: actor.userId,
+            entered_by: actor.userId ?? Number(user.userId ?? user.id),
             entered_at: now,
           },
         });
@@ -380,9 +393,35 @@ export class ApplicationPaymentsService {
       return p;
     });
 
-    await this.sendEmail('fee-verified', application, {
-      amount: Math.round(Number(payment.amount)),
-    });
+    // fee-verified is a counsellor-facing notice; resolve the counsellor (recipient),
+    // the program labels and the verifier, and supply every template variable.
+    const [vProgram, vCounsellor, verifiedBy] = await Promise.all([
+      this.programRef.resolveProgram(application),
+      this.programRef.resolveCounsellor(application),
+      this.resolveUserName(actor.userId),
+    ]);
+    await this.sendEmail(
+      'fee-verified',
+      application,
+      { email: vCounsellor.email, name: vCounsellor.name },
+      {
+        student_name: fullNameOr(application.name),
+        student_phone: orDash(application.phone),
+        counsellor_first_name: firstNameOr(vCounsellor.name, 'Counsellor'),
+        application_id: this.programRef.displayId(application),
+        application_url: adminApplicationUrl(application.application_id),
+        university: vProgram.university ?? EM_DASH,
+        course: vProgram.course ?? EM_DASH,
+        intake: vProgram.intake ?? EM_DASH,
+        fee_type: feeTypeLabel(payment.fee_kind),
+        fee_amount: formatInr(payment.amount),
+        payment_mode: orDash(payment.payment_mode),
+        payment_reference: orDash(payment.txn_ref),
+        paid_at: istDate(payment.paid_on),
+        verified_at: istDateTime(new Date()),
+        verified_by: verifiedBy,
+      },
+    );
 
     return updated;
   }
@@ -435,8 +474,45 @@ export class ApplicationPaymentsService {
       return p;
     });
 
-    await this.sendEmail('payment-rejected', application, { reason: dto.reason });
+    // Resolve the EXACT template variables payment-rejected.html requires. The
+    // program/counsellor labels come from the shared resolver (ProgramReferenceService);
+    // the fee details come from the payment row being rejected; rejection_reason is
+    // the staff-typed reason (passed RAW — render() escapes it centrally).
+    const [program, counsellor, rejectedBy] = await Promise.all([
+      this.programRef.resolveProgram(application),
+      this.programRef.resolveCounsellor(application),
+      this.resolveUserName(actor.userId),
+    ]);
+    await this.sendEmail('payment-rejected', application, { email: counsellor.email, name: counsellor.name }, {
+      student_name: fullNameOr(application.name),
+      student_phone: orDash(application.phone),
+      counsellor_first_name: firstNameOr(counsellor.name, 'Counsellor'),
+      application_id: this.programRef.displayId(application),
+      application_url: adminApplicationUrl(application.application_id),
+      university: program.university ?? EM_DASH,
+      course: program.course ?? EM_DASH,
+      intake: program.intake ?? EM_DASH,
+      fee_type: feeTypeLabel(payment.fee_kind),
+      fee_amount: formatInr(payment.amount),
+      payment_mode: orDash(payment.payment_mode),
+      payment_reference: orDash(payment.txn_ref),
+      paid_at: istDate(payment.paid_on),
+      rejected_at: istDateTime(now),
+      rejected_by: rejectedBy,
+      rejection_reason: dto.reason,
+      finance_notes: 'Please correct the issue above and re-submit the payment for verification.',
+    });
     return updated;
+  }
+
+  /** The acting staff user's display name for an email (falls back to "Finance"). */
+  private async resolveUserName(userId: number | null | undefined): Promise<string> {
+    if (userId == null) return 'Finance';
+    const user = await this.prisma.users.findFirst({
+      where: { id: userId },
+      select: { name: true },
+    });
+    return user?.name?.trim() || 'Finance';
   }
 
   // ---- helpers -------------------------------------------------------------
@@ -478,24 +554,31 @@ export class ApplicationPaymentsService {
   /** Fire-and-forget transactional email; never blocks or fails the flow. */
   private async sendEmail(
     key: 'fee-verified' | 'payment-rejected',
-    application: { email: string | null; name: string | null; custom_application_id: string | null; application_id: number },
+    application: { name: string | null; custom_application_id: string | null; application_id: number },
+    recipient: { email: string | null; name: string | null },
     extra: Record<string, string | number | null | undefined>,
   ): Promise<void> {
     try {
-      if (!this.email.isConfigured || !application.email) return;
+      // fee-verified and payment-rejected are internal Finance->counsellor notices
+      // ("Hi {{counsellor_first_name}}..."), so they go to the OWNING COUNSELLOR,
+      // falling back to the finance inbox — never to the applicant.
+      const to = recipient.email || process.env.MAIL_FINANCE_EMAIL || 'accounts@upcarrera.com';
+      if (!this.email.isConfigured || !to) return;
       const rendered = this.templates.render(key, {
-        name: application.name ?? 'Applicant',
         application_id: application.custom_application_id ?? `APP-${application.application_id}`,
         ...extra,
       });
       await this.email.sendEmail({
-        to: application.email,
-        name: application.name ?? 'Applicant',
+        to,
+        name: recipient.name ?? 'Counsellor',
         subject: rendered.subject,
         html: rendered.html,
       });
     } catch (err) {
-      this.logger.warn(`Email ${key} skipped: ${(err as Error).message}`);
+      // ERROR, not warn: a render() throw here means a caller under-supplied the
+      // template's variables and the email was NEVER delivered. Stays fire-and-forget
+      // (the workflow still succeeds), but it must be loud, not silent.
+      this.logger.error(`Email ${key} NOT sent: ${(err as Error).message}`);
     }
   }
 }

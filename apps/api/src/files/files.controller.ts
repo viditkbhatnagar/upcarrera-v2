@@ -13,6 +13,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { FilesService } from './files.service';
+import { contentDisposition } from './content-disposition';
 import { CreateStudentDocumentDto } from './dto/create-student-document.dto';
 import { UploadedFileType } from './uploaded-file.type';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
@@ -100,8 +101,8 @@ export class FilesController {
     res.set({
       'Content-Type': contentType,
       // inline so browsers can preview images/PDFs; the filename is still
-      // suggested for an explicit "save as".
-      'Content-Disposition': `inline; filename="${filename}"`,
+      // suggested for an explicit "save as". SECURITY LOW 6: header-safe value.
+      'Content-Disposition': contentDisposition(filename, 'inline'),
     });
 
     stream.on('error', () => {
@@ -146,7 +147,8 @@ export class FilesController {
 
     res.set({
       'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${filename}"`,
+      // SECURITY LOW 6: header-safe disposition for a (possibly user-supplied) filename.
+      'Content-Disposition': contentDisposition(filename, 'attachment'),
     });
 
     // If the stream errors mid-flight (e.g. disk read fault after headers were
@@ -199,7 +201,8 @@ export class FilesController {
 
     res.set({
       'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${filename}"`,
+      // SECURITY LOW 6: header-safe disposition for a (possibly user-supplied) filename.
+      'Content-Disposition': contentDisposition(filename, 'attachment'),
     });
 
     stream.on('error', () => {

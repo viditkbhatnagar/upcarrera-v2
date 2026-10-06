@@ -16,6 +16,8 @@ import { AuditService } from './audit.service';
 import { RecordAccessService, AccessUser } from './record-access.service';
 import { StageEngineService, StageActor } from './stage-engine.service';
 import { canonicalCourseLevel, effectiveStage, effectiveStageWhere } from './stages';
+import { ProgramReferenceService } from '../applicant/program-reference.service';
+import { istDateTime } from './email-vars';
 import { ReviewDocumentDto, SaReviewDto } from './dto/workflow-action.dto';
 
 const BCRYPT_ROUNDS = 10;
@@ -37,6 +39,7 @@ export class SaReviewService {
     private readonly access: RecordAccessService,
     private readonly email: EmailService,
     private readonly templates: EmailTemplatesService,
+    private readonly programRef: ProgramReferenceService,
   ) {}
 
   // ---- per-document verdict -------------------------------------------------
@@ -134,6 +137,13 @@ export class SaReviewService {
     if (!dto.identity_ok || !dto.eligibility_ok || !dto.legible_ok || !dto.program_ok) {
       throw new BadRequestException('All four checks must pass before approval');
     }
+    // A conversion is always driven by a staff user (SA/Admin); the stage actor's
+    // userId is therefore non-null here. Narrow it for runConversion (which stamps
+    // created_by). The applicant-null actor only ever drives the submit stage move.
+    const actorUserId = actor.userId;
+    if (actorUserId == null) {
+      throw new ForbiddenException('A staff account is required to approve an application.');
+    }
 
     // CRITIQUE #6: the required-document checklist must be satisfied — and a
     // zero-document application can never convert.
@@ -153,7 +163,7 @@ export class SaReviewService {
       const conversion = await this.students.runConversion(
         tx,
         application,
-        { userId: actor.userId, roleId: actor.roleId },
+        { userId: actorUserId, roleId: actor.roleId },
         {
           hashedPassword,
           payment,
@@ -172,7 +182,7 @@ export class SaReviewService {
           decision: 'approved',
           reason: dto.reason ?? null,
           student_user_id: conversion.user_id,
-          reviewed_by: actor.userId,
+          reviewed_by: this.staffActorId(actor),
           reviewed_at: new Date(),
         },
       });
@@ -204,7 +214,7 @@ export class SaReviewService {
           program_ok: dto.program_ok ?? false,
           decision: 'sent_back',
           reason: dto.reason,
-          reviewed_by: actor.userId,
+          reviewed_by: this.staffActorId(actor),
           reviewed_at: new Date(),
         },
       });
@@ -229,7 +239,7 @@ export class SaReviewService {
           program_ok: dto.program_ok ?? false,
           decision: 'rejected',
           reason: dto.reason,
-          reviewed_by: actor.userId,
+          reviewed_by: this.staffActorId(actor),
           reviewed_at: new Date(),
         },
       });
@@ -239,7 +249,17 @@ export class SaReviewService {
       });
     });
 
-    await this.sendEmail('application-rejected', application, { reason: dto.reason });
+    // Resolve the EXACT template variables application-rejected.html requires.
+    // The program/counsellor labels come from the same resolver the applicant
+    // emails use (ProgramReferenceService), so the student sees the same names the
+    // counsellor does; rejection_reason is the staff-typed reason (passed RAW —
+    // render() escapes it centrally), and rejected_at is now in IST.
+    const baseVars = await this.programRef.emailVars(application);
+    await this.sendEmail('application-rejected', application, {
+      ...baseVars,
+      rejection_reason: dto.reason,
+      rejected_at: istDateTime(new Date()),
+    });
     return { decision: 'rejected' };
   }
 
@@ -249,6 +269,14 @@ export class SaReviewService {
     if (application.hold_at != null) {
       throw new ConflictException('Resume the application before acting on it.');
     }
+  }
+
+  /** The acting staff user id (always present on these staff-only paths). */
+  private staffActorId(actor: StageActor): number {
+    if (actor.userId == null) {
+      throw new ForbiddenException('A staff account is required for this action.');
+    }
+    return actor.userId;
   }
 
   /**
@@ -388,7 +416,10 @@ export class SaReviewService {
         html: rendered.html,
       });
     } catch (err) {
-      this.logger.warn(`Email ${key} skipped: ${(err as Error).message}`);
+      // ERROR, not warn: a render() throw here means a caller under-supplied the
+      // template's variables and the email was NEVER delivered. Stays fire-and-forget
+      // (the workflow still succeeds), but it must be loud, not silent.
+      this.logger.error(`Email ${key} NOT sent: ${(err as Error).message}`);
     }
   }
 }

@@ -13,6 +13,7 @@ import { ResponseMessage } from '../common/decorators/response-message.decorator
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { RequirePermission } from '../common/decorators/require-permission.decorator';
 import { ApplicationPaymentsService } from './application-payments.service';
+import { contentDisposition } from '../files/content-disposition';
 import type { AccessUser } from './record-access.service';
 import {
   ListApplicationPaymentsDto,
@@ -52,7 +53,8 @@ export class ApplicationPaymentsController {
     const { stream, filename, contentType } = await this.payments.proofStream(id, user);
     res.set({
       'Content-Type': contentType,
-      'Content-Disposition': `inline; filename="${filename}"`,
+      // SECURITY LOW 6: header-safe disposition for a counsellor-supplied filename.
+      'Content-Disposition': contentDisposition(filename, 'inline'),
     });
     stream.on('error', () => {
       if (!res.headersSent) {

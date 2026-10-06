@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { escapeHtml } from '../common/html-escape';
 
 /**
  * The Phase 1 transactional emails, keyed by template file name (without .html).
@@ -12,6 +13,7 @@ export type EmailTemplateKey =
   | 'user-invite'
   | 'password-reset-otp'
   | 'application-magic-link'
+  | 'application-form-reopened'
   | 'application-submitted'
   | 'application-approved'
   | 'application-rejected'
@@ -27,6 +29,21 @@ export interface RenderedEmail {
 /** `{{placeholder}}` — the only substitution syntax the templates use. */
 const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
 const TITLE = /<title>([\s\S]*?)<\/title>/i;
+
+/**
+ * SECURITY MEDIUM 2 — every placeholder value is HTML-escaped by DEFAULT when it
+ * is rendered into the HTML body, so a staff/student-typed value (a reject/reopen
+ * reason, an applicant's name) can never inject live markup into the recipient's
+ * mail client. The ONLY exception is this allowlist of keys whose value is a
+ * SYSTEM-GENERATED URL (never user input); escaping an href/src would corrupt the
+ * link. Matched keys: `magic_link`, anything ending in `_url` (logo_url,
+ * application_url, …) and anything ending in `_link` (activation_link). This
+ * covers every current and future template centrally, so no call site may skip it.
+ */
+const RAW_URL_KEYS: ReadonlySet<string> = new Set(['magic_link']);
+function isRawUrlKey(key: string): boolean {
+  return RAW_URL_KEYS.has(key) || key.endsWith('_url') || key.endsWith('_link');
+}
 
 /**
  * Values that are the same on every email we send. Callers supply only the
@@ -105,18 +122,20 @@ export class EmailTemplatesService implements OnModuleInit {
     }
 
     const missing = new Set<string>();
-    const fill = (text: string): string =>
+    // `escape` is true for the HTML body (every value escaped unless it is a
+    // system URL key) and false for the subject (a plain-text header, never HTML).
+    const fill = (text: string, escape: boolean): string =>
       text.replace(PLACEHOLDER, (_match, name: string) => {
         const value = values[name];
         if (value === undefined) {
           missing.add(name);
           return '';
         }
-        return value;
+        return escape && !isRawUrlKey(name) ? escapeHtml(value) : value;
       });
 
-    const subject = fill(TITLE.exec(raw)?.[1]?.trim() ?? '').replace(/\s+/g, ' ');
-    const html = fill(raw);
+    const subject = fill(TITLE.exec(raw)?.[1]?.trim() ?? '', false).replace(/\s+/g, ' ');
+    const html = fill(raw, true);
 
     if (missing.size) {
       throw new Error(

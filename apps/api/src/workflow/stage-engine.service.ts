@@ -12,7 +12,8 @@ import {
 
 /** The acting user for a stage move. */
 export interface StageActor {
-  userId: number;
+  /** NULL when the actor is the student on a magic link (actorType 'applicant'). */
+  userId: number | null;
   roleId: number | null;
   /** 1 when an Admin / Super Admin performed a stage owner's action. */
   onBehalf?: boolean;

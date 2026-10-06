@@ -1501,10 +1501,20 @@ export class StudentsService {
 
     const studentNo = await this.allocateStudentNo(tx);
 
+    // Prefer the name the student certified (application_form.name_on_certificate)
+    // for the LMS users.name when present and within the LMS width (<=100 chars);
+    // otherwise keep the lead's name.
+    const formForName = await tx.application_form.findUnique({
+      where: { application_id: application.application_id },
+      select: { name_on_certificate: true },
+    });
+    const certName = formForName?.name_on_certificate?.trim();
+    const userName = certName && certName.length <= 100 ? certName : (application.name ?? null);
+
     // 1. users row (role_id = 4 student); password pre-hashed by the caller.
     const user = await tx.users.create({
       data: {
-        name: application.name ?? null,
+        name: userName,
         email: application.email ?? null,
         code: application.code ?? null,
         phone: application.phone ?? null,
@@ -1624,6 +1634,35 @@ export class StudentsService {
       },
       data: { student_id: user.id, updated_at: now, updated_by: actor.userId },
     });
+
+    // 5b. FUNCTIONAL GAP (WS5): the public-form documents live in
+    // application_document — a SEPARATE table from student_document — so stamping
+    // student_id above never reaches them. Copy each LIVE application_document into
+    // student_document (student_id = new user id, application_id preserved, label +
+    // stored file carried over) so the converted student keeps the files they
+    // uploaded through the public form. The source row is kept for admissions
+    // history and linked back via student_document_id; the bytes are shared (same
+    // stored path), never duplicated on disk.
+    const appDocs = await tx.application_document.findMany({
+      where: { application_id: application.application_id, deleted_at: null },
+      select: { id: true, label: true, file_path: true },
+    });
+    for (const d of appDocs) {
+      const copied = await tx.student_document.create({
+        data: {
+          label: d.label ?? null,
+          file: d.file_path,
+          student_id: user.id,
+          application_id: application.application_id,
+          created_by: actor.userId,
+          created_at: now,
+        },
+      });
+      await tx.application_document.update({
+        where: { id: d.id },
+        data: { student_document_id: copied.student_document_id, updated_at: now },
+      });
+    }
 
     // Domain timeline + audit for the conversion.
     await this.stageEngine.logStageEvent(tx, {

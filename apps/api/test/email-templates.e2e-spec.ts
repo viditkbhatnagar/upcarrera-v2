@@ -42,6 +42,7 @@ const ALL_VARS: Record<string, string> = {
   rejected_at: '6 Oct 2026',
   rejected_by: 'Student Affairs',
   rejection_reason: 'Documents illegible',
+  reason: 'Please re-upload a clearer copy of your marksheet.',
   verified_at: '6 Oct 2026',
   verified_by: 'Accounts',
   paid_at: '5 Oct 2026',
@@ -59,6 +60,7 @@ const ALL_VARS: Record<string, string> = {
 
 const EXPECTED_TEMPLATES: EmailTemplateKey[] = [
   'application-approved',
+  'application-form-reopened',
   'application-magic-link',
   'application-rejected',
   'application-submitted',
@@ -145,5 +147,39 @@ describe('EmailTemplatesService', () => {
     expect(() =>
       service.render('password-reset-otp', { ...ALL_VARS, otp_code: null }),
     ).toThrow(/otp_code/);
+  });
+
+  // ---- SECURITY MEDIUM 2: central HTML-escaping of every placeholder ---------
+
+  it('HTML-escapes a staff-typed reject reason so it cannot inject markup', () => {
+    const evil = '<script>alert(1)</script><img src=x onerror=alert(2)>';
+    const { html } = service.render('application-rejected', {
+      ...ALL_VARS,
+      rejection_reason: evil,
+    });
+    expect(html).not.toContain(evil);
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).not.toContain('onerror=alert(2)>');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('&lt;img');
+  });
+
+  it('HTML-escapes the staff-typed reopen reason in the student email', () => {
+    const { html } = service.render('application-form-reopened', {
+      ...ALL_VARS,
+      reason: '<b onclick="x">re-upload</b>',
+    });
+    expect(html).not.toContain('<b onclick="x">re-upload</b>');
+    expect(html).toContain('&lt;b onclick=&quot;x&quot;&gt;re-upload&lt;/b&gt;');
+  });
+
+  it('keeps a system link (magic_link) RAW so its href is not corrupted', () => {
+    const link = 'https://admin.upcarrera.com/apply#t=AbC_1-2x&v=2';
+    const { html } = service.render('application-magic-link', {
+      ...ALL_VARS,
+      magic_link: link,
+    });
+    // The URL (including its unescaped `&`) appears verbatim — never &amp;-mangled.
+    expect(html).toContain(link);
   });
 });

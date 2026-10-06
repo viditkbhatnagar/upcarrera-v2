@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Action needed on your application {{application_id}}</title>
+    <style>
+      body { margin: 0; padding: 0; background: #f4f5f7; -webkit-text-size-adjust: 100%; }
+      table { border-collapse: collapse; }
+      img { border: 0; line-height: 100%; outline: none; text-decoration: none; }
+      .wrap { width: 100%; background: #f4f5f7; padding: 24px 0; }
+      .card { width: 100%; max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 1px 3px rgba(16,24,40,0.08); }
+      .px { padding-left: 32px; padding-right: 32px; }
+      .head { background: #0f172a; padding: 28px 32px; }
+      .brand { font: 700 18px/1.2 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color: #ffffff; }
+      .h1 { font: 700 22px/1.3 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color: #0f172a; margin: 24px 0 8px; }
+      .p { font: 400 15px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color: #334155; margin: 0 0 16px; }
+      .muted { color: #64748b; font-size: 13px; }
+      .reason { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 12px; padding: 16px 18px; margin: 4px 0 20px; }
+      .reason-label { font: 700 12px/1.2 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; letter-spacing: .04em; text-transform: uppercase; color: #9a3412; margin: 0 0 6px; }
+      .reason-text { font: 400 15px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color: #7c2d12; margin: 0; white-space: pre-wrap; }
+      .btn { display: inline-block; background: #4f46e5; color: #ffffff !important; font: 700 15px/1 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; text-decoration: none; padding: 15px 28px; border-radius: 10px; }
+      .idchip { display: inline-block; font: 700 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace; color: #4f46e5; background: #eef2ff; border-radius: 999px; padding: 7px 12px; }
+      .divider { height: 1px; background: #e2e8f0; margin: 28px 0; line-height: 1px; }
+      .foot { font: 400 12px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color: #94a3b8; }
+      a { color: #4f46e5; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td align="center">
+            <table role="presentation" class="card" cellpadding="0" cellspacing="0">
+              <tr>
+                <td class="head">
+                  <img src="{{logo_url}}" alt="{{organization_name}}" height="28" style="max-height:28px;" />
+                  <div class="brand">{{organization_name}}</div>
+                </td>
+              </tr>
+              <tr>
+                <td class="px">
+                  <h1 class="h1">Your application needs a quick update</h1>
+                  <p class="p">Hi {{first_name}},</p>
+                  <p class="p">
+                    Your counsellor has reopened your application
+                    <span class="idchip">{{application_id}}</span> so you can make a change.
+                    Please review the note below, update your form, and submit it again.
+                  </p>
+
+                  <div class="reason">
+                    <p class="reason-label">What to update</p>
+                    <p class="reason-text">{{reason}}</p>
+                  </div>
+
+                  <table role="presentation" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td align="center" style="padding: 4px 0 8px;">
+                        <a class="btn" href="{{magic_link}}">Open my application</a>
+                      </td>
+                    </tr>
+                  </table>
+                  <p class="p muted">
+                    This secure link is just for you — please don't forward it. It expires on
+                    <strong>{{link_expiry_date}}</strong>. If it has expired, reply to your
+                    counsellor and they'll send a fresh one.
+                  </p>
+
+                  <div class="divider">&nbsp;</div>
+
+                  <p class="p" style="margin-bottom:6px;"><strong>Your counsellor</strong></p>
+                  <p class="p muted" style="margin-bottom:0;">
+                    {{counsellor_name}}<br />
+                    <a href="mailto:{{counsellor_email}}">{{counsellor_email}}</a> &middot; {{counsellor_phone}}
+                  </p>
+                </td>
+              </tr>
+              <tr>
+                <td class="px" style="padding-top: 28px; padding-bottom: 28px;">
+                  <p class="foot">
+                    Need help? Write to <a href="mailto:{{support_email}}">{{support_email}}</a>
+                    or call {{support_phone}}.<br />
+                    &copy; {{year}} {{organization_name}}. This email was sent to you because an
+                    application is in progress with us.
+                  </p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </body>
+</html>
