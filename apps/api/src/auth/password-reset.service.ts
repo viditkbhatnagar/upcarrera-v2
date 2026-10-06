@@ -72,33 +72,43 @@ export class PasswordResetService {
 
     const now = new Date();
     const since = new Date(now.getTime() - DAY_MS);
-    const issued24h = await this.prisma.password_reset.count({
-      where: { user_id: user.id, created_at: { gte: since } },
+    const code = this.generateOtp();
+    const toEmail = user.email.trim();
+
+    // L7: opportunistic cleanup — drop this user's rows older than the 24h window
+    // (all long-expired/terminal), so the table stays bounded without a cron job.
+    await this.prisma.password_reset
+      .deleteMany({ where: { user_id: user.id, created_at: { lt: since } } })
+      .catch(() => undefined);
+
+    // M2: issuance is atomic — the 24h cap check, revoking any live code, and
+    // creating the new one run in one transaction, so concurrent requests can
+    // neither exceed the cap nor leave two usable codes. Returns null at the cap.
+    const row = await this.prisma.$transaction(async (tx) => {
+      const issued24h = await tx.password_reset.count({
+        where: { user_id: user.id, created_at: { gte: since } },
+      });
+      if (issued24h >= ISSUE_CAP_24H) return null;
+      await tx.password_reset.updateMany({
+        where: { user_id: user.id, consumed_at: null, revoked_at: null },
+        data: { revoked_at: now },
+      });
+      return tx.password_reset.create({
+        data: {
+          user_id: user.id,
+          otp_hash: this.hmac(user.id, code),
+          expires_at: new Date(now.getTime() + OTP_EXPIRY_MS),
+          sent_to_email: toEmail,
+          email_status: 'pending',
+          last_ip: ip,
+          created_at: now,
+        },
+      });
     });
-    if (issued24h >= ISSUE_CAP_24H) {
+    if (!row) {
       this.logger.warn(`Password-reset issuance cap hit for user ${user.id}`);
       return; // no enumeration, no email-bomb
     }
-
-    // One active code at a time: retire any still-live codes before issuing.
-    await this.prisma.password_reset.updateMany({
-      where: { user_id: user.id, consumed_at: null, revoked_at: null },
-      data: { revoked_at: now },
-    });
-
-    const code = this.generateOtp();
-    const toEmail = user.email.trim();
-    const row = await this.prisma.password_reset.create({
-      data: {
-        user_id: user.id,
-        otp_hash: this.hmac(user.id, code),
-        expires_at: new Date(now.getTime() + OTP_EXPIRY_MS),
-        sent_to_email: toEmail,
-        email_status: 'pending',
-        last_ip: ip,
-        created_at: now,
-      },
-    });
 
     try {
       const rendered = this.templates.render('password-reset-otp', {

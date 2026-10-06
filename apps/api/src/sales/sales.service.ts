@@ -1,10 +1,14 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
+
+/** Only a Super Admin may reset a Super Admin account (M3). */
+const SUPER_ADMIN_ROLE_ID = 1;
 import { PrismaService } from '../prisma/prisma.service';
 import { ListTelecallersDto } from './dto/list-telecallers.dto';
 import { CreateTelecallerDto } from './dto/create-telecaller.dto';
@@ -178,12 +182,21 @@ export class SalesService {
    * password: the OLD hash is preserved in prev_password and the new password
    * is bcrypt-hashed. Sets updated_by / updated_at.
    */
-  async updatePassword(id: number, dto: UpdatePasswordDto, userId: number) {
+  async updatePassword(
+    id: number,
+    dto: UpdatePasswordDto,
+    userId: number,
+    actorRoleId?: number | null,
+  ) {
     const user = await this.prisma.users.findFirst({
       where: { id, deleted_at: null },
     });
     if (!user) {
       throw new NotFoundException('User not found!');
+    }
+    // M3: only a Super Admin can reset a Super Admin account.
+    if (user.role_id === SUPER_ADMIN_ROLE_ID && actorRoleId !== SUPER_ADMIN_ROLE_ID) {
+      throw new ForbiddenException('Only a Super Admin can reset a Super Admin account.');
     }
 
     // Username uniqueness guard (legacy: id != $id check).

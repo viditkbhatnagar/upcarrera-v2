@@ -20,7 +20,8 @@ export class UsersPasswordController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdatePasswordDto,
     @CurrentUser('id') userId: number,
+    @CurrentUser('roleId') actorRoleId: number,
   ) {
-    return this.sales.updatePassword(id, dto, userId);
+    return this.sales.updatePassword(id, dto, userId, actorRoleId);
   }
 }

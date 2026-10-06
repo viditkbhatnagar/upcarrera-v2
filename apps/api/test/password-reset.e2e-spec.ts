@@ -5,6 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import { bootApp, loginAs, authHeader, ADMIN_CREDENTIALS } from './app.factory';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { EmailService, type SendEmailParams } from '../src/integrations/email.service';
+import { PlatformService } from '../src/platform/platform.service';
 
 /**
  * Self-serve password reset (migration 004) + session invalidation.
@@ -173,5 +174,39 @@ describe('Password reset (e2e)', () => {
 
     expect((await request(http).get('/api/auth/me').set(authHeader(oldToken))).status).toBe(401);
     expect(typeof (await loginAs(http, user.username, newPw))).toBe('string');
+  }, 30000);
+
+  it('M3: only a Super Admin can reset a Super Admin account', async () => {
+    const platform = app.get(PlatformService);
+    // A DISPOSABLE super-admin (role 1) target — never the shared seed admin,
+    // whose password other suites depend on.
+    const saTarget = await prisma.users.create({
+      data: {
+        name: `${TAG} saTarget`,
+        username: `${TAG}_saTarget`,
+        email: `${TAG}_satarget@e2e.local`,
+        role_id: 1,
+        status: 1,
+        password: await bcrypt.hash(PASSWORD, 10),
+        phone: uniquePhone(),
+        created_at: new Date(),
+      },
+    });
+    userIds.push(saTarget.id);
+    const normal = await mkUser('m3normal');
+    const NON_SUPER_ADMIN = 102;
+
+    // A non-super-admin is refused on a super-admin target...
+    await expect(
+      platform.resetPassword(saTarget.id, { password: 'Blocked@1234' }, NON_SUPER_ADMIN),
+    ).rejects.toThrow('Only a Super Admin can reset a Super Admin account.');
+    // ...but may reset a normal user...
+    await expect(
+      platform.resetPassword(normal.id, { password: 'NormalOk@123' }, NON_SUPER_ADMIN),
+    ).resolves.toBeDefined();
+    // ...and a Super Admin may reset a Super Admin.
+    await expect(
+      platform.resetPassword(saTarget.id, { password: 'SAOnly@1234' }, 1),
+    ).resolves.toBeDefined();
   }, 30000);
 });

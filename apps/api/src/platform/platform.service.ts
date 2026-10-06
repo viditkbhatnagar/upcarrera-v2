@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -22,6 +23,8 @@ import { stripUserSecrets, type UserSecretField } from '../common/user-secrets';
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 const BCRYPT_ROUNDS = 10;
+/** Only a Super Admin may reset, edit, or create another Super Admin (M3). */
+const SUPER_ADMIN_ROLE_ID = 1;
 
 export interface Paginated<T> {
   items: T[];
@@ -121,8 +124,19 @@ export class PlatformService {
     return this.sanitizeUser(created);
   }
 
-  async updateUser(id: number, dto: UpdateUserDto) {
-    await this.findUser(id); // 404 if missing/soft-deleted
+  async updateUser(id: number, dto: UpdateUserDto, actorRoleId?: number | null) {
+    const target = await this.findUser(id); // 404 if missing/soft-deleted
+
+    // M3: a non-Super-Admin cannot edit a Super Admin account, nor elevate anyone
+    // (including themselves) to Super Admin — both are privilege-escalation paths.
+    if (actorRoleId !== SUPER_ADMIN_ROLE_ID) {
+      if (target.role_id === SUPER_ADMIN_ROLE_ID) {
+        throw new ForbiddenException('Only a Super Admin can edit a Super Admin account.');
+      }
+      if (Number((dto as { role_id?: number | string }).role_id) === SUPER_ADMIN_ROLE_ID) {
+        throw new ForbiddenException('Only a Super Admin can grant the Super Admin role.');
+      }
+    }
 
     const now = new Date();
     const { password, ...rest } = dto;
@@ -164,12 +178,17 @@ export class PlatformService {
    * bcrypt password, and snapshots the old hash into `prev_password`. No
    * current-password check — this is an administrative override.
    */
-  async resetPassword(id: number, dto: ResetPasswordDto) {
+  async resetPassword(id: number, dto: ResetPasswordDto, actorRoleId?: number | null) {
     const user = await this.prisma.users.findFirst({
       where: { id, deleted_at: null },
     });
     if (!user) {
       throw new NotFoundException('User not found');
+    }
+    // M3: only a Super Admin can reset a Super Admin — otherwise anyone with
+    // consultants/edit could take over the highest-privilege account.
+    if (user.role_id === SUPER_ADMIN_ROLE_ID && actorRoleId !== SUPER_ADMIN_ROLE_ID) {
+      throw new ForbiddenException('Only a Super Admin can reset a Super Admin account.');
     }
 
     if (dto.username !== undefined) {

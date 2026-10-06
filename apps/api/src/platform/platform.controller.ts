@@ -107,8 +107,12 @@ export class PlatformController {
   @Patch('users/:id')
   @RequirePermission('consultants/edit')
   @ResponseMessage('User updated')
-  updateUser(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateUserDto) {
-    return this.platform.updateUser(id, dto);
+  updateUser(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateUserDto,
+    @CurrentUser('roleId') actorRoleId: number,
+  ) {
+    return this.platform.updateUser(id, dto, actorRoleId);
   }
 
   @Delete('users/:id')
@@ -125,8 +129,9 @@ export class PlatformController {
   resetPassword(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ResetPasswordDto,
+    @CurrentUser('roleId') actorRoleId: number,
   ) {
-    return this.platform.resetPassword(id, dto);
+    return this.platform.resetPassword(id, dto, actorRoleId);
   }
 
   // Self-service: change OWN password (current-password verified). The :id must
