@@ -149,6 +149,26 @@ function buildNav(roleKey: string | null | undefined): NavItem[] {
         ],
       };
     }
+    // Master Settings (WS6) — admin-only. The server enforces crm:catalog.* on
+    // every route; this only reveals the screens to roles that can use them.
+    if (item.to === "/administration" && isAdmin) {
+      return {
+        ...item,
+        children: [
+          ...(item.children ?? []),
+          {
+            to: "/administration/document-checklist",
+            label: "Document Checklist",
+            icon: ClipboardList,
+          },
+          {
+            to: "/administration/eligibility-rules",
+            label: "Eligibility Rules",
+            icon: ScrollText,
+          },
+        ],
+      };
+    }
     return item;
   });
 

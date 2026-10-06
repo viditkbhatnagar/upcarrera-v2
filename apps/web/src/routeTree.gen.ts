@@ -51,6 +51,8 @@ import { Route as CounsellorsCounsellorsRouteImport } from './routes/counsellors
 import { Route as AdministrationUsersRouteImport } from './routes/administration.users'
 import { Route as AdministrationSystemSettingsRouteImport } from './routes/administration.system-settings'
 import { Route as AdministrationRolesRouteImport } from './routes/administration.roles'
+import { Route as AdministrationEligibilityRulesRouteImport } from './routes/administration.eligibility-rules'
+import { Route as AdministrationDocumentChecklistRouteImport } from './routes/administration.document-checklist'
 import { Route as AdministrationAuditLogsRouteImport } from './routes/administration.audit-logs'
 import { Route as StudentsStudentsIndexRouteImport } from './routes/students.students.index'
 import { Route as StudentsApplicationsIndexRouteImport } from './routes/students.applications.index'
@@ -279,6 +281,18 @@ const AdministrationRolesRoute = AdministrationRolesRouteImport.update({
   path: '/roles',
   getParentRoute: () => AdministrationRoute,
 } as any)
+const AdministrationEligibilityRulesRoute =
+  AdministrationEligibilityRulesRouteImport.update({
+    id: '/eligibility-rules',
+    path: '/eligibility-rules',
+    getParentRoute: () => AdministrationRoute,
+  } as any)
+const AdministrationDocumentChecklistRoute =
+  AdministrationDocumentChecklistRouteImport.update({
+    id: '/document-checklist',
+    path: '/document-checklist',
+    getParentRoute: () => AdministrationRoute,
+  } as any)
 const AdministrationAuditLogsRoute = AdministrationAuditLogsRouteImport.update({
   id: '/audit-logs',
   path: '/audit-logs',
@@ -357,6 +371,8 @@ export interface FileRoutesByFullPath {
   '/support': typeof SupportRoute
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
+  '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
+  '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
   '/administration/roles': typeof AdministrationRolesRoute
   '/administration/system-settings': typeof AdministrationSystemSettingsRoute
   '/administration/users': typeof AdministrationUsersRoute
@@ -406,6 +422,8 @@ export interface FileRoutesByTo {
   '/reports': typeof ReportsRoute
   '/support': typeof SupportRoute
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
+  '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
+  '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
   '/administration/roles': typeof AdministrationRolesRoute
   '/administration/system-settings': typeof AdministrationSystemSettingsRoute
   '/administration/users': typeof AdministrationUsersRoute
@@ -460,6 +478,8 @@ export interface FileRoutesById {
   '/support': typeof SupportRoute
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
+  '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
+  '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
   '/administration/roles': typeof AdministrationRolesRoute
   '/administration/system-settings': typeof AdministrationSystemSettingsRoute
   '/administration/users': typeof AdministrationUsersRoute
@@ -517,6 +537,8 @@ export interface FileRouteTypes {
     | '/support'
     | '/universities'
     | '/administration/audit-logs'
+    | '/administration/document-checklist'
+    | '/administration/eligibility-rules'
     | '/administration/roles'
     | '/administration/system-settings'
     | '/administration/users'
@@ -566,6 +588,8 @@ export interface FileRouteTypes {
     | '/reports'
     | '/support'
     | '/administration/audit-logs'
+    | '/administration/document-checklist'
+    | '/administration/eligibility-rules'
     | '/administration/roles'
     | '/administration/system-settings'
     | '/administration/users'
@@ -619,6 +643,8 @@ export interface FileRouteTypes {
     | '/support'
     | '/universities'
     | '/administration/audit-logs'
+    | '/administration/document-checklist'
+    | '/administration/eligibility-rules'
     | '/administration/roles'
     | '/administration/system-settings'
     | '/administration/users'
@@ -972,6 +998,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdministrationRolesRouteImport
       parentRoute: typeof AdministrationRoute
     }
+    '/administration/eligibility-rules': {
+      id: '/administration/eligibility-rules'
+      path: '/eligibility-rules'
+      fullPath: '/administration/eligibility-rules'
+      preLoaderRoute: typeof AdministrationEligibilityRulesRouteImport
+      parentRoute: typeof AdministrationRoute
+    }
+    '/administration/document-checklist': {
+      id: '/administration/document-checklist'
+      path: '/document-checklist'
+      fullPath: '/administration/document-checklist'
+      preLoaderRoute: typeof AdministrationDocumentChecklistRouteImport
+      parentRoute: typeof AdministrationRoute
+    }
     '/administration/audit-logs': {
       id: '/administration/audit-logs'
       path: '/audit-logs'
@@ -1054,6 +1094,8 @@ declare module '@tanstack/react-router' {
 
 interface AdministrationRouteChildren {
   AdministrationAuditLogsRoute: typeof AdministrationAuditLogsRoute
+  AdministrationDocumentChecklistRoute: typeof AdministrationDocumentChecklistRoute
+  AdministrationEligibilityRulesRoute: typeof AdministrationEligibilityRulesRoute
   AdministrationRolesRoute: typeof AdministrationRolesRoute
   AdministrationSystemSettingsRoute: typeof AdministrationSystemSettingsRoute
   AdministrationUsersRoute: typeof AdministrationUsersRoute
@@ -1062,6 +1104,8 @@ interface AdministrationRouteChildren {
 
 const AdministrationRouteChildren: AdministrationRouteChildren = {
   AdministrationAuditLogsRoute: AdministrationAuditLogsRoute,
+  AdministrationDocumentChecklistRoute: AdministrationDocumentChecklistRoute,
+  AdministrationEligibilityRulesRoute: AdministrationEligibilityRulesRoute,
   AdministrationRolesRoute: AdministrationRolesRoute,
   AdministrationSystemSettingsRoute: AdministrationSystemSettingsRoute,
   AdministrationUsersRoute: AdministrationUsersRoute,

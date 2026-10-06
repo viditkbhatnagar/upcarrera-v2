@@ -492,24 +492,17 @@ export function getMyAccess() {
 }
 
 /* ------------------------------------------------------------------ *
- * File helpers. The server returns URLs already prefixed with `/api`,
- * but the API client's BASE_URL also ends in `/api` — strip one so we
- * never request `/api/api/...`.
+ * File helpers.
  * ------------------------------------------------------------------ */
-
-export function relFromApi(url: string): string {
-  return url.replace(/^\/api(?=\/)/, "");
-}
 
 /** Object URL for an auth-gated payment proof. Caller revokes it. */
 export function paymentProofUrl(paymentId: number): Promise<string> {
   return apiFileBlobUrl(`/application-payments/${paymentId}/proof`);
 }
 
-/** Object URL for an auth-gated application document download. */
-export function documentBlobUrl(doc: ApplicationDocument): Promise<string> {
-  return apiFileBlobUrl(relFromApi(doc.download_url));
-}
+// Application documents are streamed through the scoped, record-access-guarded
+// endpoint GET /applications/:id/documents/:docId/file — see
+// applicationDocumentFileUrl in ./application-form.ts.
 
 /* ------------------------------------------------------------------ *
  * Small value helpers shared by the workflow screens.

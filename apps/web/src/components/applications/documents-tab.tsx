@@ -17,10 +17,10 @@ import { ApiError } from "@/lib/api";
 import {
   getDocuments,
   reviewDocument,
-  documentBlobUrl,
   applicationKeys,
   type ApplicationDocument,
 } from "@/lib/api/applications";
+import { applicationDocumentFileUrl } from "@/lib/api/application-form";
 import { DOC_STATUS_BADGE } from "./stage-model";
 import { SectionCard, EmptyPanel, formatDate } from "./detail-ui";
 import { Button } from "@/components/ui/button";
@@ -33,8 +33,9 @@ function docStatusLabel(status: ApplicationDocument["verification_status"]): str
   return "Pending";
 }
 
-async function downloadDocument(doc: ApplicationDocument): Promise<void> {
-  const url = await documentBlobUrl(doc);
+async function downloadDocument(appId: number, doc: ApplicationDocument): Promise<void> {
+  // Scoped, record-access-guarded stream: GET /applications/:id/documents/:docId/file.
+  const url = await applicationDocumentFileUrl(appId, doc.id);
   const a = document.createElement("a");
   a.href = url;
   a.target = "_blank";
@@ -147,7 +148,7 @@ function DocumentRow({ appId, doc, canReview, onChanged }: DocumentRowProps) {
   const onDownload = async () => {
     setDownloading(true);
     try {
-      await downloadDocument(doc);
+      await downloadDocument(appId, doc);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Could not open the document.");
     } finally {
