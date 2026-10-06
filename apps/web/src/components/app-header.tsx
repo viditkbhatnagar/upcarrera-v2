@@ -1,5 +1,4 @@
 import { Search, Bell, ChevronDown, CalendarClock, PanelLeft, LogOut, Menu } from "lucide-react";
-import { useNavigate } from "@tanstack/react-router";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,14 +25,18 @@ function initials(name: string | null, username: string | null): string {
 }
 
 export function AppHeader({ collapsed, onToggle, onMobileMenu }: AppHeaderProps) {
-  const navigate = useNavigate();
   const user = getUser();
   const displayName = user?.name ?? user?.username ?? "Account";
   const avatarUrl = useAvatarUrl(user?.profile_picture);
 
   const handleLogout = () => {
+    // Full reload on sign-out, not a client-side navigate. The root layout picks
+    // AppShell-vs-bare from the path once per mount, so an SPA hop to /login left
+    // the authenticated shell wrapped around the login page until a manual
+    // refresh. A hard navigation remounts the app clean at /login and also purges
+    // the in-memory TanStack Query cache of the previous user's data.
     logout();
-    navigate({ to: "/login" });
+    window.location.assign("/login");
   };
 
   return (
