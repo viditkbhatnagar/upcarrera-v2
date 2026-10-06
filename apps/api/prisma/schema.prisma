@@ -1217,6 +1217,7 @@ model users {
   register_number       String?   @db.Text
   password              String?   @db.VarChar(100)
   prev_password         String?   @db.VarChar(100)
+  password_changed_at   DateTime? @db.DateTime(0)
   profile_picture       String?   @db.Text
   role_id               Int?
   telecaller_id         Int?      @default(0)
@@ -1471,6 +1472,28 @@ model application_magic_link {
   @@index([application_id, revoked_at, consumed_at], map: "idx_aml_application")
   @@index([application_id, created_at], map: "idx_aml_app_created")
   @@index([expires_at], map: "idx_aml_expires")
+}
+
+/// Staff password-reset one-time codes (migration 004). The DB keeps only a
+/// bcrypt hash of the 6-digit code; the code itself lives only in the email.
+/// Short expiry, one active code per user, a hard attempt cap (brute-force guard)
+/// and a 24h issuance cap — mirrors the applicant magic-link security model.
+model password_reset {
+  id            Int       @id @default(autoincrement())
+  user_id       Int
+  otp_hash      String    @db.VarChar(100)
+  expires_at    DateTime  @db.DateTime(0)
+  consumed_at   DateTime? @db.DateTime(0)
+  revoked_at    DateTime? @db.DateTime(0)
+  attempt_count Int       @default(0)
+  sent_to_email String?   @db.VarChar(255)
+  email_status  String?   @db.VarChar(16)
+  email_error   String?   @db.VarChar(255)
+  last_ip       String?   @db.VarChar(45)
+  created_at    DateTime  @db.DateTime(0)
+
+  @@index([user_id, created_at], map: "idx_pwreset_user")
+  @@index([expires_at], map: "idx_pwreset_expires")
 }
 
 /// The student form (1:1 with applications): fields with no legacy column,

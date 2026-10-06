@@ -12,9 +12,11 @@ export class ResetPasswordDto {
   @MaxLength(190)
   username?: string;
 
+  // One password policy across admin reset and self-serve reset (M4): min 8,
+  // and <= 72 bytes since bcrypt silently truncates beyond that.
   @IsString()
-  @MinLength(1)
-  @MaxLength(100)
+  @MinLength(8)
+  @MaxLength(72)
   password!: string;
 }
 
@@ -26,11 +28,11 @@ export class ResetPasswordDto {
 export class ChangePasswordDto {
   @IsString()
   @MinLength(1)
-  @MaxLength(100)
+  @MaxLength(72)
   current_password!: string;
 
   @IsString()
-  @MinLength(1)
-  @MaxLength(100)
+  @MinLength(8)
+  @MaxLength(72)
   password!: string;
 }

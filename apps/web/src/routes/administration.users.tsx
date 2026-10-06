@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api";
+import { apiGet, apiPost, ApiError } from "@/lib/api";
 import {
   Download,
   Plus,
@@ -10,6 +10,8 @@ import {
   RefreshCcw,
   Bookmark,
   Eye,
+  EyeOff,
+  KeyRound,
   Pencil,
   Power,
   X,
@@ -28,6 +30,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -164,6 +167,7 @@ function UsersPage() {
   const [page, setPage] = useState(1);
   const [openAdd, setOpenAdd] = useState(false);
   const [openBulk, setOpenBulk] = useState(false);
+  const [resetTarget, setResetTarget] = useState<SystemUser | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const PAGE_SIZE = 10;
 
@@ -565,6 +569,11 @@ function UsersPage() {
                         <IconBtn icon={Eye} label="View" />
                         <IconBtn icon={Pencil} label="Edit" />
                         <IconBtn
+                          icon={KeyRound}
+                          label="Reset password"
+                          onClick={() => setResetTarget(u)}
+                        />
+                        <IconBtn
                           icon={Power}
                           label={u.status === "Active" ? "Deactivate" : "Activate"}
                           tone={u.status === "Active" ? "danger" : "success"}
@@ -619,7 +628,115 @@ function UsersPage() {
         onOpenChange={setOpenBulk}
         count={selected.size}
       />
+      <ResetPasswordDialog user={resetTarget} onClose={() => setResetTarget(null)} />
     </div>
+  );
+}
+
+/* ---------------- Reset Password Dialog (admin break-glass) ---------------- */
+
+function ResetPasswordDialog({
+  user,
+  onClose,
+}: {
+  user: SystemUser | null;
+  onClose: () => void;
+}) {
+  const [pwd, setPwd] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [show, setShow] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Clear the fields whenever the dialog opens for a different user.
+  useEffect(() => {
+    setPwd("");
+    setConfirm("");
+    setShow(false);
+  }, [user?.empId]);
+
+  const submit = async () => {
+    if (!user) return;
+    if (pwd.length < 8) {
+      toast.error("Password must be at least 8 characters.");
+      return;
+    }
+    if (pwd !== confirm) {
+      toast.error("Passwords do not match.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await apiPost(`/users/${user.empId}/reset-password`, { password: pwd });
+      toast.success(`Password reset for ${user.name}. Existing sessions are signed out.`);
+      onClose();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't reset the password.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!user} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Reset password</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Set a new password for{" "}
+          <span className="font-semibold text-foreground">{user?.name}</span>. Share it with them
+          privately — they can change it after signing in. This signs the user out of any current
+          sessions.
+        </p>
+        <div className="space-y-4 py-1">
+          <Field label="New Password">
+            <div className="relative">
+              <Input
+                type={show ? "text" : "password"}
+                value={pwd}
+                onChange={(e) => setPwd(e.target.value)}
+                placeholder="At least 8 characters"
+                className="pr-10"
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                onClick={() => setShow((v) => !v)}
+                aria-label={show ? "Hide password" : "Show password"}
+                className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </Field>
+          <Field label="Confirm Password">
+            <Input
+              type={show ? "text" : "password"}
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder="Re-enter new password"
+              autoComplete="new-password"
+            />
+          </Field>
+        </div>
+        <DialogFooter>
+          <button
+            onClick={onClose}
+            className="inline-flex items-center rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={saving}
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover disabled:opacity-60"
+          >
+            <KeyRound className="h-4 w-4" />
+            {saving ? "Resetting…" : "Reset password"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -721,14 +838,17 @@ function IconBtn({
   icon: Icon,
   label,
   tone = "default",
+  onClick,
 }: {
   icon: typeof Eye;
   label: string;
   tone?: "default" | "danger" | "success";
+  onClick?: () => void;
 }) {
   return (
     <button
       title={label}
+      onClick={onClick}
       className={cn(
         "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent transition hover:border-border hover:bg-background",
         tone === "danger" && "text-rose-600 hover:text-rose-700",

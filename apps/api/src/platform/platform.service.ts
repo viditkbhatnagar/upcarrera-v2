@@ -133,7 +133,11 @@ export class PlatformService {
       where: { id },
       data: {
         ...rest,
-        ...(hashedPassword !== undefined ? { password: hashedPassword } : {}),
+        ...(hashedPassword !== undefined
+          ? // Admin setting another user's password invalidates that user's older
+            // sessions (JwtStrategy), same as an explicit reset. Migration 004.
+            { password: hashedPassword, password_changed_at: now }
+          : {}),
         updated_at: now,
       },
     });
@@ -187,6 +191,9 @@ export class PlatformService {
         ...(dto.username !== undefined ? { username: dto.username } : {}),
         prev_password: user.password ?? null,
         password: hashed,
+        // Admin break-glass reset: invalidate the user's existing sessions
+        // (JwtStrategy rejects tokens older than this). Migration 004.
+        password_changed_at: now,
         updated_at: now,
       },
     });
@@ -222,6 +229,10 @@ export class PlatformService {
       data: {
         prev_password: user.password ?? null,
         password: hashed,
+        // A password change invalidates sessions issued before it (JwtStrategy),
+        // including this one — the user re-logs in with the new password. This
+        // closes the "stolen token survives my own password change" gap. Mig 004.
+        password_changed_at: now,
         updated_at: now,
       },
     });

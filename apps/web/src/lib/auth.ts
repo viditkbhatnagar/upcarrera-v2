@@ -24,3 +24,24 @@ export async function login(usernameOrEmail: string, password: string): Promise<
 export function logout(): void {
   clearSession();
 }
+
+/**
+ * Step 1 of self-serve recovery: POST /api/public/auth/forgot-password. Resolves
+ * the same way whether or not the account exists (no enumeration) — the caller
+ * always advances to the code-entry step.
+ */
+export async function requestPasswordReset(identifier: string): Promise<void> {
+  await apiPost("/public/auth/forgot-password", { identifier });
+}
+
+/**
+ * Step 2: POST /api/public/auth/reset-password. Throws ApiError with a generic
+ * message if the code is wrong/expired (also no enumeration).
+ */
+export async function resetPasswordWithOtp(
+  identifier: string,
+  otp: string,
+  password: string,
+): Promise<void> {
+  await apiPost("/public/auth/reset-password", { identifier, otp, password });
+}

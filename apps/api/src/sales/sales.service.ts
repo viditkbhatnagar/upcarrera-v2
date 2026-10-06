@@ -202,6 +202,9 @@ export class SalesService {
       // Preserve the previous hash before overwriting (legacy prev_password).
       prev_password: user.password ?? null,
       password: await bcrypt.hash(dto.password, BCRYPT_ROUNDS),
+      // Admin reset: invalidate the user's existing sessions (JwtStrategy rejects
+      // tokens older than this). Migration 004.
+      password_changed_at: now,
       updated_by: userId,
       updated_at: now,
     };
