@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiPut, apiDelete, ApiError } from "@/lib/api";
 import {
   Download,
   Plus,
@@ -16,10 +16,20 @@ import {
   CalendarX2,
   CalendarClock,
   Users,
+  Layers,
+  Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { useUniversityOptions } from "@/components/applications/catalogs";
 import {
   Dialog,
   DialogContent,
@@ -117,6 +127,9 @@ type Intake = {
   rawYear: number | null;
   /** rawStatus when it is one we recognise, otherwise null. */
   storedStatus: StoredStatus | null;
+  /** IN04: real offering counts from university_course_intake. */
+  mappedUniversities: number;
+  mappedCourses: number;
 };
 
 const INTAKE_STATUSES: IntakeStatus[] = [
@@ -142,7 +155,7 @@ type ApiIntake = {
   start_date: string | null;
   closing_date: string | null;
   status: string | null;
-  /** Always 0 from the API: no intake–university/course mapping exists yet. */
+  /** IN04: real offering counts from university_course_intake (bulk, no N+1). */
   mapped_universities: number;
   mapped_courses: number;
 };
@@ -240,6 +253,8 @@ function mapApiIntake(r: ApiIntake): Intake {
     rawMonth: selectableMonth(r.month),
     rawYear: r.year ?? null,
     storedStatus,
+    mappedUniversities: Number(r.mapped_universities ?? 0),
+    mappedCourses: Number(r.mapped_courses ?? 0),
   };
 }
 
@@ -613,15 +628,24 @@ function IntakesPage() {
   });
   const masterRows = useMemo(() => master.data?.items ?? [], [master.data]);
 
+  // IN04: the live Universities filter (server-side via ?university_id) keeps only
+  // intakes that have at least one offering for the chosen university.
+  const universities = useUniversityOptions();
+  const [filterUniversityId, setFilterUniversityId] = useState<string>("all");
+
   // Intake schedules: GET /api/intakes returns { items, total, page, limit }.
   // This query is the single source of truth for the schedule table — every
   // schedule mutation invalidates it rather than patching a local copy.
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["intakes"],
+    queryKey: ["intakes", filterUniversityId],
     queryFn: () =>
       apiGet<{ items: ApiIntake[]; total: number; page: number; limit: number }>(
         "/intakes",
-        { page: 1, limit: 100 },
+        {
+          page: 1,
+          limit: 100,
+          university_id: filterUniversityId !== "all" ? filterUniversityId : undefined,
+        },
       ),
   });
 
@@ -634,6 +658,8 @@ function IntakesPage() {
   const [viewIntake, setViewIntake] = useState<Intake | null>(null);
   const [editIntake, setEditIntake] = useState<Intake | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Intake | null>(null);
+  // IN04: the intake whose offerings editor is open.
+  const [manageIntake, setManageIntake] = useState<Intake | null>(null);
   /** Add (null) or rename (a row) an intake in the master. */
   const [titleDialog, setTitleDialog] = useState<
     { mode: "add" } | { mode: "rename"; row: ApiIntakeSession } | null
@@ -703,6 +729,7 @@ function IntakesPage() {
     setFilterMonth("all");
     setFilterYear("all");
     setFilterStatus("all");
+    setFilterUniversityId("all");
   };
 
   return (
@@ -842,6 +869,21 @@ function IntakesPage() {
               </SelectContent>
             </Select>
 
+            {/* IN04: live universities filter, applied server-side via ?university_id. */}
+            <Select value={filterUniversityId} onValueChange={setFilterUniversityId}>
+              <SelectTrigger className="w-[190px]">
+                <SelectValue placeholder="University" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Universities</SelectItem>
+                {universities.options.map((u) => (
+                  <SelectItem key={u.value} value={u.value}>
+                    {u.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
             <div className="ml-auto flex items-center gap-2">
               <Button variant="ghost" onClick={handleResetFilters}>
                 Reset
@@ -920,19 +962,35 @@ function IntakesPage() {
                     >
                       {formatDate(i.closingDate)}
                     </TableCell>
-                    {/* No intake–university/course mapping exists yet; the API
-                        reports 0 for every row, which is not a real count. */}
-                    <TableCell className="py-3 text-sm text-muted-foreground" title="Intake–university mapping is not available yet">
-                      —
+                    {/* IN04: real offering counts, each a link into the offerings editor. */}
+                    <TableCell className="py-3 text-sm">
+                      <button
+                        type="button"
+                        onClick={() => setManageIntake(i)}
+                        className="font-medium text-primary hover:underline"
+                        title="Manage this intake's offerings"
+                      >
+                        {i.mappedUniversities}
+                      </button>
                     </TableCell>
-                    <TableCell className="py-3 text-sm text-muted-foreground" title="Intake–course mapping is not available yet">
-                      —
+                    <TableCell className="py-3 text-sm">
+                      <button
+                        type="button"
+                        onClick={() => setManageIntake(i)}
+                        className="font-medium text-primary hover:underline"
+                        title="Manage this intake's offerings"
+                      >
+                        {i.mappedCourses}
+                      </button>
                     </TableCell>
                     <TableCell className="py-3">
                       <StatusBadge status={i.status} />
                     </TableCell>
                     <TableCell className="py-3 pr-4 text-right">
                       <div className="flex items-center justify-end gap-1">
+                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Manage offerings" onClick={() => setManageIntake(i)}>
+                          <Layers className="h-4 w-4" />
+                        </Button>
                         <Button variant="ghost" size="icon" className="h-8 w-8" title="View" onClick={() => setViewIntake(i)}>
                           <Eye className="h-4 w-4" />
                         </Button>
@@ -974,6 +1032,12 @@ function IntakesPage() {
       />
 
       <ViewIntakeDialog intake={viewIntake} onClose={() => setViewIntake(null)} />
+
+      <ManageOfferingsDialog
+        intake={manageIntake}
+        allIntakes={intakes}
+        onClose={() => setManageIntake(null)}
+      />
 
       {editIntake && (
         <EditIntakeDialog
@@ -1177,6 +1241,314 @@ function MasterIntakeSection({
  * the RAW stored title — never from the "Untitled intake" placeholder — and
  * sends nothing when the title is unchanged.
  */
+/* ------------------------------------------------------------------ *
+ * IN04 — offerings editor (which university × course pairs are open
+ * for admission in an intake). PUT /intakes/:id/offerings replaces the
+ * whole set; POST /intakes/:id/offerings/copy copies from another intake.
+ * ------------------------------------------------------------------ */
+
+interface OfferingsResponse {
+  intake_id: number;
+  universities: Array<{
+    university_id: number;
+    university_title: string | null;
+    courses: Array<{
+      course_id: number;
+      label: string | null;
+      university_course_name: string | null;
+    }>;
+  }>;
+  total_pairs: number;
+}
+
+interface TaggedCourseRow {
+  course_id: number;
+  title: string | null;
+  university_course_name: string | null;
+  status: number | null;
+}
+
+/** A university's active tagged courses, with per-course offering checkboxes. */
+function UniversityCoursePicker({
+  universityId,
+  selected,
+  onToggle,
+  onToggleAll,
+}: {
+  universityId: number;
+  selected: Set<string>;
+  onToggle: (uid: number, cid: number, checked: boolean) => void;
+  onToggleAll: (uid: number, courseIds: number[], checked: boolean) => void;
+}) {
+  const query = useQuery({
+    queryKey: ["university-tagged-courses", universityId],
+    queryFn: () => apiGet<TaggedCourseRow[]>(`/universities/${universityId}/courses`),
+  });
+  // Only active (not paused) tags can be offered; the server rejects paused ones.
+  const courses = (query.data ?? []).filter((c) => c.status !== 0);
+  const courseIds = courses.map((c) => c.course_id);
+  const selectedCount = courses.filter((c) =>
+    selected.has(`${universityId}:${c.course_id}`),
+  ).length;
+  const allChecked = courses.length > 0 && selectedCount === courses.length;
+
+  if (query.isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" /> Loading courses…
+      </div>
+    );
+  }
+  if (query.isError) {
+    return (
+      <p className="py-2 text-xs text-red-500">
+        {query.error instanceof Error ? query.error.message : "Couldn’t load courses."}
+      </p>
+    );
+  }
+  if (courses.length === 0) {
+    return (
+      <p className="py-2 text-xs text-muted-foreground">
+        No active tagged courses — tag courses on the university page first.
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      <label className="flex items-center gap-2 border-b border-border pb-1.5 text-xs font-medium text-foreground">
+        <Checkbox
+          checked={allChecked}
+          onCheckedChange={(v) => onToggleAll(universityId, courseIds, v === true)}
+        />
+        Select all ({courses.length})
+      </label>
+      {courses.map((c) => (
+        <label key={c.course_id} className="flex items-center gap-2 text-sm">
+          <Checkbox
+            checked={selected.has(`${universityId}:${c.course_id}`)}
+            onCheckedChange={(v) => onToggle(universityId, c.course_id, v === true)}
+          />
+          <span className="text-foreground">
+            {c.university_course_name ?? c.title ?? `Course #${c.course_id}`}
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+/** One accordion row per university; its tagged courses load when it is expanded. */
+function UniversityOfferingItem({
+  universityId,
+  title,
+  selected,
+  onToggle,
+  onToggleAll,
+}: {
+  universityId: number;
+  title: string;
+  selected: Set<string>;
+  onToggle: (uid: number, cid: number, checked: boolean) => void;
+  onToggleAll: (uid: number, courseIds: number[], checked: boolean) => void;
+}) {
+  const selectedCount = useMemo(() => {
+    const prefix = `${universityId}:`;
+    let n = 0;
+    for (const k of selected) if (k.startsWith(prefix)) n += 1;
+    return n;
+  }, [selected, universityId]);
+  return (
+    <AccordionItem value={String(universityId)}>
+      <AccordionTrigger className="text-sm hover:no-underline">
+        <span className="flex-1 text-left font-medium">{title}</span>
+        {selectedCount > 0 && (
+          <Badge variant="secondary" className="mr-2 text-[10px]">
+            {selectedCount}
+          </Badge>
+        )}
+      </AccordionTrigger>
+      <AccordionContent>
+        <UniversityCoursePicker
+          universityId={universityId}
+          selected={selected}
+          onToggle={onToggle}
+          onToggleAll={onToggleAll}
+        />
+      </AccordionContent>
+    </AccordionItem>
+  );
+}
+
+/** The offerings editor dialog for one intake. */
+function ManageOfferingsDialog({
+  intake,
+  allIntakes,
+  onClose,
+}: {
+  intake: Intake | null;
+  allIntakes: Intake[];
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const universities = useUniversityOptions();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [copyFrom, setCopyFrom] = useState<string>("");
+
+  const offeringsQuery = useQuery({
+    queryKey: ["intake-offerings", intake?.id ?? null],
+    queryFn: () => apiGet<OfferingsResponse>(`/intakes/${intake?.id}/offerings`),
+    enabled: intake != null,
+  });
+
+  // Seed the selection from the current offerings whenever they (re)load.
+  useEffect(() => {
+    if (!offeringsQuery.data) return;
+    const next = new Set<string>();
+    for (const u of offeringsQuery.data.universities) {
+      for (const c of u.courses) next.add(`${u.university_id}:${c.course_id}`);
+    }
+    setSelected(next);
+  }, [offeringsQuery.data]);
+
+  const toggle = (uid: number, cid: number, checked: boolean) =>
+    setSelected((prev) => {
+      const n = new Set(prev);
+      const k = `${uid}:${cid}`;
+      if (checked) n.add(k);
+      else n.delete(k);
+      return n;
+    });
+  const toggleAll = (uid: number, courseIds: number[], checked: boolean) =>
+    setSelected((prev) => {
+      const n = new Set(prev);
+      for (const cid of courseIds) {
+        const k = `${uid}:${cid}`;
+        if (checked) n.add(k);
+        else n.delete(k);
+      }
+      return n;
+    });
+
+  const saveMut = useMutation({
+    mutationFn: () => {
+      const offerings = [...selected].map((k) => {
+        const [u, c] = k.split(":");
+        return { university_id: Number(u), course_id: Number(c) };
+      });
+      return apiPut(`/intakes/${intake?.id}/offerings`, { offerings });
+    },
+    onSuccess: () => {
+      toast.success("Offerings updated");
+      qc.invalidateQueries({ queryKey: ["intakes"] });
+      void offeringsQuery.refetch();
+      onClose();
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Couldn’t save offerings"),
+  });
+
+  const copyMut = useMutation({
+    mutationFn: () =>
+      apiPost(`/intakes/${intake?.id}/offerings/copy`, {
+        from_intake_id: Number(copyFrom),
+      }),
+    onSuccess: () => {
+      toast.success("Offerings copied");
+      setCopyFrom("");
+      qc.invalidateQueries({ queryKey: ["intakes"] });
+      void offeringsQuery.refetch();
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Couldn’t copy offerings"),
+  });
+
+  const copyOptions = allIntakes.filter((x) => x.id !== intake?.id);
+
+  return (
+    <Dialog open={intake != null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-[640px]">
+        <DialogHeader>
+          <DialogTitle>Manage offerings — {intake?.name}</DialogTitle>
+          <DialogDescription>
+            Choose which university × course pairs are open for admission in this
+            intake.{" "}
+            <span className="font-medium text-foreground">{selected.size} selected</span>.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex items-center gap-2 border-b border-border pb-3">
+          <Copy className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <Select value={copyFrom} onValueChange={setCopyFrom}>
+            <SelectTrigger className="h-9 flex-1">
+              <SelectValue placeholder="Copy offerings from intake…" />
+            </SelectTrigger>
+            <SelectContent>
+              {copyOptions.length === 0 ? (
+                <SelectItem value="none" disabled>
+                  No other intakes
+                </SelectItem>
+              ) : (
+                copyOptions.map((x) => (
+                  <SelectItem key={x.id} value={String(x.id)}>
+                    {x.name}
+                  </SelectItem>
+                ))
+              )}
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!copyFrom || copyMut.isPending}
+            onClick={() => copyMut.mutate()}
+          >
+            {copyMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Copy"}
+          </Button>
+        </div>
+
+        <div className="-mx-1 flex-1 overflow-y-auto px-1">
+          {offeringsQuery.isLoading ? (
+            <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading offerings…
+            </div>
+          ) : universities.options.length === 0 ? (
+            <p className="py-6 text-sm text-muted-foreground">No universities available.</p>
+          ) : (
+            <Accordion type="multiple" className="w-full">
+              {universities.options.map((u) => (
+                <UniversityOfferingItem
+                  key={u.value}
+                  universityId={Number(u.value)}
+                  title={u.label}
+                  selected={selected}
+                  onToggle={toggle}
+                  onToggleAll={toggleAll}
+                />
+              ))}
+            </Accordion>
+          )}
+        </div>
+
+        <DialogFooter className="border-t border-border pt-3">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => saveMut.mutate()}
+            disabled={saveMut.isPending || offeringsQuery.isLoading}
+          >
+            {saveMut.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              `Save offerings (${selected.size})`
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function IntakeTitleDialog({
   target,
   existing,
@@ -1576,11 +1948,11 @@ function ViewIntakeDialog({ intake, onClose }: { intake: Intake | null; onClose:
             </div>
             <div>
               <p className="text-muted-foreground">Mapped Universities</p>
-              <p className="text-muted-foreground">Not available yet</p>
+              <p className="font-medium text-foreground">{intake.mappedUniversities}</p>
             </div>
             <div>
               <p className="text-muted-foreground">Mapped Courses</p>
-              <p className="text-muted-foreground">Not available yet</p>
+              <p className="font-medium text-foreground">{intake.mappedCourses}</p>
             </div>
             <div>
               <p className="text-muted-foreground">Status</p>

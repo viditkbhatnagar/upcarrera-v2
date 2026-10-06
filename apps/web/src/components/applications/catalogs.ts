@@ -295,3 +295,80 @@ export function labelOf(options: CatalogOption[], value: string | null | undefin
   if (!value) return null;
   return options.find((o) => o.value === value)?.label ?? null;
 }
+
+/* ---------------- Admission catalog cascade (Add Lead, IN04) ---------------- */
+//
+// Add Lead cascades university -> course -> OPEN intake through the three
+// /admission-catalog endpoints, keyed by id. Only universities/courses/intakes
+// that have a live, OPEN offering (university_course_intake) surface, so a lead
+// can never be saved against a closed or untagged combination. Intake selection
+// sends applications.intake_id; the server dual-writes session_id.
+
+interface AdmissionUniversityRow {
+  id: number;
+  title: string | null;
+}
+interface AdmissionCourseRow {
+  course_id: number;
+  label: string | null;
+}
+interface AdmissionIntakeRow {
+  id: number;
+  name: string | null;
+}
+
+/** Step 1 — universities with at least one open offering. */
+export function useAdmissionUniversityOptions() {
+  const query = useQuery({
+    queryKey: ["admission-catalog", "universities"],
+    queryFn: () => apiGet<AdmissionUniversityRow[]>("/admission-catalog/universities"),
+    staleTime: CATALOG_STALE_MS,
+  });
+  const options = useMemo(
+    () =>
+      toOptions(query.data, (u) => u.id, (u) => u.title).sort((a, b) =>
+        a.label.localeCompare(b.label),
+      ),
+    [query.data],
+  );
+  return { ...query, options };
+}
+
+/** Step 2 — that university's courses with an open offering (keyed by course_id). */
+export function useAdmissionCourseOptions(universityId: string | null | undefined) {
+  const query = useQuery({
+    queryKey: ["admission-catalog", "courses", universityId ?? null],
+    queryFn: () =>
+      apiGet<AdmissionCourseRow[]>(
+        `/admission-catalog/universities/${universityId}/courses`,
+      ),
+    enabled: !!universityId,
+    staleTime: CATALOG_STALE_MS,
+  });
+  const options = useMemo(
+    () => toOptions(query.data, (c) => c.course_id, (c) => c.label),
+    [query.data],
+  );
+  return { ...query, options };
+}
+
+/** Step 3 — the open intakes for a (university, course) pair (keyed by intake id). */
+export function useAdmissionIntakeOptions(
+  universityId: string | null | undefined,
+  courseId: string | null | undefined,
+) {
+  const query = useQuery({
+    queryKey: ["admission-catalog", "intakes", universityId ?? null, courseId ?? null],
+    queryFn: () =>
+      apiGet<AdmissionIntakeRow[]>(
+        `/admission-catalog/universities/${universityId}/courses/${courseId}/intakes`,
+      ),
+    enabled: !!universityId && !!courseId,
+    staleTime: CATALOG_STALE_MS,
+  });
+  const options = useMemo(
+    () => toOptions(query.data, (i) => i.id, (i) => i.name),
+    [query.data],
+  );
+  return { ...query, options };
+}

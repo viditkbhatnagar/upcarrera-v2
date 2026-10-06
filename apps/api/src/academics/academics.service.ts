@@ -39,6 +39,8 @@ import {
 import { UpdateIntakeDto } from './dto/update-intake.dto';
 import { CreateGroupCourseDto } from './dto/create-group-course.dto';
 import { UpdateGroupCourseDto } from './dto/update-group-course.dto';
+import { IntakeListQueryDto } from './dto/intake-list-query.dto';
+import { UniversityCourseService } from './university-course.service';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -122,7 +124,10 @@ export function parseSpecialisationNames(raw: string | null | undefined): string
  */
 @Injectable()
 export class AcademicsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly universityCourse: UniversityCourseService,
+  ) {}
 
   /** Resolves page/limit into a normalised { page, limit, skip, take }. */
   private resolvePaging(query: Pagination) {
@@ -175,14 +180,20 @@ export class AcademicsService {
       }),
       this.prisma.course.count({ where }),
     ]);
-    const names = await this.universityNames(items.map((c) => c.university_id));
-    // Additive: every row gains `university_name` (null when the course has no
-    // university_id or it no longer resolves). `course.university_id` is a
-    // single FK, so a course belongs to at most ONE university.
+    const [names, mappedCounts] = await Promise.all([
+      this.universityNames(items.map((c) => c.university_id)),
+      // IN04: real count of universities that OFFER (tag) this course, from the
+      // university_course mapping table (ONE bulk groupBy, no N+1). Replaces the
+      // hardcoded `mappedUniversities: 0` the Courses screen used to display.
+      this.universityCourse.mappedUniversitiesCountByCourse(items.map((c) => c.id)),
+    ]);
+    // Additive: every row gains `university_name` (the legacy single FK, kept for
+    // back-compat) and `mapped_universities_count` (the M:N mapping truth).
     const decorated = items.map((c) => ({
       ...c,
       university_name:
         c.university_id != null ? (names.get(c.university_id) ?? null) : null,
+      mapped_universities_count: mappedCounts.get(c.id) ?? 0,
     }));
     return this.paginated(decorated, total, page, limit);
   }
@@ -352,38 +363,6 @@ export class AcademicsService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Derive the number of intakes from the free-form `university.intakes` Text
-   * blob. The legacy column is a textarea blob with no fixed format, so we parse
-   * leniently:
-   *   - a JSON array -> its length
-   *   - otherwise -> count of non-empty tokens split on commas/newlines/pipes
-   *   - null / empty / unparseable -> 0
-   */
-  private deriveIntakesCount(raw: string | null | undefined): number {
-    if (raw == null) return 0;
-    const trimmed = raw.trim();
-    if (trimmed === '') return 0;
-
-    if (trimmed.startsWith('[')) {
-      try {
-        const parsed: unknown = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) {
-          return parsed.filter(
-            (v) => v != null && String(v).trim() !== '',
-          ).length;
-        }
-      } catch {
-        // fall through to delimiter-based counting
-      }
-    }
-
-    return trimmed
-      .split(/[\n,|]+/)
-      .map((s) => s.trim())
-      .filter((s) => s !== '').length;
-  }
-
-  /**
    * GET /universities — paginated catalog of active universities, each item
    * decorated with:
    *   - tagged_courses_count: number of active (deleted_at null) `course` rows
@@ -406,34 +385,23 @@ export class AcademicsService {
       this.prisma.university.count({ where: { deleted_at: null } }),
     ]);
 
-    // Collect the page's university ids and resolve tagged-course counts in a
-    // single bulk groupBy keyed by course.university_id.
+    // IN04: tagged_courses_count and intakes_count now come from the mapping
+    // tables (university_course / university_course_intake), not from the legacy
+    // course.university_id column or the free-text university.intakes blob.
+    //   - tagged_courses_count: live university_course rows for the university.
+    //   - intakes_count:        distinct OPEN offering intakes for the university.
+    // Both resolved in bulk (no N+1) by UniversityCourseService.
     const universityIds = rows.map((u) => u.id);
-    const courseCounts =
-      universityIds.length > 0
-        ? await this.prisma.course.groupBy({
-            by: ['university_id'],
-            where: {
-              university_id: { in: universityIds },
-              deleted_at: null,
-            },
-            _count: { _all: true },
-          })
-        : [];
-    const taggedCountByUniversityId = new Map<number, number>(
-      courseCounts
-        .filter(
-          (c): c is typeof c & { university_id: number } =>
-            c.university_id != null,
-        )
-        .map((c) => [c.university_id, c._count._all]),
-    );
+    const counts = await this.universityCourse.universityCatalogCounts(universityIds);
 
-    const items = rows.map((university) => ({
-      ...university,
-      tagged_courses_count: taggedCountByUniversityId.get(university.id) ?? 0,
-      intakes_count: this.deriveIntakesCount(university.intakes),
-    }));
+    const items = rows.map((university) => {
+      const c = counts.get(university.id);
+      return {
+        ...university,
+        tagged_courses_count: c?.tagged_courses ?? 0,
+        intakes_count: c?.open_intakes ?? 0,
+      };
+    });
 
     return this.paginated(items, total, page, limit);
   }
@@ -1485,23 +1453,45 @@ export class AcademicsService {
 
   // ---- intakes (admission cycles) ----------------------------------------
 
-  async listIntakes(query: Pagination): Promise<Paginated<unknown>> {
+  async listIntakes(query: IntakeListQueryDto): Promise<Paginated<unknown>> {
     const { page, limit, skip, take } = this.resolvePaging(query);
+
+    // IN04 ?university_id: keep only intakes that have a live offering for that
+    // university (the Intakes screen's server-side universities filter).
+    const where: { deleted_at: null; id?: { in: number[] } } = { deleted_at: null };
+    if (query.university_id != null) {
+      const intakeIds = await this.universityCourse.intakeIdsForUniversity(
+        query.university_id,
+      );
+      if (intakeIds.length === 0) {
+        return this.paginated([], 0, page, limit);
+      }
+      where.id = { in: intakeIds };
+    }
+
     const [rows, total] = await Promise.all([
       this.prisma.intake.findMany({
-        where: { deleted_at: null },
+        where,
         orderBy: { id: 'desc' },
         skip,
         take,
       }),
-      this.prisma.intake.count({ where: { deleted_at: null } }),
+      this.prisma.intake.count({ where }),
     ]);
-    // No intake<->university/course mapping tables yet, so counts are 0.
-    const items = rows.map((r) => ({
-      ...r,
-      mapped_universities: 0,
-      mapped_courses: 0,
-    }));
+
+    // IN04: real mapped counts from university_course_intake (bulk, no N+1),
+    // replacing the hardcoded zeros.
+    const counts = await this.universityCourse.intakeOfferingCounts(
+      rows.map((r) => r.id),
+    );
+    const items = rows.map((r) => {
+      const c = counts.get(r.id);
+      return {
+        ...r,
+        mapped_universities: c?.universities ?? 0,
+        mapped_courses: c?.courses ?? 0,
+      };
+    });
     return this.paginated(items, total, page, limit);
   }
 

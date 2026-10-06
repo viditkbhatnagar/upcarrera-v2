@@ -7,7 +7,20 @@ export interface ApplicationReferenceInput {
   course_id?: number | null;
   specialisation_id?: number | null;
   session_id?: number | null;
+  intake_id?: number | null;
   pipeline_user?: number | null;
+}
+
+/** Options for {@link assertApplicationReferences}. */
+export interface AssertReferencesOptions {
+  /**
+   * Skip the legacy course.university_id ↔ university consistency throw. Passed
+   * when an IN04 offering (university_course_intake) has already PROVEN the
+   * (university, course) pair is a live tag, since the mapping tables — not
+   * course.university_id — are the source of truth for tagging (a course may be
+   * tagged to a different university than its legacy course.university_id).
+   */
+  skipUniversityCourseConsistency?: boolean;
 }
 
 /** The current values of those references on the row being edited. */
@@ -49,6 +62,7 @@ export async function assertApplicationReferences(
   prisma: PrismaService,
   dto: ApplicationReferenceInput,
   existing: ApplicationReferenceState | null,
+  opts: AssertReferencesOptions = {},
 ): Promise<void> {
   const current = existing ?? NO_REFERENCES;
   const touchesProgramme =
@@ -113,6 +127,7 @@ export async function assertApplicationReferences(
   }
 
   if (
+    !opts.skipUniversityCourseConsistency &&
     course?.university_id != null &&
     universityId != null &&
     course.university_id !== universityId
@@ -130,6 +145,83 @@ export async function assertApplicationReferences(
       'The specialisation does not belong to the selected course',
     );
   }
+}
+
+/** The intake resolved for an application write: the id, and the legacy session it mirrors. */
+export interface ResolvedApplicationIntake {
+  intake_id: number;
+  /** intake.session_id (the legacy sessions bridge), or null when not yet linked. */
+  session_id: number | null;
+}
+
+/**
+ * IN04 — validate that (university_id, course_id, intake_id) is a live, active
+ * offering (university_course_intake) before an application stores intake_id, and
+ * return the intake's legacy session_id so the caller can dual-write
+ * applications.session_id (keeping legacy displays/joins working).
+ *
+ * 400s (naming the problem) when the intake does not exist, when a university or
+ * course is not yet chosen, or when the triple is not an open offering. Never
+ * writes course.university_id — the mapping tables are the source of truth.
+ */
+export async function resolveApplicationIntake(
+  prisma: PrismaService,
+  params: {
+    universityId: number | null | undefined;
+    courseId: number | null | undefined;
+    intakeId: number;
+  },
+): Promise<ResolvedApplicationIntake> {
+  const { universityId, courseId, intakeId } = params;
+
+  const intake = await prisma.intake.findFirst({
+    where: { id: intakeId, deleted_at: null },
+    select: { id: true, session_id: true },
+  });
+  if (!intake) {
+    throw new BadRequestException(`Intake ${intakeId} does not exist`);
+  }
+  if (universityId == null || courseId == null) {
+    throw new BadRequestException(
+      'Select a university and course before choosing an intake.',
+    );
+  }
+
+  // WS3 LOW 5: the (university, course) tag itself must be live and active — a
+  // paused or soft-deleted tag must not accept new leads, consistent with the
+  // Add Lead cascade (catalogIntakes/catalogCourses filter on the active tag).
+  const liveTag = await prisma.university_course.findFirst({
+    where: {
+      university_id: universityId,
+      course_id: courseId,
+      deleted_at: null,
+      status: 1,
+    },
+    select: { id: true },
+  });
+  if (!liveTag) {
+    throw new BadRequestException(
+      'This course is not active for the selected university.',
+    );
+  }
+
+  const offering = await prisma.university_course_intake.findFirst({
+    where: {
+      university_id: universityId,
+      course_id: courseId,
+      intake_id: intakeId,
+      deleted_at: null,
+      status: 1,
+    },
+    select: { id: true },
+  });
+  if (!offering) {
+    throw new BadRequestException(
+      'This course is not open for the selected intake.',
+    );
+  }
+
+  return { intake_id: intakeId, session_id: intake.session_id ?? null };
 }
 
 /**

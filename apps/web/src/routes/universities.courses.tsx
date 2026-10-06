@@ -45,6 +45,13 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/universities/courses")({
@@ -83,6 +90,8 @@ type Course = {
   duration: string;
   /** course.university_id is a single FK — the one university, or "—". */
   university: string;
+  /** IN04: number of universities that OFFER (tag) this course (M:N mapping table). */
+  mappedUniversities: number;
   studyMode: string;
   status: CourseStatus;
   // --- RAW server values ---------------------------------------------------
@@ -173,6 +182,8 @@ interface ApiCourseRow {
   eligibility_criteria?: string | null;
   university_id: number | string | null;
   university_name?: string | null;
+  /** IN04: real count of universities that tag this course (academics listCourses). */
+  mapped_universities_count?: number | null;
   status: number | string | null;
 }
 
@@ -406,6 +417,7 @@ function mapApiCourse(r: ApiCourseRow): Course {
       (r.university_id != null && String(r.university_id).trim() !== ""
         ? `University #${r.university_id}`
         : "—"),
+    mappedUniversities: Number(r.mapped_universities_count ?? 0),
     studyMode: (r.study_mode ?? "").trim() || "—",
     status: toCourseStatus(status),
     // Raw columns, one-to-one with what the PATCH writes. Every value above is
@@ -887,6 +899,8 @@ function CoursesPage() {
 
   const [editCourse, setEditCourse] = useState<Course | null>(null);
   const [viewCourse, setViewCourse] = useState<Course | null>(null);
+  // IN04: the course whose "N Universities" drawer is open.
+  const [universitiesCourse, setUniversitiesCourse] = useState<Course | null>(null);
   const [editGroup, setEditGroup] = useState<Group | null>(null);
   const [editSpec, setEditSpec] = useState<Specialisation | null>(null);
 
@@ -1158,7 +1172,21 @@ function CoursesPage() {
                           </span>
                         </TableCell>
                         <TableCell className="py-3 text-sm">{c.duration}</TableCell>
-                        <TableCell className="py-3 text-sm">{c.university}</TableCell>
+                        <TableCell className="py-3 text-sm">
+                          {c.mappedUniversities > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setUniversitiesCourse(c)}
+                              className="font-medium text-primary hover:underline"
+                              title="View the universities offering this course"
+                            >
+                              {c.mappedUniversities}{" "}
+                              {c.mappedUniversities === 1 ? "University" : "Universities"}
+                            </button>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         <TableCell className="py-3">
                           <div className="flex items-center gap-2">
                             <Switch
@@ -1395,6 +1423,11 @@ function CoursesPage() {
           setViewCourse(null);
           setEditCourse(c);
         }}
+      />
+
+      <CourseUniversitiesDrawer
+        course={universitiesCourse}
+        onClose={() => setUniversitiesCourse(null)}
       />
 
       <EditCourseDialog
@@ -1698,6 +1731,89 @@ function DetailField({
       </dt>
       <dd className="mt-1 text-sm text-foreground">{children}</dd>
     </div>
+  );
+}
+
+// IN04: one university offering a course (GET /courses/:id/universities).
+interface CourseUniversityRow {
+  university_id: number;
+  university_title: string | null;
+  university_course_name: string | null;
+  status: number | null;
+  open_intake_count: number;
+}
+
+/**
+ * IN04 — the universities that offer a course, in a side drawer. Fed by
+ * GET /courses/:id/universities (the M:N university_course mapping), it shows
+ * each university's own name for the programme and its open-intake count.
+ */
+function CourseUniversitiesDrawer({
+  course,
+  onClose,
+}: {
+  course: Course | null;
+  onClose: () => void;
+}) {
+  const query = useQuery({
+    queryKey: ["course-universities", course?.id ?? null],
+    queryFn: () => apiGet<CourseUniversityRow[]>(`/courses/${course?.id}/universities`),
+    enabled: course != null,
+  });
+  const rows = query.data ?? [];
+  return (
+    <Sheet open={course != null} onOpenChange={(open) => (!open ? onClose() : undefined)}>
+      <SheetContent className="w-full sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>Universities offering this course</SheetTitle>
+          <SheetDescription>{course?.name ?? ""}</SheetDescription>
+        </SheetHeader>
+        <div className="mt-4 space-y-2 overflow-y-auto">
+          {query.isLoading ? (
+            <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+            </div>
+          ) : query.isError ? (
+            <div className="flex items-center gap-2 py-6 text-sm text-red-500">
+              <AlertTriangle className="h-4 w-4" />
+              {query.error instanceof Error ? query.error.message : "Couldn’t load universities."}
+            </div>
+          ) : rows.length === 0 ? (
+            <p className="py-6 text-sm text-muted-foreground">
+              No universities offer this course yet.
+            </p>
+          ) : (
+            rows.map((u) => (
+              <div
+                key={u.university_id}
+                className="flex items-center justify-between rounded-lg border border-border bg-surface px-3 py-2.5"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-foreground">
+                    {u.university_title ?? `University #${u.university_id}`}
+                  </div>
+                  {u.university_course_name && (
+                    <div className="truncate text-[11px] text-muted-foreground">
+                      as “{u.university_course_name}”
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 pl-3">
+                  {u.status === 0 && (
+                    <Badge variant="outline" className="text-[10px]">
+                      Paused
+                    </Badge>
+                  )}
+                  <Badge variant="secondary" className="whitespace-nowrap text-[10px]">
+                    {u.open_intake_count} open intake{u.open_intake_count === 1 ? "" : "s"}
+                  </Badge>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 

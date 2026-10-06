@@ -36,6 +36,8 @@ import { CreateEnrolmentDto } from './dto/create-enrolment.dto';
 import {
   assertApplicationReferences,
   changesProgramme,
+  resolveApplicationIntake,
+  type ResolvedApplicationIntake,
 } from './application-references';
 import { AuditService } from '../workflow/audit.service';
 import { StageEngineService } from '../workflow/stage-engine.service';
@@ -852,6 +854,7 @@ export class StudentsService {
       course_id: number | null;
       university_id: number | null;
       session_id: number | null;
+      intake_id: number | null;
       name: string | null;
       email: string | null;
       phone: string | null;
@@ -887,15 +890,21 @@ export class StudentsService {
       ),
     ];
 
-    // sessions PK is session_id (NOT id); applications.session_id is the intake.
+    // sessions PK is session_id (NOT id); applications.session_id is the legacy intake.
     const sessionIds = [
       ...new Set(
         rows.map((r) => r.session_id).filter((s): s is number => s != null),
       ),
     ];
+    // IN04: applications.intake_id is the v2 intake master (intake.name).
+    const intakeIds = [
+      ...new Set(
+        rows.map((r) => r.intake_id).filter((i): i is number => i != null),
+      ),
+    ];
 
     // ONE bulk query per related table.
-    const [users, courses, sessions] = await Promise.all([
+    const [users, courses, sessions, intakes] = await Promise.all([
       userIds.length > 0
         ? this.prisma.users.findMany({
             where: { id: { in: userIds } },
@@ -912,6 +921,12 @@ export class StudentsService {
         ? this.prisma.sessions.findMany({
             where: { session_id: { in: sessionIds } },
             select: { session_id: true, session_title: true },
+          })
+        : Promise.resolve([]),
+      intakeIds.length > 0
+        ? this.prisma.intake.findMany({
+            where: { id: { in: intakeIds } },
+            select: { id: true, name: true },
           })
         : Promise.resolve([]),
     ]);
@@ -950,6 +965,7 @@ export class StudentsService {
     const sessionTitleById = new Map(
       sessions.map((s) => [s.session_id, s.session_title ?? null]),
     );
+    const intakeNameById = new Map(intakes.map((i) => [i.id, i.name ?? null]));
 
     return rows.map((row) => {
       const consultantId = consultantIdFor(row);
@@ -982,6 +998,15 @@ export class StudentsService {
           row.session_id != null
             ? (sessionTitleById.get(row.session_id) ?? null)
             : null,
+        // IN04: the v2 intake name (intake.name), falling back to the legacy
+        // session_title for rows created before intake_id existed.
+        intake_name:
+          (row.intake_id != null
+            ? (intakeNameById.get(row.intake_id) ?? null)
+            : null) ??
+          (row.session_id != null
+            ? (sessionTitleById.get(row.session_id) ?? null)
+            : null),
         // Human lifecycle label.
         status_label: applicationStatusLabel(row),
         // Phase 1 stage engine (migration 002): the effective stage, its number
@@ -2368,7 +2393,7 @@ export class StudentsService {
    */
   async createApplication(dto: CreateApplicationDto, actorUserId: number) {
     const now = new Date();
-    const { dob, enrollment_date, ...rest } = dto;
+    const { dob, enrollment_date, intake_id, session_id, ...rest } = dto;
 
     // Spec 4.2 / QA AP10: one applicant, one application. If the mobile or email
     // is already on an application, refuse and name it (and its counsellor) so
@@ -2382,7 +2407,37 @@ export class StudentsService {
     if (existing.duplicate) {
       throw new ConflictException(this.duplicateMessage(existing.matches[0]));
     }
-    await assertApplicationReferences(this.prisma, dto, null);
+
+    // IN04: when an intake is chosen, validate the (university, course, intake)
+    // offering and capture the legacy session to dual-write. The offering proves
+    // the (university, course) pair, so the legacy course.university_id check is
+    // skipped (the mapping tables are the source of truth).
+    const resolvedIntake =
+      intake_id != null
+        ? await resolveApplicationIntake(this.prisma, {
+            universityId: dto.university_id,
+            courseId: dto.course_id,
+            intakeId: intake_id,
+          })
+        : null;
+    await assertApplicationReferences(this.prisma, dto, null, {
+      skipUniversityCourseConsistency: resolvedIntake !== null,
+    });
+
+    // Dual-write: a chosen intake linked to a legacy session keeps
+    // applications.session_id in sync; otherwise honour an explicit session_id.
+    //
+    // WS3 LOW 6: when the chosen intake has session_id NULL, applications.session_id
+    // is left null, so legacy session-based filters/joins simply show nothing for
+    // this row. This is intentional — the row carries intake_id and the UI resolves
+    // intake_name from it; the Add Lead cascade prefers showing intake_name over the
+    // legacy session. No behaviour change needed here.
+    let sessionIdToWrite: number | null | undefined;
+    if (resolvedIntake && resolvedIntake.session_id != null) {
+      sessionIdToWrite = resolvedIntake.session_id;
+    } else if (session_id !== undefined) {
+      sessionIdToWrite = session_id;
+    }
 
     // The creator's fresh role, for the 'created' stage-log actor (CRITIQUE #3).
     const creatorScope = await this.access.scopeFor({ userId: actorUserId });
@@ -2399,6 +2454,9 @@ export class StudentsService {
           ...(dto.phone !== undefined
             ? { phone_normalized: normalizeIndianMobile(dto.phone) }
             : {}),
+          // IN04: the validated intake + the dual-written legacy session.
+          ...(intake_id !== undefined ? { intake_id: intake_id ?? null } : {}),
+          ...(sessionIdToWrite !== undefined ? { session_id: sessionIdToWrite } : {}),
           is_converted: 0,
           is_archived: false,
           // CRITIQUE #3: a new lead enters the workflow at stage 1 (lead_added), so
@@ -2600,7 +2658,54 @@ export class StudentsService {
     const existing = await this.getApplication(applicationId);
     const scope = await this.assertEditableStage(existing, user);
     const actorUserId = Number(user.userId ?? user.id);
-    await assertApplicationReferences(this.prisma, dto, existing);
+
+    // IN04: validate the offering against the EFFECTIVE (post-save) university and
+    // course — either the ones sent in this PATCH, or the ones already stored.
+    const effectiveUniversityId =
+      dto.university_id !== undefined ? dto.university_id : existing.university_id;
+    const effectiveCourseId =
+      dto.course_id !== undefined ? dto.course_id : existing.course_id;
+    const resolvedIntake: ResolvedApplicationIntake | null =
+      dto.intake_id != null
+        ? await resolveApplicationIntake(this.prisma, {
+            universityId: effectiveUniversityId,
+            courseId: effectiveCourseId,
+            intakeId: dto.intake_id,
+          })
+        : null;
+
+    // WS3 MEDIUM 2: a PATCH that changes the effective university or course
+    // WITHOUT sending intake_id can leave the stored intake_id (and its
+    // dual-written session_id) pointing at an offering that no longer matches the
+    // new pair. Re-validate the stored intake against the new pair: keep it if it
+    // is still a live offering, else clear it (and the dual-written session) so
+    // the invariant "intake_id always matches a live offering" holds.
+    let clearStaleIntake = false;
+    if (dto.intake_id === undefined && existing.intake_id != null) {
+      const pairChanged =
+        effectiveUniversityId !== existing.university_id ||
+        effectiveCourseId !== existing.course_id;
+      if (pairChanged) {
+        const stillLive =
+          effectiveUniversityId != null && effectiveCourseId != null
+            ? await this.prisma.university_course_intake.findFirst({
+                where: {
+                  university_id: effectiveUniversityId,
+                  course_id: effectiveCourseId,
+                  intake_id: existing.intake_id,
+                  deleted_at: null,
+                  status: 1,
+                },
+                select: { id: true },
+              })
+            : null;
+        if (!stillLive) clearStaleIntake = true;
+      }
+    }
+
+    await assertApplicationReferences(this.prisma, dto, existing, {
+      skipUniversityCourseConsistency: resolvedIntake !== null,
+    });
     const changes = this.audit.diff(
       existing as unknown as Record<string, unknown>,
       dto as unknown as Record<string, unknown>,
@@ -2611,6 +2716,18 @@ export class StudentsService {
         where: { application_id: applicationId },
         data: {
           ...dto,
+          // Dual-write the legacy session when the chosen intake is linked to one
+          // (overrides any session_id in the body so the two never diverge). When
+          // the chosen intake's session_id is NULL, applications.session_id is left
+          // null so legacy session filters show nothing; the UI shows intake_name
+          // instead (the Add Lead cascade prefers intake_name). See WS3 LOW 6.
+          ...(resolvedIntake && resolvedIntake.session_id != null
+            ? { session_id: resolvedIntake.session_id }
+            : {}),
+          // WS3 MEDIUM 2: clear a now-mismatched stored intake (and its
+          // dual-written legacy session) when the programme pair changed and no new
+          // intake was supplied, so intake_id never points at a stale offering.
+          ...(clearStaleIntake ? { intake_id: null, session_id: null } : {}),
           ...(changesProgramme(dto, existing) ? { admission_status: false } : {}),
           updated_by: actorUserId,
           updated_at: new Date(),

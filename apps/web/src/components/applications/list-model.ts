@@ -74,7 +74,8 @@ export function mapRow(r: ApplicationListRow): ListRowView {
     whatsapp: r.whatsapp_no != null && String(r.whatsapp_no).trim() !== "",
     university: asText(r.university_title),
     course: asText(r.course_title),
-    intake: asText(r.session_title),
+    // IN04: prefer the v2 intake name; fall back to the legacy session title.
+    intake: asText(r.intake_name ?? r.session_title),
     counsellor,
     counsellorInitials: counsellor === EMPTY ? "—" : initials(counsellor),
     stage: r.stage,

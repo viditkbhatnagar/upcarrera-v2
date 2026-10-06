@@ -125,6 +125,17 @@ export class CreateApplicationDto {
   @IsInt()
   session_id?: number;
 
+  /**
+   * IN04: the chosen intake (intake.id). The server validates that
+   * (university_id, course_id, intake_id) is a live, open offering, stores
+   * applications.intake_id, and dual-writes applications.session_id from
+   * intake.session_id so legacy displays/joins still resolve.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  intake_id?: number;
+
   /** The assigned counsellor (users.id). */
   @IsOptional()
   @Type(() => Number)

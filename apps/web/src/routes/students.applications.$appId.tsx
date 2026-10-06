@@ -443,7 +443,7 @@ function ApplicationHeader({ app }: { app: ApplicationDetail }) {
         </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-right sm:grid-cols-3">
           <HeaderStat label="Course" value={dash(app.course_title)} />
-          <HeaderStat label="Intake" value={dash(app.session_title)} />
+          <HeaderStat label="Intake" value={dash(app.intake_name ?? app.session_title)} />
           <HeaderStat label="Counsellor" value={dash(app.owner.consultant_name)} />
         </div>
       </div>

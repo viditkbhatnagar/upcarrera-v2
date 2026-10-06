@@ -33,6 +33,16 @@ export class ApplicationAcademicDto {
   @IsInt()
   session_id?: number | null;
 
+  /**
+   * IN04: the chosen intake (intake.id). Validated against university_course_intake
+   * for the effective (university_id, course_id); on success the server stores it
+   * and dual-writes session_id from intake.session_id. null clears it.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  intake_id?: number | null;
+
   @IsOptional()
   @IsString()
   @MaxLength(100)

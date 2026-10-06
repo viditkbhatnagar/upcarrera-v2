@@ -5,11 +5,11 @@ import { apiPost, apiPatch, ApiError } from "@/lib/api";
 import {
   type CatalogOption,
   labelOf,
-  useCourseOptions,
-  useIntakeOptions,
+  useAdmissionCourseOptions,
+  useAdmissionIntakeOptions,
+  useAdmissionUniversityOptions,
   useLeadSourceOptions,
   useSpecialisationOptions,
-  useUniversityOptions,
 } from "@/components/applications/catalogs";
 import {
   DuplicateChecking,
@@ -238,13 +238,13 @@ function NewApplicationPage() {
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
 
-  // Live catalogs (QA AP05). Courses are scoped to the chosen university where
-  // the data allows; when none are tagged to it, the untagged courses are
-  // offered (strict: another university's course is refused by the server).
-  const universities = useUniversityOptions();
-  const courses = useCourseOptions(form.university || null, { strict: true });
+  // IN04 admission cascade (keyed by id): only universities/courses/intakes with
+  // a live, OPEN offering are offered, so a lead can never be saved against a
+  // closed or untagged combination. Specialisations still come from the course.
+  const universities = useAdmissionUniversityOptions();
+  const courses = useAdmissionCourseOptions(form.university || null);
   const specialisations = useSpecialisationOptions(form.course || null);
-  const intakes = useIntakeOptions();
+  const intakes = useAdmissionIntakeOptions(form.university || null, form.course || null);
   const leadSources = useLeadSourceOptions();
   const INTAKES = intakes.options;
   const LEAD_SOURCES = leadSources.options;
@@ -401,7 +401,9 @@ function NewApplicationPage() {
       university_id: idValue(form.university),
       course_id: idValue(form.course),
       specialisation_id: idValue(form.specialization),
-      session_id: idValue(form.intake),
+      // IN04: the chosen intake id. The server validates the (university, course,
+      // intake) offering and dual-writes applications.session_id from it.
+      intake_id: idValue(form.intake),
       source: form.leadSource || undefined,
     });
     const row = {
@@ -658,7 +660,7 @@ function NewApplicationPage() {
             universitiesLoading={universities.isLoading}
             universitiesError={universities.isError}
             coursesLoading={courses.isLoading}
-            coursesUnscoped={!!form.university && !courses.scoped && courses.options.length > 0}
+            coursesUnscoped={false}
           />
         )}
         {stepIdx === 2 && (
@@ -998,10 +1000,12 @@ function StepCourse({
             <SelectInput
               value={form.university}
               onChange={(e) => {
-                // A course belongs to a university: a new university clears it.
+                // The cascade is keyed by university: a new university clears the
+                // course, specialisation and intake chosen under the old one.
                 set("university", e.target.value);
                 set("course", "");
                 set("specialization", "");
+                set("intake", "");
               }}
             >
               <option value="">
@@ -1024,8 +1028,10 @@ function StepCourse({
             <SelectInput
               value={form.course}
               onChange={(e) => {
+                // Intakes are per (university, course): a new course clears the intake.
                 set("course", e.target.value);
                 set("specialization", "");
+                set("intake", "");
               }}
               disabled={!form.university}
             >

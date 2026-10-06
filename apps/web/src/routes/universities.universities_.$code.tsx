@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPatch, ApiError } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from "@/lib/api";
 import {
   ArrowLeft,
   Building2,
@@ -23,6 +23,11 @@ import {
   ChevronRight,
   AlertTriangle,
   X,
+  MoreVertical,
+  Pause,
+  Play,
+  Loader2,
+  CalendarRange,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -55,6 +60,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import {
   COLLECTION_MODEL_HELP,
@@ -324,6 +336,22 @@ interface ApiCourse {
   status: number | null;
 }
 
+/** IN04: a tagged course as GET /universities/:id/courses returns it. */
+interface TaggedCourseApi {
+  course_id: number;
+  title: string | null;
+  short_name: string | null;
+  level: string | null;
+  duration: string | null;
+  course_status: number | null;
+  university_course_name: string | null;
+  university_course_code: string | null;
+  /** 1 = offered, 0 = paused. */
+  status: number | null;
+  open_intake_count: number;
+  open_intakes: Array<{ id: number; name: string | null }>;
+}
+
 interface ApiSemester {
   id: number;
   university_id: number | null;
@@ -421,11 +449,10 @@ function UniversityProfilePage() {
     retry: false,
   });
 
-  // Courses tab -> GET /courses?university_id=<id>.
+  // Courses tab -> GET /courses?university_id=<id>. (Legacy source, kept for the
+  // in-page Fee Structure wizard's course picker.)
   const {
     data: coursesData,
-    isLoading: coursesLoading,
-    isError: coursesError,
   } = useQuery({
     queryKey: ["university-courses", code],
     queryFn: () =>
@@ -434,6 +461,22 @@ function UniversityProfilePage() {
         { university_id: code },
       ),
   });
+
+  // IN04 Tagged Courses tab -> GET /universities/:id/courses (the M:N mapping,
+  // with each course's open-intake count + chips).
+  const {
+    data: taggedData,
+    isLoading: coursesLoading,
+    isError: coursesError,
+  } = useQuery({
+    queryKey: ["university-tagged-courses", code],
+    queryFn: () => apiGet<TaggedCourseApi[]>(`/universities/${code}/courses`),
+  });
+  const tagged = useMemo<TaggedCourseApi[]>(() => taggedData ?? [], [taggedData]);
+  const taggedCourseIds = useMemo(
+    () => new Set(tagged.map((t) => t.course_id)),
+    [tagged],
+  );
 
   // Fee Structure tab -> GET /semesters?university_id=<id>.
   const {
@@ -516,12 +559,14 @@ function UniversityProfilePage() {
   });
   const activeFeeCount = activeFeesQuery.data?.total ?? 0;
 
+  // IN04 Tag-Course dialog: a real picker (live courses minus already-tagged) with
+  // a per-row "Name at this university", posting to POST /universities/:id/courses.
   const [tagCourseOpen, setTagCourseOpen] = useState(false);
-  const [selectedCourses, setSelectedCourses] = useState<string[]>([]);
+  const [tagSelected, setTagSelected] = useState<Set<number>>(new Set());
+  const [tagNames, setTagNames] = useState<Record<number, string>>({});
   const [courseSearch, setCourseSearch] = useState("");
-  const [courseLevelFilter, setCourseLevelFilter] = useState<
-    "All" | "UG" | "PG" | "Diploma" | "Certificate"
-  >("All");
+  // The tagged course being renamed (row menu).
+  const [renameTarget, setRenameTarget] = useState<TaggedCourseApi | null>(null);
 
   // Create Fee Structure wizard state
   const [feeOpen, setFeeOpen] = useState(false);
@@ -706,27 +751,94 @@ function UniversityProfilePage() {
     toast.error(FEE_NOT_PERSISTED);
   };
 
-  // The Tag-Course dialog has no backing write endpoint (no university↔course
-  // junction route), so it stays local. Source its picker from the live tagged
-  // courses rather than a mock library so no fabricated rows are shown.
-  const filteredLibrary = useMemo(() => {
-    return taggedCourses.filter((c) => {
-      const matchesSearch =
-        courseSearch.trim() === "" ||
-        c.name.toLowerCase().includes(courseSearch.toLowerCase()) ||
-        c.code.toLowerCase().includes(courseSearch.toLowerCase());
-      const matchesLevel = courseLevelFilter === "All" || c.level === courseLevelFilter;
-      return matchesSearch && matchesLevel;
+  // IN04: the full course master for the Tag dialog picker (loaded on open).
+  const allCoursesQuery = useQuery({
+    queryKey: ["courses", "all-for-tag"],
+    queryFn: () => apiGet<{ items: ApiCourse[] }>("/courses", { limit: 1000 }),
+    enabled: tagCourseOpen,
+  });
+  // Live courses NOT already tagged to this university, narrowed by the search box.
+  const tagPickerCourses = useMemo(() => {
+    const rows = allCoursesQuery.data?.items ?? [];
+    const q = courseSearch.trim().toLowerCase();
+    return rows.filter((c) => {
+      if (taggedCourseIds.has(c.id)) return false;
+      if (q === "") return true;
+      const name = (c.title ?? c.short_name ?? "").toLowerCase();
+      return name.includes(q) || String(c.id).includes(q);
     });
-  }, [taggedCourses, courseSearch, courseLevelFilter]);
+  }, [allCoursesQuery.data, taggedCourseIds, courseSearch]);
 
-  const toggleCourse = (courseCode: string) => {
-    setSelectedCourses((prev) =>
-      prev.includes(courseCode)
-        ? prev.filter((c) => c !== courseCode)
-        : [...prev, courseCode],
-    );
+  const toggleTagCourse = (courseId: number) =>
+    setTagSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(courseId)) n.delete(courseId);
+      else n.add(courseId);
+      return n;
+    });
+
+  const resetTagDialog = () => {
+    setTagSelected(new Set());
+    setTagNames({});
+    setCourseSearch("");
   };
+
+  const invalidateTagged = () => {
+    qc.invalidateQueries({ queryKey: ["university-tagged-courses", code] });
+    qc.invalidateQueries({ queryKey: ["university", code] });
+    qc.invalidateQueries({ queryKey: ["universities"] });
+  };
+
+  const tagMut = useMutation({
+    mutationFn: () => {
+      const items = [...tagSelected].map((id) => {
+        const name = tagNames[id]?.trim();
+        return name ? { course_id: id, university_course_name: name } : { course_id: id };
+      });
+      return apiPost<{ added: number; revived: number; already: number }>(
+        `/universities/${code}/courses`,
+        { items },
+      );
+    },
+    onSuccess: (res) => {
+      invalidateTagged();
+      toast.success(`Tagged ${res.added + res.revived} course(s)`);
+      setTagCourseOpen(false);
+      resetTagDialog();
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Couldn’t tag courses"),
+  });
+
+  const updateTagMut = useMutation({
+    mutationFn: (vars: {
+      courseId: number;
+      body: {
+        university_course_name?: string | null;
+        university_course_code?: string | null;
+        status?: number;
+      };
+    }) => apiPatch(`/universities/${code}/courses/${vars.courseId}`, vars.body),
+    onSuccess: () => {
+      invalidateTagged();
+      toast.success("Tagged course updated");
+      setRenameTarget(null);
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Couldn’t update the tagged course"),
+  });
+
+  const untagMut = useMutation({
+    mutationFn: (courseId: number) =>
+      apiDelete(`/universities/${code}/courses/${courseId}`),
+    onSuccess: () => {
+      invalidateTagged();
+      toast.success("Course untagged");
+    },
+    // The server 409s (with a clear message) when the pair is still referenced.
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? e.message : "Couldn’t untag the course"),
+  });
 
   const basicInfo = useMemo(
     () => ({
@@ -1061,10 +1173,10 @@ function UniversityProfilePage() {
                     <TableHead className="px-4">Course Code</TableHead>
                     <TableHead>Course Name</TableHead>
                     <TableHead>Level</TableHead>
-                    <TableHead>Group</TableHead>
-                    <TableHead>Specialisation</TableHead>
                     <TableHead>Duration</TableHead>
+                    <TableHead>Intakes</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead className="text-right pr-4">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1083,10 +1195,10 @@ function UniversityProfilePage() {
                         colSpan={7}
                         className="py-10 text-center text-sm text-muted-foreground"
                       >
-                        Couldn’t load courses for this university.
+                        Couldn’t load tagged courses for this university.
                       </TableCell>
                     </TableRow>
-                  ) : taggedCourses.length === 0 ? (
+                  ) : tagged.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={7} className="py-12 text-center">
                         <div className="mx-auto flex max-w-sm flex-col items-center gap-1">
@@ -1097,55 +1209,134 @@ function UniversityProfilePage() {
                             No courses tagged yet
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            Courses mapped to this university will appear here.
+                            Use “Add Course” to tag courses to this university.
                           </p>
                         </div>
                       </TableCell>
                     </TableRow>
                   ) : (
-                    taggedCourses.map((c) => (
-                      <TableRow key={c.code} className="hover:bg-muted/40">
-                        <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">
-                          {c.code}
-                        </TableCell>
-                        <TableCell className="py-3 text-sm font-medium text-foreground">
-                          {c.specialisation && c.specialisation !== "—"
-                            ? `${c.name} in ${c.specialisation}`
-                            : c.name}
-                        </TableCell>
-                        <TableCell className="py-3">
-                          <Badge
-                            variant="secondary"
-                            className="bg-slate-100 text-slate-700"
-                          >
-                            {c.level}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="py-3 text-sm">{c.category}</TableCell>
-                        <TableCell className="py-3 text-sm">
-                          {c.specialisation}
-                        </TableCell>
-                        <TableCell className="py-3 text-sm">{c.duration}</TableCell>
-                        <TableCell className="py-3">
-                          {c.status === "Active" ? (
-                            <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
-                              Active
+                    tagged.map((c) => {
+                      const name =
+                        c.university_course_name ??
+                        c.title ??
+                        c.short_name ??
+                        `Course #${c.course_id}`;
+                      const paused = c.status === 0;
+                      return (
+                        <TableRow key={c.course_id} className="hover:bg-muted/40">
+                          <TableCell className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                            CRS-{String(c.course_id).padStart(3, "0")}
+                          </TableCell>
+                          <TableCell className="py-3 text-sm font-medium text-foreground">
+                            {name}
+                            {c.university_course_name && c.title && (
+                              <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+                                ({c.title})
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-3">
+                            <Badge variant="secondary" className="bg-slate-100 text-slate-700">
+                              {mapLevel(c.level)}
                             </Badge>
-                          ) : (
-                            <Badge
-                              variant="secondary"
-                              className="bg-zinc-100 text-zinc-600"
-                            >
-                              Inactive
-                            </Badge>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
+                          </TableCell>
+                          <TableCell className="py-3 text-sm">
+                            {(c.duration ?? "").trim() || "—"}
+                          </TableCell>
+                          <TableCell className="py-3">
+                            {c.open_intake_count === 0 ? (
+                              <span className="text-xs text-muted-foreground">No open intakes</span>
+                            ) : (
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                                  <CalendarRange className="h-3.5 w-3.5 text-muted-foreground" />
+                                  {c.open_intake_count}
+                                </span>
+                                {c.open_intakes.slice(0, 3).map((i) => (
+                                  <Badge key={i.id} variant="outline" className="text-[10px]">
+                                    {i.name ?? `#${i.id}`}
+                                  </Badge>
+                                ))}
+                                {c.open_intakes.length > 3 && (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    +{c.open_intakes.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-3">
+                            {paused ? (
+                              <Badge variant="secondary" className="bg-amber-100 text-amber-700">
+                                Paused
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
+                                Offered
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="py-3 pr-4 text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-8 w-8">
+                                  <MoreVertical className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => setRenameTarget(c)}>
+                                  <Pencil className="mr-2 h-4 w-4" /> Rename
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() =>
+                                    updateTagMut.mutate({
+                                      courseId: c.course_id,
+                                      body: { status: paused ? 1 : 0 },
+                                    })
+                                  }
+                                >
+                                  {paused ? (
+                                    <>
+                                      <Play className="mr-2 h-4 w-4" /> Resume
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Pause className="mr-2 h-4 w-4" /> Pause
+                                    </>
+                                  )}
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-destructive focus:text-destructive"
+                                  onClick={() => untagMut.mutate(c.course_id)}
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" /> Untag
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
                   )}
                 </TableBody>
               </Table>
             </div>
+            {/* IN04: the free-text university.intakes blob, kept visible read-only. */}
+            {apiUni?.intakes && apiUni.intakes.trim() !== "" && (
+              <div className="border-t p-4">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Legacy intakes note
+                </p>
+                <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">
+                  {apiUni.intakes}
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  This is the old free-text note. Admission intakes are now managed as
+                  offerings on the Intakes screen.
+                </p>
+              </div>
+            )}
           </div>
         </TabsContent>
 
@@ -1326,115 +1517,141 @@ function UniversityProfilePage() {
         />
       )}
 
-      {/* Tag Course Dialog */}
-      <Dialog open={tagCourseOpen} onOpenChange={setTagCourseOpen}>
+      {/* Tag Course Dialog (IN04): live course master minus already-tagged. */}
+      <Dialog
+        open={tagCourseOpen}
+        onOpenChange={(o) => {
+          setTagCourseOpen(o);
+          if (!o) resetTagDialog();
+        }}
+      >
         <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>Tag Courses</DialogTitle>
             <DialogDescription>
-              Select courses from the library to tag to {profile.name}.
+              Select courses to tag to {profile.name}. Give each a name at this
+              university if it differs from the master title.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <div className="flex items-center gap-3">
-              <div className="relative flex-1">
-                <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="Search courses..."
-                  value={courseSearch}
-                  onChange={(e) => setCourseSearch(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
-              <Select
-                value={courseLevelFilter}
-                onValueChange={(v) =>
-                  setCourseLevelFilter(v as typeof courseLevelFilter)
-                }
-              >
-                <SelectTrigger className="w-32">
-                  <SelectValue placeholder="Level" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="All">All Levels</SelectItem>
-                  <SelectItem value="UG">UG</SelectItem>
-                  <SelectItem value="PG">PG</SelectItem>
-                  <SelectItem value="Diploma">Diploma</SelectItem>
-                  <SelectItem value="Certificate">Certificate</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setCourseSearch("");
-                  setCourseLevelFilter("All");
-                }}
-              >
-                <X className="mr-1 h-4 w-4" />
-                Clear
-              </Button>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search courses…"
+                value={courseSearch}
+                onChange={(e) => setCourseSearch(e.target.value)}
+                className="pl-9"
+              />
             </div>
-            <div className="max-h-72 overflow-y-auto rounded-xl border">
-              {filteredLibrary.length === 0 ? (
+            <div className="max-h-80 overflow-y-auto rounded-xl border">
+              {allCoursesQuery.isLoading ? (
+                <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading courses…
+                </div>
+              ) : tagPickerCourses.length === 0 ? (
                 <div className="p-6 text-center text-sm text-muted-foreground">
-                  No courses match your search.
+                  {courseSearch.trim()
+                    ? "No untagged courses match your search."
+                    : "Every live course is already tagged."}
                 </div>
               ) : (
                 <div className="divide-y">
-                  {filteredLibrary.map((c) => {
-                    const selected = selectedCourses.includes(c.code);
+                  {tagPickerCourses.map((c) => {
+                    const selected = tagSelected.has(c.id);
+                    const cName = (c.title ?? c.short_name ?? "").trim() || `Course #${c.id}`;
                     return (
-                      <button
-                        key={c.code}
-                        type="button"
-                        onClick={() => toggleCourse(c.code)}
+                      <div
+                        key={c.id}
                         className={cn(
-                          "flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-muted/40",
+                          "flex items-center gap-3 px-4 py-2.5 transition-colors",
                           selected && "bg-accent/10",
                         )}
                       >
-                        <div>
-                          <div className="text-sm font-medium text-foreground">
-                            {c.name}
-                          </div>
-                          <div className="mt-0.5 text-xs text-muted-foreground">
-                            {c.code} · {c.level} · {c.category} · {c.specialisation}
-                          </div>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => toggleTagCourse(c.id)}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        >
+                          <span
+                            className={cn(
+                              "grid h-4 w-4 shrink-0 place-items-center rounded border",
+                              selected
+                                ? "border-emerald-600 bg-emerald-600 text-white"
+                                : "border-muted-foreground/40",
+                            )}
+                          >
+                            {selected && <CheckCircle2 className="h-3.5 w-3.5" />}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium text-foreground">
+                              {cName}
+                            </span>
+                            <span className="block text-[11px] text-muted-foreground">
+                              CRS-{String(c.id).padStart(3, "0")} · {mapLevel(c.level)}
+                            </span>
+                          </span>
+                        </button>
                         {selected && (
-                          <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
+                          <Input
+                            value={tagNames[c.id] ?? ""}
+                            onChange={(e) =>
+                              setTagNames((prev) => ({ ...prev, [c.id]: e.target.value }))
+                            }
+                            placeholder="Name at this university (optional)"
+                            className="h-8 w-56 text-xs"
+                          />
                         )}
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
               )}
             </div>
-            {selectedCourses.length > 0 && (
+            {tagSelected.size > 0 && (
               <div className="text-xs text-muted-foreground">
-                {selectedCourses.length} course
-                {selectedCourses.length > 1 ? "s" : ""} selected
+                {tagSelected.size} course{tagSelected.size > 1 ? "s" : ""} selected
               </div>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTagCourseOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setTagCourseOpen(false);
+                resetTagDialog();
+              }}
+            >
               Cancel
             </Button>
             <Button
               className="gap-2 bg-accent text-accent-foreground hover:bg-accent-hover"
-              onClick={() => setTagCourseOpen(false)}
+              disabled={tagSelected.size === 0 || tagMut.isPending}
+              onClick={() => tagMut.mutate()}
             >
-              <BookPlus className="h-4 w-4" />
+              {tagMut.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <BookPlus className="h-4 w-4" />
+              )}
               Tag{" "}
-              {selectedCourses.length > 0
-                ? `${selectedCourses.length} Course${selectedCourses.length > 1 ? "s" : ""}`
+              {tagSelected.size > 0
+                ? `${tagSelected.size} Course${tagSelected.size > 1 ? "s" : ""}`
                 : "Courses"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Rename a tagged course's university-specific name/code (IN04). */}
+      <RenameTaggedCourseDialog
+        target={renameTarget}
+        onClose={() => setRenameTarget(null)}
+        isPending={updateTagMut.isPending}
+        onSubmit={(body) =>
+          renameTarget &&
+          updateTagMut.mutate({ courseId: renameTarget.course_id, body })
+        }
+      />
 
       {/* Create Fee Structure Wizard */}
       <Dialog
@@ -3020,5 +3237,80 @@ function Field({
         {value}
       </div>
     </div>
+  );
+}
+
+/** IN04: rename a tagged course's university-specific name/code. */
+function RenameTaggedCourseDialog({
+  target,
+  onClose,
+  isPending,
+  onSubmit,
+}: {
+  target: TaggedCourseApi | null;
+  onClose: () => void;
+  isPending: boolean;
+  onSubmit: (body: {
+    university_course_name: string | null;
+    university_course_code: string | null;
+  }) => void;
+}) {
+  const [name, setName] = useState("");
+  const [courseCode, setCourseCode] = useState("");
+
+  useEffect(() => {
+    if (target) {
+      setName(target.university_course_name ?? "");
+      setCourseCode(target.university_course_code ?? "");
+    }
+  }, [target]);
+
+  return (
+    <Dialog open={target != null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-[460px]">
+        <DialogHeader>
+          <DialogTitle>Rename course at this university</DialogTitle>
+          <DialogDescription>
+            Master title: {target?.title ?? target?.short_name ?? "—"}. Leave the
+            name blank to fall back to the master title.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <div className="space-y-1.5">
+            <Label>Name at this university</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={target?.title ?? "Programme name"}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Code at this university</Label>
+            <Input
+              value={courseCode}
+              onChange={(e) => setCourseCode(e.target.value)}
+              placeholder="Optional"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            disabled={isPending}
+            onClick={() =>
+              onSubmit({
+                university_course_name: name.trim() === "" ? null : name.trim(),
+                university_course_code:
+                  courseCode.trim() === "" ? null : courseCode.trim(),
+              })
+            }
+          >
+            {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

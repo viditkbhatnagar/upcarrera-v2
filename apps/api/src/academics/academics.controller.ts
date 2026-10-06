@@ -7,13 +7,20 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { AcademicsService } from './academics.service';
 import { IntakeMasterService } from './intake-master.service';
+import { UniversityCourseService } from './university-course.service';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
 import { RequirePermission } from '../common/decorators/require-permission.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ListQueryDto } from './dto/list-query.dto';
+import { IntakeListQueryDto } from './dto/intake-list-query.dto';
+import { TagCoursesDto } from './dto/tag-courses.dto';
+import { UpdateTaggedCourseDto } from './dto/update-tagged-course.dto';
+import { ReplaceOfferingsDto, CopyOfferingsDto } from './dto/offerings.dto';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { CreateUniversityDto } from './dto/create-university.dto';
@@ -56,16 +63,33 @@ import { UpdateGroupCourseDto } from './dto/update-group-course.dto';
 // course -> /courses
 @Controller('courses')
 export class CoursesController {
-  constructor(private readonly academics: AcademicsService) {}
+  constructor(
+    private readonly academics: AcademicsService,
+    private readonly universityCourse: UniversityCourseService,
+  ) {}
 
   @Get()
+  @RequirePermission('crm:catalog.view')
   @ResponseMessage('Courses')
   list(@Query() query: CourseListQueryDto) {
     return this.academics.listCourses(query);
   }
 
+  // Which universities offer this course (IN04). Literal trailing segment,
+  // declared before the bare `:id` GET so routing matches it first.
+  @Get(':id/universities')
+  @RequirePermission('crm:catalog.view')
+  @ResponseMessage('Course universities')
+  universities(@Param('id', ParseIntPipe) id: number) {
+    return this.universityCourse.courseUniversities(id);
+  }
+
   // Literal sub-path — MUST be declared before the `:id` routes so it is not
   // swallowed by `/courses/:id`.
+  //
+  // Left OPEN (no catalog slug) deliberately: the knowledge-base feed is not an
+  // IN04 catalog browse read and may serve a broader/KB consumer; it carries no
+  // per-row catalog data beyond titles. Still behind the global JwtAuthGuard.
   @Get('knowledge-base')
   @ResponseMessage('Courses Knowledge Base')
   knowledgeBase() {
@@ -73,6 +97,11 @@ export class CoursesController {
   }
 
   // Declared before the `:id` route so the literal segment wins routing.
+  //
+  // Left OPEN (no catalog slug) deliberately: these two belong to the teacher /
+  // bulk-scheduling surface, not catalog browse. The `teacher` role (id 3)
+  // legitimately lacks crm:catalog.view, so slugging them would break
+  // teacher-facing scheduling. Still behind the global JwtAuthGuard.
   @Get(':id/subjects-with-teachers')
   @ResponseMessage('Subjects with teachers')
   subjectsWithTeachers(@Param('id', ParseIntPipe) id: number) {
@@ -81,6 +110,7 @@ export class CoursesController {
 
   // Bulk-scheduling context: [{ subject, teachers:[], students:[] }] for a
   // course. Literal trailing segment, declared before the bare `:id` route.
+  // Left OPEN for the same teacher/scheduling reason as subjects-with-teachers.
   @Get(':id/schedule-context')
   @ResponseMessage('Course schedule context')
   scheduleContext(@Param('id', ParseIntPipe) id: number) {
@@ -88,12 +118,14 @@ export class CoursesController {
   }
 
   @Get(':id')
+  @RequirePermission('crm:catalog.view')
   @ResponseMessage('Course')
   get(@Param('id', ParseIntPipe) id: number) {
     return this.academics.getCourseDetail(id);
   }
 
   @Post()
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Course Added Successfully!')
   create(@Body() dto: CreateCourseDto) {
     return this.academics.createCourse(dto);
@@ -102,12 +134,14 @@ export class CoursesController {
   // Sub-resource PATCHes — literal trailing segments, safe after `:id` GETs but
   // declared before the bare `:id` PATCH for clarity/route precedence.
   @Patch(':id/lms')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Course LMS Updated Successfully!')
   toggleLms(@Param('id', ParseIntPipe) id: number, @Body() dto: ToggleLmsDto) {
     return this.academics.toggleCourseLms(id, dto);
   }
 
   @Patch(':id/status')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Status changed successfully!')
   changeStatus(
     @Param('id', ParseIntPipe) id: number,
@@ -117,12 +151,14 @@ export class CoursesController {
   }
 
   @Patch(':id')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Course Updated Successfully!')
   update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateCourseDto) {
     return this.academics.updateCourse(id, dto);
   }
 
   @Delete(':id')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Course Deleted Successfully!')
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.academics.deleteCourse(id);
@@ -132,22 +168,73 @@ export class CoursesController {
 // university -> /universities
 @Controller('universities')
 export class UniversitiesController {
-  constructor(private readonly academics: AcademicsService) {}
+  constructor(
+    private readonly academics: AcademicsService,
+    private readonly universityCourse: UniversityCourseService,
+  ) {}
 
   @Get()
+  @RequirePermission('crm:catalog.view')
   @ResponseMessage('Universities')
   list(@Query() query: ListQueryDto) {
     return this.academics.listUniversities(query);
   }
 
   // Literal sub-path — declared before `:id` so it is not captured by it.
+  // Left OPEN (no catalog slug) deliberately, same rationale as the courses
+  // knowledge-base: a KB feed, not an IN04 catalog browse read. Still behind the
+  // global JwtAuthGuard.
   @Get('knowledge-base')
   @ResponseMessage('Universities Knowledge Base')
   knowledgeBase() {
     return this.academics.universitiesKnowledgeBase();
   }
 
+  // --- IN04 tagged courses (declared before the bare `:id` route) ---
+
+  @Get(':id/courses')
+  @RequirePermission('crm:catalog.view')
+  @ResponseMessage('Tagged courses')
+  taggedCourses(@Param('id', ParseIntPipe) id: number) {
+    return this.universityCourse.listTaggedCourses(id);
+  }
+
+  @Post(':id/courses')
+  @RequirePermission('crm:catalog.manage')
+  @ResponseMessage('Courses tagged successfully!')
+  tagCourses(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: TagCoursesDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.universityCourse.tagCourses(id, dto, userId);
+  }
+
+  @Patch(':id/courses/:courseId')
+  @RequirePermission('crm:catalog.manage')
+  @ResponseMessage('Tagged course updated successfully!')
+  updateTaggedCourse(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('courseId', ParseIntPipe) courseId: number,
+    @Body() dto: UpdateTaggedCourseDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.universityCourse.updateTaggedCourse(id, courseId, dto, userId);
+  }
+
+  @Delete(':id/courses/:courseId')
+  @RequirePermission('crm:catalog.manage')
+  @ResponseMessage('Course untagged successfully!')
+  untagCourse(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('courseId', ParseIntPipe) courseId: number,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.universityCourse.untagCourse(id, courseId, userId);
+  }
+
   @Get(':id')
+  @RequirePermission('crm:catalog.view')
   @ResponseMessage('University')
   get(@Param('id', ParseIntPipe) id: number) {
     return this.academics.getUniversity(id);
@@ -416,8 +503,15 @@ export class IntakesController {
   constructor(
     private readonly academics: AcademicsService,
     private readonly intakeMaster: IntakeMasterService,
+    private readonly universityCourse: UniversityCourseService,
   ) {}
 
+  // Left OPEN (no catalog slug) deliberately: this is the LEGACY `sessions`
+  // master (a different entity from the v2 `intake` table guarded below), read
+  // broadly for session dropdowns across enrollment/fees/students. It is not one
+  // of the IN04 catalog browse reads named in the WS3 review, and every staff
+  // role already holds crm:catalog.view; scoping it would risk a non-catalog
+  // audience. Still behind the global JwtAuthGuard.
   @Get('sessions')
   @ResponseMessage('Intake master')
   listSessions(@Query() query: IntakeSessionsQueryDto) {
@@ -425,12 +519,14 @@ export class IntakesController {
   }
 
   @Post('sessions')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Intake Added Successfully!')
   createSession(@Body() dto: CreateIntakeSessionDto) {
     return this.intakeMaster.create(dto);
   }
 
   @Patch('sessions/:id')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Intake Renamed Successfully!')
   renameSession(
     @Param('id', ParseIntPipe) id: number,
@@ -440,24 +536,59 @@ export class IntakesController {
   }
 
   @Get()
+  @RequirePermission('crm:catalog.view')
   @ResponseMessage('Intakes')
-  list(@Query() query: ListQueryDto) {
+  list(@Query() query: IntakeListQueryDto) {
     return this.academics.listIntakes(query);
   }
 
+  // --- IN04 offerings (declared before the bare `:id` routes) ---
+
+  @Get(':id/offerings')
+  @RequirePermission('crm:catalog.view')
+  @ResponseMessage('Intake offerings')
+  offerings(@Param('id', ParseIntPipe) id: number) {
+    return this.universityCourse.listOfferings(id);
+  }
+
+  @Put(':id/offerings')
+  @RequirePermission('crm:catalog.manage')
+  @ResponseMessage('Intake offerings updated successfully!')
+  replaceOfferings(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ReplaceOfferingsDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.universityCourse.replaceOfferings(id, dto, userId);
+  }
+
+  @Post(':id/offerings/copy')
+  @RequirePermission('crm:catalog.manage')
+  @ResponseMessage('Intake offerings copied successfully!')
+  copyOfferings(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CopyOfferingsDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.universityCourse.copyOfferings(id, dto, userId);
+  }
+
   @Post()
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Intake Added Successfully!')
   create(@Body() dto: CreateIntakeDto) {
     return this.academics.createIntake(dto);
   }
 
   @Patch(':id')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Intake Updated Successfully!')
   update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateIntakeDto) {
     return this.academics.updateIntake(id, dto);
   }
 
   @Delete(':id')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Intake Deleted Successfully!')
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.academics.deleteIntake(id);

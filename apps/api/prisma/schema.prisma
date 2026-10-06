@@ -71,10 +71,14 @@ model applications {
   remarks            String?   @db.Text
   /// users.id of whoever referred a Referral lead; same type as students.referred_by.
   referred_by        Int?
+  /// intake.id (v2 master) the student applies for (migration 003, IN04). NULL for
+  /// legacy rows, which fall back to session_id -> intake.session_id for display.
+  intake_id          Int?
 
   @@index([stage, stage_entered_at], map: "idx_applications_stage")
   @@index([pipeline_user, created_by], map: "idx_applications_owner")
   @@index([phone_normalized], map: "idx_applications_phone_norm")
+  @@index([intake_id], map: "idx_applications_intake")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.

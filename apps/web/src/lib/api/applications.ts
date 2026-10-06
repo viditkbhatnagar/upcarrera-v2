@@ -140,6 +140,10 @@ export interface ApplicationDetail {
   university_title: string | null;
   session_id: number | null;
   session_title: string | null;
+  // IN04: the v2 intake master. intake_name resolves from intake_id (intake.name),
+  // falling back to session_title for legacy rows that predate intake_id.
+  intake_id: number | null;
+  intake_name: string | null;
 
   // Legacy fee columns (read-only block on the fee tab; mirrored on verify).
   amount: Money;
@@ -184,6 +188,9 @@ export interface ApplicationListRow {
   university_title: string | null;
   course_title: string | null;
   session_title: string | null;
+  // IN04: intake.name (from intake_id), falling back to session_title for legacy rows.
+  intake_id: number | null;
+  intake_name: string | null;
   consultant_id: number | null;
   consultant_name: string | null;
   stage: Stage;
