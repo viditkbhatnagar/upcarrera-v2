@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import {
   Mail,
@@ -72,7 +72,6 @@ function getGreeting(date: Date) {
 }
 
 export function LoginPage() {
-  const navigate = useNavigate();
   const [screen, setScreen] = useState<Screen>("login");
 
   // login state
@@ -106,14 +105,26 @@ export function LoginPage() {
     }
     setLoading(true);
     try {
-      const user = await login(email, password);
-      toast.success(`Welcome back${user.name ? `, ${user.name.split(" ")[0]}` : ""}.`);
-      navigate({ to: "/dashboard" });
+      await login(email, password);
+      // Full reload into the app rather than an SPA hop. The root layout decides
+      // AppShell-vs-bare from the path once per mount, so a client navigate left
+      // the dashboard rendered WITHOUT its shell until a manual refresh. A hard
+      // navigation mounts the authenticated app cleanly (mirrors sign-out).
+      window.location.assign("/dashboard");
     } catch (err) {
-      toast.error(
-        err instanceof ApiError ? err.message : "Login failed. Please try again.",
-      );
-    } finally {
+      let msg = "Login failed. Please try again.";
+      if (err instanceof ApiError) {
+        // A 401 here is a credentials failure. Show one neutral message for a
+        // bad id/password (never reveal which was wrong), but surface a
+        // deactivated-account notice since that needs the administrator.
+        msg =
+          err.status === 401
+            ? /deactivat/i.test(err.message)
+              ? err.message
+              : "Invalid email / user ID or password."
+            : err.message;
+      }
+      toast.error(msg);
       setLoading(false);
     }
   };

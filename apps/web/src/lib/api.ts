@@ -55,8 +55,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
 
-  // 401 -> token missing/expired: drop the session and bounce to login once.
-  if (res.status === 401) {
+  // A 401 on a request we authenticated (we sent a token) means the session was
+  // rejected/expired: drop it and bounce to login once. A 401 with NO token —
+  // e.g. the login call itself — is an ordinary auth failure, so fall through and
+  // let the API's own message ("Invalid password!", "User not found!", ...) reach
+  // the caller instead of a misleading "session expired".
+  if (res.status === 401 && token) {
     clearSession();
     if (typeof window !== "undefined" && window.location.pathname !== "/login") {
       window.location.assign("/login");

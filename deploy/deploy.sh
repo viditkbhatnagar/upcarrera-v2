@@ -32,7 +32,10 @@ test -f "$ROOT/apps/web/dist/index.html" || {
   exit 1
 }
 if grep -rqs "localhost:3000" "$ROOT/apps/web/dist"; then
-  echo "WARNING: 'localhost:3000' found in the web bundle — VITE_API_URL may not have applied." >&2
+  echo "ERROR: 'localhost:3000' found in the web bundle — VITE_API_URL did not apply." >&2
+  echo "       Refusing to ship a bundle that points every browser at its own localhost." >&2
+  echo "       Rebuild with VITE_API_URL=/api (this script sets it; don't run a bare 'pnpm build')." >&2
+  exit 1
 fi
 
 echo "==> [5/5] (Re)start the API under PM2 (web is static — nginx serves apps/web/dist)"
