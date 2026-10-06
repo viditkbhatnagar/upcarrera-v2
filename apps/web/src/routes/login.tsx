@@ -9,7 +9,6 @@ import {
   ArrowRight,
   ShieldCheck,
   Sparkles,
-  CheckCircle2,
   Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -18,11 +17,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  InputOTP,
-  InputOTPGroup,
-  InputOTPSlot,
-} from "@/components/ui/input-otp";
 import { cn } from "@/lib/utils";
 import { login } from "@/lib/auth";
 import { ApiError } from "@/lib/api";
@@ -42,7 +36,7 @@ export const Route = createFileRoute("/login")({
   component: LoginPage,
 });
 
-type Screen = "login" | "forgot-email" | "forgot-otp" | "forgot-reset" | "forgot-success";
+type Screen = "login" | "forgot";
 
 function getGreeting(date: Date) {
   const h = date.getHours();
@@ -81,12 +75,8 @@ export function LoginPage() {
   const [showPwd, setShowPwd] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // forgot state
-  const [resetEmail, setResetEmail] = useState("");
-  const [otp, setOtp] = useState("");
-  const [newPwd, setNewPwd] = useState("");
-  const [confirmPwd, setConfirmPwd] = useState("");
-  const [showNewPwd, setShowNewPwd] = useState(false);
+  // Password resets are performed by an administrator (ForgotContact explains how),
+  // so the login screen holds no reset form state.
 
   const [{ greeting, message }, setGreeting] = useState({
     greeting: "Welcome",
@@ -129,52 +119,6 @@ export function LoginPage() {
     }
   };
 
-
-  const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!resetEmail) {
-      toast.error("Please enter your registered email.");
-      return;
-    }
-    setLoading(true);
-    await new Promise((r) => setTimeout(r, 700));
-    setLoading(false);
-    toast.error("Login OTP is not available yet — nothing was saved.");
-    setScreen("forgot-otp");
-  };
-
-  const handleVerifyOtp = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (otp.length !== 6) {
-      toast.error("Enter the 6-digit OTP.");
-      return;
-    }
-    setScreen("forgot-reset");
-  };
-
-  const handleResetPwd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (newPwd.length < 8) {
-      toast.error("Password must be at least 8 characters.");
-      return;
-    }
-    if (newPwd !== confirmPwd) {
-      toast.error("Passwords do not match.");
-      return;
-    }
-    setLoading(true);
-    await new Promise((r) => setTimeout(r, 700));
-    setLoading(false);
-    setScreen("forgot-success");
-  };
-
-  const backToLogin = () => {
-    setScreen("login");
-    setResetEmail("");
-    setOtp("");
-    setNewPwd("");
-    setConfirmPwd("");
-  };
 
   return (
     <div className="min-h-screen w-full bg-background lg:grid lg:grid-cols-[1.05fr_1fr]">
@@ -291,47 +235,12 @@ export function LoginPage() {
                   onRemember={setRemember}
                   onTogglePwd={() => setShowPwd((v) => !v)}
                   onSubmit={handleLogin}
-                  onForgot={() => setScreen("forgot-email")}
+                  onForgot={() => setScreen("forgot")}
                 />
               )}
 
-              {screen === "forgot-email" && (
-                <ForgotEmail
-                  email={resetEmail}
-                  loading={loading}
-                  onEmail={setResetEmail}
-                  onSubmit={handleSendOtp}
-                  onBack={backToLogin}
-                />
-              )}
-
-              {screen === "forgot-otp" && (
-                <ForgotOtp
-                  email={resetEmail}
-                  otp={otp}
-                  onOtp={setOtp}
-                  onSubmit={handleVerifyOtp}
-                  onBack={() => setScreen("forgot-email")}
-                  onResend={() => toast.error("Login OTP is not available yet — nothing was saved.")}
-                />
-              )}
-
-              {screen === "forgot-reset" && (
-                <ForgotReset
-                  newPwd={newPwd}
-                  confirmPwd={confirmPwd}
-                  showPwd={showNewPwd}
-                  loading={loading}
-                  onNewPwd={setNewPwd}
-                  onConfirmPwd={setConfirmPwd}
-                  onTogglePwd={() => setShowNewPwd((v) => !v)}
-                  onSubmit={handleResetPwd}
-                  onBack={() => setScreen("forgot-otp")}
-                />
-              )}
-
-              {screen === "forgot-success" && (
-                <ForgotSuccess onBack={backToLogin} />
+              {screen === "forgot" && (
+                <ForgotContact onBack={() => setScreen("login")} />
               )}
             </div>
 
@@ -479,179 +388,28 @@ function BackLink({ onClick }: { onClick: () => void }) {
   );
 }
 
-function ForgotEmail(props: {
-  email: string;
-  loading: boolean;
-  onEmail: (v: string) => void;
-  onSubmit: (e: React.FormEvent) => void;
-  onBack: () => void;
-}) {
+function ForgotContact({ onBack }: { onBack: () => void }) {
   return (
-    <form onSubmit={props.onSubmit} className="space-y-5">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Reset Password</h2>
+    <div className="space-y-5">
+      <div className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-primary/10 text-primary">
+        <ShieldCheck className="h-7 w-7" />
+      </div>
+      <div className="text-center">
+        <h2 className="text-2xl font-semibold tracking-tight">Reset your password</h2>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          Enter your registered email address and we will send an OTP.
+          For security, staff passwords are reset by your administrator. Contact
+          your system administrator and they&rsquo;ll set a new password for your
+          account.
         </p>
       </div>
 
-      <div className="space-y-2">
-        <FieldLabel>Registered Email Address</FieldLabel>
-        <div className="relative">
-          <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="email"
-            value={props.email}
-            onChange={(e) => props.onEmail(e.target.value)}
-            placeholder="you@upcarrera.com"
-            className="h-11 pl-9"
-            required
-          />
-        </div>
+      <div className="rounded-lg border border-dashed border-border bg-muted/40 px-4 py-3 text-center text-xs text-muted-foreground">
+        Already have your new password? Head back and sign in.
       </div>
-
-      <PrimaryButton type="submit" loading={props.loading}>
-        Get OTP
-      </PrimaryButton>
 
       <div className="flex justify-center">
-        <BackLink onClick={props.onBack} />
+        <BackLink onClick={onBack} />
       </div>
-    </form>
-  );
-}
-
-function ForgotOtp(props: {
-  email: string;
-  otp: string;
-  onOtp: (v: string) => void;
-  onSubmit: (e: React.FormEvent) => void;
-  onBack: () => void;
-  onResend: () => void;
-}) {
-  return (
-    <form onSubmit={props.onSubmit} className="space-y-5">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Enter OTP</h2>
-        <p className="mt-1.5 text-sm text-muted-foreground">
-          We sent a 6-digit code to{" "}
-          <span className="font-medium text-foreground">{props.email || "your email"}</span>.
-        </p>
-      </div>
-
-      <div className="flex justify-center py-2">
-        <InputOTP maxLength={6} value={props.otp} onChange={props.onOtp}>
-          <InputOTPGroup>
-            {[0, 1, 2, 3, 4, 5].map((i) => (
-              <InputOTPSlot key={i} index={i} className="h-12 w-12 text-base" />
-            ))}
-          </InputOTPGroup>
-        </InputOTP>
-      </div>
-
-      <PrimaryButton type="submit">Verify OTP</PrimaryButton>
-
-      <div className="flex items-center justify-between">
-        <BackLink onClick={props.onBack} />
-        <button
-          type="button"
-          onClick={props.onResend}
-          className="text-sm font-medium text-primary hover:text-accent"
-        >
-          Resend OTP
-        </button>
-      </div>
-    </form>
-  );
-}
-
-function ForgotReset(props: {
-  newPwd: string;
-  confirmPwd: string;
-  showPwd: boolean;
-  loading: boolean;
-  onNewPwd: (v: string) => void;
-  onConfirmPwd: (v: string) => void;
-  onTogglePwd: () => void;
-  onSubmit: (e: React.FormEvent) => void;
-  onBack: () => void;
-}) {
-  return (
-    <form onSubmit={props.onSubmit} className="space-y-5">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Set New Password</h2>
-        <p className="mt-1.5 text-sm text-muted-foreground">
-          Choose a strong password you haven't used before.
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <FieldLabel>New Password</FieldLabel>
-        <div className="relative">
-          <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type={props.showPwd ? "text" : "password"}
-            value={props.newPwd}
-            onChange={(e) => props.onNewPwd(e.target.value)}
-            placeholder="At least 8 characters"
-            className="h-11 pl-9 pr-10"
-            required
-          />
-          <button
-            type="button"
-            onClick={props.onTogglePwd}
-            className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-md text-muted-foreground hover:bg-muted"
-          >
-            {props.showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-          </button>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <FieldLabel>Confirm Password</FieldLabel>
-        <div className="relative">
-          <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type={props.showPwd ? "text" : "password"}
-            value={props.confirmPwd}
-            onChange={(e) => props.onConfirmPwd(e.target.value)}
-            placeholder="Re-enter new password"
-            className="h-11 pl-9"
-            required
-          />
-        </div>
-      </div>
-
-      <PrimaryButton type="submit" loading={props.loading}>
-        Update Password
-      </PrimaryButton>
-
-      <div className="flex justify-center">
-        <BackLink onClick={props.onBack} />
-      </div>
-    </form>
-  );
-}
-
-function ForgotSuccess({ onBack }: { onBack: () => void }) {
-  return (
-    <div className="space-y-5 text-center">
-      <div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-success/15 text-success">
-        <CheckCircle2 className="h-9 w-9" />
-      </div>
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Password Updated</h2>
-        <p className="mt-1.5 text-sm text-muted-foreground">
-          Your password has been successfully updated. You can now login with
-          your new password.
-        </p>
-      </div>
-      <PrimaryButton type="button" onClick={onBack}>
-        Back to Login
-      </PrimaryButton>
-      <p className="text-xs text-muted-foreground">
-        Please contact your system administrator if you do not receive the email.
-      </p>
     </div>
   );
 }
