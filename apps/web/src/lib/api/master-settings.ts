@@ -89,6 +89,18 @@ export function deleteDocumentRequirement(id: number) {
   return apiDelete<unknown>(`/document-requirements/${id}`);
 }
 
+/**
+ * Atomically renumber a level's checklist. `orderedIds` is the FULL ordered list of
+ * that level's rows; the server renumbers them 1..n in one transaction. Replaces the
+ * old two-PATCH sort_order swap (a no-op when values tied, and non-atomic).
+ */
+export function reorderDocumentRequirements(courseLevel: string, orderedIds: number[]) {
+  return apiPatch<Paged<DocumentRequirement>>("/document-requirements/reorder", {
+    course_level: courseLevel,
+    ids: orderedIds,
+  });
+}
+
 /* ---------------- course_admission_rule ---------------- */
 
 export interface AdmissionRule {

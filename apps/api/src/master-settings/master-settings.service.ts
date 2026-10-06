@@ -4,11 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateDocumentRequirementDto } from './dto/create-document-requirement.dto';
 import { UpdateDocumentRequirementDto } from './dto/update-document-requirement.dto';
 import { DocumentRequirementQueryDto } from './dto/document-requirement-query.dto';
+import { ReorderDocumentRequirementsDto } from './dto/reorder-document-requirements.dto';
 import { CreateAdmissionRuleDto } from './dto/create-admission-rule.dto';
 import { UpdateAdmissionRuleDto } from './dto/update-admission-rule.dto';
 import { AdmissionRuleQueryDto } from './dto/admission-rule-query.dto';
@@ -111,15 +112,15 @@ export class MasterSettingsService {
     };
 
     if (existing) {
-      // Revive the soft-deleted row (keeps the DB key satisfied).
+      // Revive the soft-deleted row (keeps the DB key satisfied). LOW 6: a revive
+      // is NOT a re-create — keep the original created_by/created_at, only clear the
+      // delete stamp and bump updated_*.
       return this.prisma.document_requirement.update({
         where: { id: existing.id },
         data: {
           ...data,
           deleted_at: null,
           deleted_by: null,
-          created_by: userId,
-          created_at: now,
           updated_by: userId,
           updated_at: now,
         },
@@ -140,6 +141,10 @@ export class MasterSettingsService {
       await this.assertDocumentTypeLive(dto.document_type_id);
     }
     // Re-check the (course_level, document_type_id) key when either part moves.
+    // NOTE: the live-clash check only catches LIVE occupants; the DB unique key
+    // uq_docreq_level_type ALSO covers soft-deleted rows, so a move onto a pair held
+    // by a soft-deleted row slips past this check and would surface as a raw P2002.
+    // That case is caught below and rethrown as a clean 409.
     if (nextLevel !== current.course_level || nextTypeId !== current.document_type_id) {
       const clash = await this.prisma.document_requirement.findFirst({
         where: {
@@ -165,7 +170,56 @@ export class MasterSettingsService {
     if (dto.help_text !== undefined) data.help_text = dto.help_text;
     if (dto.sort_order !== undefined) data.sort_order = dto.sort_order;
 
-    return this.prisma.document_requirement.update({ where: { id }, data });
+    try {
+      return await this.prisma.document_requirement.update({ where: { id }, data });
+    } catch (err) {
+      // The (course_level, document_type_id) unique key spans soft-deleted rows too:
+      // moving onto a pair occupied by a soft-deleted requirement throws P2002. Turn
+      // it into a clean 409 rather than leaking a raw Prisma error as a 500.
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          `A (deleted) document requirement already occupies this document type at the "${nextLevel}" level. Restore it or pick a different document type.`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * MEDIUM 2: atomically renumber ONE canonical level's checklist. `ids` is the full
+   * ordered list of that level's live requirement ids; they are renumbered 1..n in a
+   * single transaction. This replaces the old client-side "swap two sort_order
+   * values" which was a no-op whenever the values tied (every new row defaults to 0)
+   * and whose two PATCHes were not atomic. Returns the refreshed, ordered level list.
+   */
+  async reorderRequirements(dto: ReorderDocumentRequirementsDto, userId: number | null) {
+    const ids = dto.ids;
+    // Every id MUST be a live row at this exact level (also rejects duplicates and
+    // foreign/soft-deleted ids: a mismatch in count fails the whole reorder).
+    const rows = await this.prisma.document_requirement.findMany({
+      where: { id: { in: ids }, course_level: dto.course_level, deleted_at: null },
+      select: { id: true },
+    });
+    if (rows.length !== ids.length) {
+      throw new BadRequestException(
+        'Every id must be a distinct, live document requirement at this course level.',
+      );
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction(
+      ids.map((id, index) =>
+        this.prisma.document_requirement.update({
+          where: { id },
+          data: { sort_order: index + 1, updated_by: userId, updated_at: now },
+        }),
+      ),
+    );
+
+    return this.listRequirements({ course_level: dto.course_level } as DocumentRequirementQueryDto);
   }
 
   async deleteRequirement(id: number, userId: number | null) {
@@ -256,11 +310,11 @@ export class MasterSettingsService {
     const row = existing
       ? await this.prisma.course_admission_rule.update({
           where: { id: existing.id },
+          // LOW 6: revive keeps the original created_by/created_at — only clear the
+          // delete stamp and bump updated_*.
           data: {
             ...data,
             deleted_at: null,
-            created_by: userId,
-            created_at: now,
             updated_by: userId,
             updated_at: now,
           },

@@ -16,6 +16,9 @@ export interface AdmissionRule {
   min_qualification: string | null;
   min_percentage: number | null;
   min_cgpa: number | null;
+  /** When true AND min_experience_months is set, total experience is enforced. */
+  requires_employment?: boolean;
+  min_experience_months?: number | null;
 }
 
 export interface QualificationScore {
@@ -47,6 +50,7 @@ export class EligibilityService {
     rule: AdmissionRule | null,
     highestQualification: string | null,
     qualifications: readonly QualificationScore[],
+    totalExperienceMonths?: number | null,
   ): EligibilityResult {
     if (!rule) {
       return {
@@ -116,7 +120,36 @@ export class EligibilityService {
       }
     }
 
+    // ---- 3. employment experience (MEDIUM 4) ----
+    // Enforced ONLY when the course requires employment AND a month minimum is set.
+    // The form captures a usable duration (application_form.total_experience_months),
+    // so a shortfall is a hard block, exactly like a score shortfall; a missing value
+    // is NEEDS_REVIEW (does not block submission — the counsellor resolves it).
+    if (rule.requires_employment === true && rule.min_experience_months != null) {
+      if (totalExperienceMonths == null) {
+        return {
+          status: 'needs_review',
+          detail: 'Add your total work experience so eligibility can be checked.',
+        };
+      }
+      if (Number(totalExperienceMonths) < Number(rule.min_experience_months)) {
+        return {
+          status: 'not_eligible',
+          detail: `This course needs at least ${this.experienceLabel(rule.min_experience_months)} of work experience. Please contact your counsellor.`,
+        };
+      }
+    }
+
     return { status: 'eligible', detail: 'You meet the published eligibility for this course.' };
+  }
+
+  /** Human label for a month count: whole years as years, otherwise months. */
+  private experienceLabel(months: number): string {
+    if (months > 0 && months % 12 === 0) {
+      const years = months / 12;
+      return years === 1 ? '1 year' : `${years} years`;
+    }
+    return months === 1 ? '1 month' : `${months} months`;
   }
 
   /** Evaluate against the DB (course_admission_rule + the application's qualifications). */
@@ -125,12 +158,19 @@ export class EligibilityService {
     highestQualification: string | null,
     qualifications?: readonly QualificationScore[],
     applicationId?: number,
+    totalExperienceMonths?: number | null,
   ): Promise<EligibilityResult> {
     const rule =
       courseId != null
         ? await this.prisma.course_admission_rule.findFirst({
             where: { course_id: courseId, deleted_at: null },
-            select: { min_qualification: true, min_percentage: true, min_cgpa: true },
+            select: {
+              min_qualification: true,
+              min_percentage: true,
+              min_cgpa: true,
+              requires_employment: true,
+              min_experience_months: true,
+            },
           })
         : null;
 
@@ -148,16 +188,30 @@ export class EligibilityService {
       }));
     }
 
+    // Experience: use the caller's value when given; otherwise read the form's
+    // captured total when an applicationId is available (undefined = not supplied).
+    let experience = totalExperienceMonths;
+    if (experience === undefined && applicationId != null) {
+      const formRow = await this.prisma.application_form.findUnique({
+        where: { application_id: applicationId },
+        select: { total_experience_months: true },
+      });
+      experience = formRow?.total_experience_months ?? null;
+    }
+
     return this.compute(
       rule
         ? {
             min_qualification: rule.min_qualification,
             min_percentage: rule.min_percentage != null ? Number(rule.min_percentage) : null,
             min_cgpa: rule.min_cgpa != null ? Number(rule.min_cgpa) : null,
+            requires_employment: rule.requires_employment,
+            min_experience_months: rule.min_experience_months,
           }
         : null,
       highestQualification,
       quals ?? [],
+      experience ?? null,
     );
   }
 

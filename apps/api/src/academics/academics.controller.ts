@@ -596,23 +596,34 @@ export class IntakesController {
 }
 
 // document_type -> /document-types (full CRUD)
+//
+// Catalog master, gated like the rest of the catalog: reads carry
+// crm:catalog.view (every staff role holds it; the LMS `student` role does NOT —
+// it is a staff-only picker, consumed only by the admin Document Checklist screen)
+// and writes crm:catalog.manage (Admin; Super Admin bypasses). Since WS6 these rows
+// feed the SA approve gate (document_requirement.document_type_id) and the public
+// checklist, so an unauthenticated-but-any-role caller must NOT be able to
+// create/rename/delete them.
 @Controller('document-types')
 export class DocumentTypesController {
   constructor(private readonly academics: AcademicsService) {}
 
   @Get()
+  @RequirePermission('crm:catalog.view')
   @ResponseMessage('Document Types')
   list(@Query() query: ListQueryDto) {
     return this.academics.listDocumentTypes(query);
   }
 
   @Post()
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Document type Added Successfully!')
   create(@Body() dto: CreateDocumentTypeDto) {
     return this.academics.createDocumentType(dto);
   }
 
   @Patch(':id')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Document type Updated Successfully!')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -622,6 +633,7 @@ export class DocumentTypesController {
   }
 
   @Delete(':id')
+  @RequirePermission('crm:catalog.manage')
   @ResponseMessage('Document type Deleted Successfully!')
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.academics.deleteDocumentType(id);

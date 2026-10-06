@@ -21,6 +21,7 @@ import {
   createDocumentRequirement,
   updateDocumentRequirement,
   deleteDocumentRequirement,
+  reorderDocumentRequirements,
   masterSettingsKeys,
   CANONICAL_COURSE_LEVELS,
   COURSE_LEVEL_LABELS,
@@ -139,11 +140,9 @@ function DocumentChecklistPage() {
   });
 
   const reorderMutation = useMutation({
-    mutationFn: async (vars: { a: DocumentRequirement; b: DocumentRequirement }) => {
-      // Swap the two rows' sort_order values (two PATCHes under one action).
-      await updateDocumentRequirement(vars.a.id, { sort_order: vars.b.sort_order });
-      await updateDocumentRequirement(vars.b.id, { sort_order: vars.a.sort_order });
-    },
+    // One atomic request renumbers the whole level 1..n, so a move works even when
+    // rows share a sort_order (new rows default to 0) — the old two-PATCH swap did not.
+    mutationFn: (orderedIds: number[]) => reorderDocumentRequirements(level, orderedIds),
     onSuccess: () => invalidate(),
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : "Could not reorder."),
@@ -191,7 +190,10 @@ function DocumentChecklistPage() {
   const move = (index: number, dir: -1 | 1) => {
     const other = index + dir;
     if (other < 0 || other >= rows.length) return;
-    reorderMutation.mutate({ a: rows[index], b: rows[other] });
+    // Build the new full order, then send it as one ordered id list.
+    const next = [...rows];
+    [next[index], next[other]] = [next[other], next[index]];
+    reorderMutation.mutate(next.map((r) => r.id));
   };
 
   return (

@@ -16,6 +16,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateDocumentRequirementDto } from './dto/create-document-requirement.dto';
 import { UpdateDocumentRequirementDto } from './dto/update-document-requirement.dto';
 import { DocumentRequirementQueryDto } from './dto/document-requirement-query.dto';
+import { ReorderDocumentRequirementsDto } from './dto/reorder-document-requirements.dto';
 import { CreateAdmissionRuleDto } from './dto/create-admission-rule.dto';
 import { UpdateAdmissionRuleDto } from './dto/update-admission-rule.dto';
 import { AdmissionRuleQueryDto } from './dto/admission-rule-query.dto';
@@ -47,6 +48,18 @@ export class DocumentRequirementsController {
     @CurrentUser('id') userId: number,
   ) {
     return this.master.createRequirement(dto, userId);
+  }
+
+  // Literal segment — declared BEFORE the bare `:id` PATCH so 'reorder' is never
+  // read as an id.
+  @Patch('reorder')
+  @RequirePermission('crm:catalog.manage')
+  @ResponseMessage('Document requirements reordered')
+  reorder(
+    @Body() dto: ReorderDocumentRequirementsDto,
+    @CurrentUser('id') userId: number,
+  ) {
+    return this.master.reorderRequirements(dto, userId);
   }
 
   @Patch(':id')

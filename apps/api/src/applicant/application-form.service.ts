@@ -82,15 +82,19 @@ export class ApplicationFormService {
     return this.buildView(application, form, { staff: false, linkId: applicant.linkId });
   }
 
-  /** GET /applications/:id/form — the staff read (adds verification + reopen history). */
+  /**
+   * GET /applications/:id/form — the staff read (adds verification + reopen history).
+   * LOW 8: a READ must never WRITE. Legacy applications can lack an application_form
+   * row; the staff read now DERIVES an empty form instead of lazily creating one.
+   */
   async staffRead(applicationId: number) {
-    const { application, form } = await this.load(applicationId);
+    const { application, form } = await this.loadForRead(applicationId);
     return this.buildView(application, form, { staff: true });
   }
 
   private async buildView(
     application: applications,
-    form: application_form,
+    form: application_form | null,
     opts: { staff: boolean; linkId?: number },
   ) {
     const [program, counsellor, checklist, documents, qualifications, reopenReason, link] =
@@ -141,12 +145,12 @@ export class ApplicationFormService {
       },
       sections: {
         personal: {
-          name_on_certificate: form.name_on_certificate,
-          father_guardian_name: form.father_guardian_name,
-          mother_name: form.mother_name,
-          category: form.category,
-          marital_status: form.marital_status,
-          aadhaar_last4: form.aadhaar_last4,
+          name_on_certificate: form?.name_on_certificate ?? null,
+          father_guardian_name: form?.father_guardian_name ?? null,
+          mother_name: form?.mother_name ?? null,
+          category: form?.category ?? null,
+          marital_status: form?.marital_status ?? null,
+          aadhaar_last4: form?.aadhaar_last4 ?? null,
           dob: application.dob ? application.dob.toISOString().slice(0, 10) : null,
           gender: application.gender,
           nationality: application.nationality ?? null,
@@ -160,10 +164,10 @@ export class ApplicationFormService {
           address: application.address,
           state: application.state,
           district: application.district,
-          pin_code: form.pin_code,
+          pin_code: form?.pin_code ?? null,
         },
         education: {
-          highest_qualification: form.highest_qualification,
+          highest_qualification: form?.highest_qualification ?? null,
           records: qualifications.map((q) => ({
             id: q.qualification_id,
             level_code: q.level_code,
@@ -178,11 +182,11 @@ export class ApplicationFormService {
         },
         employment: employmentRequired
           ? {
-              employment_status: form.employment_status,
-              total_experience_months: form.total_experience_months,
-              current_employer: form.current_employer,
-              current_designation: form.current_designation,
-              employment_history: this.parseHistory(form.employment_history),
+              employment_status: form?.employment_status ?? null,
+              total_experience_months: form?.total_experience_months ?? null,
+              current_employer: form?.current_employer ?? null,
+              current_designation: form?.current_designation ?? null,
+              employment_history: this.parseHistory(form?.employment_history ?? null),
             }
           : null,
       },
@@ -202,17 +206,17 @@ export class ApplicationFormService {
           .map((d) => this.docView(d, opts.staff)),
       },
       eligibility: {
-        status: form.eligibility_status,
-        detail: form.eligibility_detail,
+        status: form?.eligibility_status ?? null,
+        detail: form?.eligibility_detail ?? null,
       },
-      program_change_request: form.program_change_request,
+      program_change_request: form?.program_change_request ?? null,
       reopen_reason: reopenReason,
       progress,
-      row_version: form.row_version,
+      row_version: form?.row_version ?? 0,
       link_expires_at: link?.expires_at ?? null,
       ...(opts.staff
         ? {
-            declaration_accepted_at: form.declaration_accepted_at,
+            declaration_accepted_at: form?.declaration_accepted_at ?? null,
           }
         : {}),
     };
@@ -278,7 +282,12 @@ export class ApplicationFormService {
   ) {
     const sec = this.assertSection(section);
     const { application, form } = await this.load(applicationId);
-    const scope = await this.assertStaffReviewable(user, application);
+    // LOW 8: match allowed_actions — a staff field correction is the 'correct'
+    // action, allowed ONLY at counsellor_review (owning counsellor; Admin overrides
+    // ownership). This 403s a correction attempted at any other stage, instead of
+    // the previous visibility-only check that let an owner edit at e.g. fee_pending
+    // or sa_verification.
+    const scope = await this.access.assertAction(user, application, 'correct');
     this.assertRowVersion(form, body.row_version);
     return this.applySection(application, form, sec, body.data, {
       via: 'staff',
@@ -374,6 +383,11 @@ export class ApplicationFormService {
       let elig: EligibilityResult | null = null;
       if (section === 'education') {
         await this.writeQualifications(tx, application.application_id, educationRecords);
+      }
+      // Recompute on education OR employment: both feed the result now that
+      // min_experience_months is enforced (MEDIUM 4). Employment carries no
+      // qualification change, so the highest qualification stays as stored.
+      if (section === 'education' || section === 'employment') {
         elig = await this.recomputeEligibility(
           tx,
           application,
@@ -797,17 +811,31 @@ export class ApplicationFormService {
     highestQualification: string | null,
     now: Date,
   ): Promise<EligibilityResult> {
-    const rows = await tx.qualification.findMany({
-      where: { application_id: application.application_id, deleted_at: null },
-      select: { level_code: true, score_type: true, score_value: true, score_scale: true },
-    });
+    const [rows, formRow] = await Promise.all([
+      tx.qualification.findMany({
+        where: { application_id: application.application_id, deleted_at: null },
+        select: { level_code: true, score_type: true, score_value: true, score_scale: true },
+      }),
+      // Read the (possibly just-written) experience inside the same tx so an
+      // employment save is evaluated against its own new value (MEDIUM 4).
+      tx.application_form.findUnique({
+        where: { application_id: application.application_id },
+        select: { total_experience_months: true },
+      }),
+    ]);
     const quals = rows.map((r) => ({
       level_code: r.level_code,
       score_type: r.score_type,
       score_value: r.score_value != null ? Number(r.score_value) : null,
       score_scale: r.score_scale != null ? Number(r.score_scale) : null,
     }));
-    const result = await this.eligibility.evaluate(application.course_id, highestQualification, quals);
+    const result = await this.eligibility.evaluate(
+      application.course_id,
+      highestQualification,
+      quals,
+      undefined,
+      formRow?.total_experience_months ?? null,
+    );
     await tx.application_form.updateMany({
       where: { application_id: application.application_id },
       data: {
@@ -945,6 +973,24 @@ export class ApplicationFormService {
         data: { application_id: applicationId, created_at: new Date() },
       });
     }
+    return { application, form };
+  }
+
+  /**
+   * LOW 8: a NON-creating load for read-only paths. Returns `form: null` when a
+   * legacy application has no application_form row, so a GET never writes. buildView
+   * derives an empty form from null.
+   */
+  private async loadForRead(
+    applicationId: number,
+  ): Promise<{ application: applications; form: application_form | null }> {
+    const application = await this.prisma.applications.findFirst({
+      where: { application_id: applicationId, deleted_at: null },
+    });
+    if (!application) throw new NotFoundException('Application not found!');
+    const form = await this.prisma.application_form.findUnique({
+      where: { application_id: applicationId },
+    });
     return { application, form };
   }
 }

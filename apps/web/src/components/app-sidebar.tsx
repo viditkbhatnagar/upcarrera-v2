@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   GraduationCap,
   ClipboardList,
+  ListChecks,
   Building2,
   Wallet,
   TrendingUp,
@@ -159,7 +160,8 @@ function buildNav(roleKey: string | null | undefined): NavItem[] {
           {
             to: "/administration/document-checklist",
             label: "Document Checklist",
-            icon: ClipboardList,
+            // Distinct from Enrollment Management's ClipboardList (LOW 9).
+            icon: ListChecks,
           },
           {
             to: "/administration/eligibility-rules",

@@ -232,9 +232,10 @@ describe('WS6 Master Settings (e2e)', () => {
     if (courseIds.length) {
       await prisma.course_admission_rule.deleteMany({ where: { course_id: { in: courseIds } } });
     }
-    // Defensive: no stray 'doctorate' requirement can block the SA-gate conversion
-    // (this phase-1 table is empty by design; serial e2e runs clean up their own).
-    await prisma.document_requirement.deleteMany({ where: { course_level: 'doctorate' } });
+    // MEDIUM 5: cleanup is scoped to THIS run's fixture rows only (via the
+    // TAG-prefixed document_type / course ids above). It MUST NOT wipe the shared
+    // 'doctorate' checklist — that would destroy any real config in the dev DB. The
+    // SA-gate test is instead written to tolerate pre-existing doctorate rows.
     if (courseIds.length) await prisma.course.deleteMany({ where: { id: { in: courseIds } } });
     if (docTypeIds.length) await prisma.document_type.deleteMany({ where: { id: { in: docTypeIds } } });
     await prisma.users.deleteMany({ where: { username: { startsWith: TAG } } });
@@ -308,6 +309,73 @@ describe('WS6 Master Settings (e2e)', () => {
     it('400 on an unknown document_type_id', async () => {
       const res = await createReq(tokens.admin, { course_level: 'ug', document_type_id: 999999999 });
       expect(res.status).toBe(400);
+    });
+
+    it('MEDIUM 1: 409 (not a raw 500) patching onto a pair held by a SOFT-DELETED row', async () => {
+      const level = 'diploma'; // isolated from the 'ug' rows above
+      const typeP = await mkDocType('SoftClashP');
+      const typeQ = await mkDocType('SoftClashQ');
+
+      // typeP occupies (diploma, typeP) then is soft-deleted — the unique key
+      // uq_docreq_level_type still covers that soft-deleted row.
+      const p = await createReq(tokens.admin, { course_level: level, document_type_id: typeP });
+      expect(p.status).toBe(201);
+      const delP = await request(http)
+        .delete(`/api/document-requirements/${p.body.data.id}`)
+        .set(authHeader(tokens.admin));
+      expect(delP.status).toBe(200);
+
+      // typeQ is a LIVE row at the same level.
+      const q = await createReq(tokens.admin, { course_level: level, document_type_id: typeQ });
+      expect(q.status).toBe(201);
+
+      // Moving q onto typeP collides with the soft-deleted row's key -> clean 409,
+      // never a leaked Prisma P2002 / 500.
+      const clash = await request(http)
+        .patch(`/api/document-requirements/${q.body.data.id}`)
+        .set(authHeader(tokens.admin))
+        .send({ document_type_id: typeP });
+      expect(clash.status).toBe(409);
+    });
+
+    it('MEDIUM 2: reorder renumbers a level 1..n atomically (works when sort_order ties)', async () => {
+      const level = 'certification'; // isolated level
+      const t1 = await mkDocType('OrderA');
+      const t2 = await mkDocType('OrderB');
+      const t3 = await mkDocType('OrderC');
+      // No sort_order -> all default to 0 (tied): the exact case the old two-PATCH
+      // swap could not move.
+      const r1 = (await createReq(tokens.admin, { course_level: level, document_type_id: t1 })).body.data.id as number;
+      const r2 = (await createReq(tokens.admin, { course_level: level, document_type_id: t2 })).body.data.id as number;
+      const r3 = (await createReq(tokens.admin, { course_level: level, document_type_id: t3 })).body.data.id as number;
+
+      const reorder = await request(http)
+        .patch('/api/document-requirements/reorder')
+        .set(authHeader(tokens.admin))
+        .send({ course_level: level, ids: [r3, r2, r1] });
+      expect(reorder.status).toBe(200);
+
+      const list = await listReq(tokens.admin, `?course_level=${level}`);
+      const items = list.body.data.items as Array<{ id: number; sort_order: number }>;
+      const sortOrderOf = (id: number) => items.find((r) => r.id === id)?.sort_order;
+      // Clean 1..n in the requested order.
+      expect(sortOrderOf(r3)).toBe(1);
+      expect(sortOrderOf(r2)).toBe(2);
+      expect(sortOrderOf(r1)).toBe(3);
+
+      // A foreign id fails the WHOLE reorder (400), leaving numbering untouched.
+      const bad = await request(http)
+        .patch('/api/document-requirements/reorder')
+        .set(authHeader(tokens.admin))
+        .send({ course_level: level, ids: [r1, 999999999] });
+      expect(bad.status).toBe(400);
+
+      // Reorder is a write -> crm:catalog.manage (counsellor 403).
+      const forbidden = await request(http)
+        .patch('/api/document-requirements/reorder')
+        .set(authHeader(tokens.counsellor))
+        .send({ course_level: level, ids: [r1, r2, r3] });
+      expect(forbidden.status).toBe(403);
     });
   });
 
@@ -408,6 +476,111 @@ describe('WS6 Master Settings (e2e)', () => {
   });
 
   // ===========================================================================
+  // document_type catalog permission matrix (MEDIUM 3)
+  // ===========================================================================
+
+  describe('document-types catalog permission matrix (MEDIUM 3)', () => {
+    const mkType = (token: string) =>
+      request(http)
+        .post('/api/document-types')
+        .set(authHeader(token))
+        .send({ title: `${TAG} DT ${phoneSeq++}` });
+
+    it('writes require crm:catalog.manage (student + counsellor 403; admin 201)', async () => {
+      expect((await mkType(tokens.student)).status).toBe(403);
+      expect((await mkType(tokens.counsellor)).status).toBe(403);
+
+      const admin = await mkType(tokens.admin);
+      expect(admin.status).toBe(201);
+      const id = admin.body.data.id as number; // TAG-titled -> cleaned up by title
+
+      // PATCH + DELETE are gated identically.
+      expect(
+        (await request(http).patch(`/api/document-types/${id}`).set(authHeader(tokens.student)).send({ title: 'x' })).status,
+      ).toBe(403);
+      expect(
+        (await request(http).patch(`/api/document-types/${id}`).set(authHeader(tokens.counsellor)).send({ title: 'x' })).status,
+      ).toBe(403);
+      expect(
+        (await request(http).delete(`/api/document-types/${id}`).set(authHeader(tokens.student))).status,
+      ).toBe(403);
+      // Admin can actually PATCH it.
+      expect(
+        (await request(http).patch(`/api/document-types/${id}`).set(authHeader(tokens.admin)).send({ title: `${TAG} DT renamed` })).status,
+      ).toBe(200);
+    });
+
+    it('reads require crm:catalog.view (admin + counsellor ok; student 403)', async () => {
+      const get = (token: string) => request(http).get('/api/document-types').set(authHeader(token));
+      expect((await get(tokens.admin)).status).toBe(200);
+      expect((await get(tokens.counsellor)).status).toBe(200); // staff master, open to staff
+      expect((await get(tokens.student)).status).toBe(403); // LMS student role has no catalog.view
+    });
+  });
+
+  // ===========================================================================
+  // eligibility enforces min_experience_months (MEDIUM 4)
+  // ===========================================================================
+
+  describe('eligibility enforces min_experience_months (MEDIUM 4)', () => {
+    it('needs_review without experience, not_eligible below the minimum, eligible at/above it', async () => {
+      const courseElig = await mkCourse('Elig', 'ug');
+      // UG minimum + requires employment + 24 months experience.
+      const rule = await createRule(tokens.admin, {
+        course_id: courseElig,
+        min_qualification: 'ug',
+        requires_employment: true,
+        min_experience_months: 24,
+      });
+      expect(rule.status).toBe(201);
+
+      const appId = await createApplication('elig', courseElig);
+      // Drive lead -> counsellor_review so the staff 'correct' action is allowed (LOW 8).
+      const advance = (path: string) =>
+        request(http).post(`/api/applications/${appId}/${path}`).set(authHeader(tokens.counsellor)).send({});
+      expect((await advance('send-form')).status).toBe(201);
+      expect((await advance('mark-form-received')).status).toBe(201);
+
+      // The staff read is non-creating (LOW 8): row_version is 0 with no form row yet.
+      const read0 = await request(http).get(`/api/applications/${appId}/form`).set(authHeader(tokens.admin));
+      expect(read0.status).toBe(200);
+      let rv = read0.body.data.row_version as number;
+
+      // Education meets the UG minimum. No experience captured yet -> needs_review.
+      const edu = await request(http)
+        .patch(`/api/applications/${appId}/form/education`)
+        .set(authHeader(tokens.admin))
+        .send({
+          data: {
+            highest_qualification: 'ug',
+            records: [{ level_code: 'ug', label: 'B.Com', score_type: 'percentage', score_value: 75 }],
+          },
+          row_version: rv,
+        });
+      expect(edu.status).toBe(200);
+      expect(edu.body.data.eligibility.status).toBe('needs_review');
+      rv = edu.body.data.row_version as number;
+
+      // Employment below the minimum (12 < 24) -> not_eligible.
+      const low = await request(http)
+        .patch(`/api/applications/${appId}/form/employment`)
+        .set(authHeader(tokens.admin))
+        .send({ data: { employment_status: 'employed', total_experience_months: 12 }, row_version: rv });
+      expect(low.status).toBe(200);
+      expect(low.body.data.eligibility.status).toBe('not_eligible');
+      rv = low.body.data.row_version as number;
+
+      // At/above the minimum (36 >= 24) -> eligible.
+      const ok = await request(http)
+        .patch(`/api/applications/${appId}/form/employment`)
+        .set(authHeader(tokens.admin))
+        .send({ data: { total_experience_months: 36 }, row_version: rv });
+      expect(ok.status).toBe(200);
+      expect(ok.body.data.eligibility.status).toBe('eligible');
+    }, 60000);
+  });
+
+  // ===========================================================================
   // the SA approve gate honours a configured required document
   // ===========================================================================
 
@@ -416,8 +589,7 @@ describe('WS6 Master Settings (e2e)', () => {
       const appId = await createApplication('sagate', courseDoc);
       await driveToSaVerification(appId);
 
-      // Only our required 'doctorate' requirement should apply (defensive clear
-      // already ran in beforeAll cleanup; no other test uses the doctorate level).
+      // Configure OUR required 'doctorate' requirement (fixture typeReq).
       const reqRes = await createReq(tokens.admin, {
         course_level: 'doctorate',
         document_type_id: typeReq,
@@ -425,8 +597,38 @@ describe('WS6 Master Settings (e2e)', () => {
       });
       expect(reqRes.status).toBe(201);
 
-      // A verified document of a DIFFERENT type satisfies "all uploaded verified"
-      // and "at least one verified", but NOT the required-type requirement.
+      // MEDIUM 5: the cleanup no longer wipes the shared 'doctorate' checklist, so
+      // this test must tolerate ANY pre-existing doctorate requirement. Resolve every
+      // required doctorate type that APPLIES to this application (courseDoc has no
+      // admission rule -> requires_employment is false, so 'employment' rows are
+      // skipped, mirroring the SA gate). We satisfy all of them EXCEPT our fixture
+      // typeReq, so the block is attributable to typeReq alone.
+      const requiredRows = await prisma.document_requirement.findMany({
+        where: { course_level: 'doctorate', is_required: true, deleted_at: null },
+        select: { document_type_id: true, applies_when: true },
+      });
+      const applicableTypeIds = requiredRows
+        .filter((r) => r.applies_when !== 'employment') // null/always + fail-closed unknowns
+        .map((r) => r.document_type_id);
+
+      // Verified docs for every applicable required type EXCEPT typeReq.
+      for (const typeId of applicableTypeIds.filter((t) => t !== typeReq)) {
+        await prisma.application_document.create({
+          data: {
+            application_id: appId,
+            document_type_id: typeId,
+            label: `Pre-existing required ${typeId}`,
+            file_path: `application_documents/${TAG}-pre-${typeId}.pdf`,
+            verification_status: 'verified',
+            reviewed_by: ids.sa,
+            reviewed_at: new Date(),
+            created_at: new Date(),
+          },
+        });
+      }
+
+      // A verified document of a NON-required type satisfies "all uploaded verified"
+      // and "at least one verified", but NOT our typeReq requirement.
       await prisma.application_document.create({
         data: {
           application_id: appId,
@@ -445,6 +647,8 @@ describe('WS6 Master Settings (e2e)', () => {
         .set(authHeader(tokens.sa))
         .send({ identity_ok: true, eligibility_ok: true, legible_ok: true, program_ok: true, decision: 'approve' });
       expect(blocked.status).toBe(400); // required document missing -> blocked
+      // LOW 7: the block is the missing-required-document error, not some other 400.
+      expect(String(blocked.body.message)).toMatch(/required document is missing or unverified/i);
       expect((await request(http).get(`/api/applications/${appId}`).set(authHeader(tokens.sa))).body.data.effective_stage).toBe('sa_verification');
 
       // Upload the required-type document (pending) and verify it.
@@ -464,7 +668,8 @@ describe('WS6 Master Settings (e2e)', () => {
         .send({ status: 'verified' });
       expect(review.status).toBe(201);
 
-      // Now the required document is verified -> approve proceeds to conversion.
+      // Now every applicable required document (incl. our fixture) is verified ->
+      // approve proceeds to conversion.
       const approve = await request(http)
         .post(`/api/applications/${appId}/sa-review`)
         .set(authHeader(tokens.sa))
