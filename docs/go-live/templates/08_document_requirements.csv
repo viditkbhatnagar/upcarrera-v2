@@ -1,0 +1,7 @@
+course_level,document_type,is_required,applies_when,max_files,help_text,sort_order
+pg,10th Marksheet,yes,always,1,Scan or clear photo of the 10th marksheet,1
+pg,12th Marksheet,yes,always,1,,2
+pg,Degree Certificate,yes,always,1,Provisional or final degree,3
+pg,Photo,yes,always,1,Passport-size photo,4
+pg,Government ID,yes,always,1,Aadhaar / PAN / Passport,5
+pg,Experience Letter,yes,employment,2,Only if the course needs work experience,6

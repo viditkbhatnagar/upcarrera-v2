@@ -1,0 +1,3 @@
+course_group,course_specialisation,min_qualification,min_percentage,min_cgpa,requires_employment,min_experience_months
+MBA,Marketing,Graduation,50,,no,
+EXECUTIVE-MBA,General,Graduation,50,,yes,24

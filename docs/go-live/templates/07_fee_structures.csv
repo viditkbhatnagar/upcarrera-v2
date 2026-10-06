@@ -1,0 +1,2 @@
+university_code,course_group,course_specialisation,intake_code,registration_fee,course_fee,course_fee_basis,exam_fee,exam_fee_basis,other_fees_label_amount_basis,discount_allowed,discount_max_pct,instalment_plan,custom_instalments_label_amount_daysAfterStart
+UNI-100,MBA,Marketing,INT-2026-JAN,7500,120000,per_year,2000,per_semester,Alumni Fee:1000:total|ID Card:200:total,yes,10,per_year,

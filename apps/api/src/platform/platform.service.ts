@@ -232,9 +232,20 @@ export class PlatformService {
   // Roles (user_role)
   // ---------------------------------------------------------------------------
 
+  // Legacy LMS roles that don't belong in the admin portal (spec 1.2). They stay
+  // in the DB (their users keep working) but are hidden from the Roles list; the
+  // Phase 1 roles and any custom (NULL role_key) roles remain visible.
+  private static readonly HIDDEN_LMS_ROLE_KEYS = ['student', 'teacher', 'institution', 'client'];
+
   async findRoles() {
     return this.prisma.user_role.findMany({
-      where: { deleted_at: null },
+      where: {
+        deleted_at: null,
+        OR: [
+          { role_key: null },
+          { role_key: { notIn: PlatformService.HIDDEN_LMS_ROLE_KEYS } },
+        ],
+      },
       orderBy: { id: 'asc' },
     });
   }

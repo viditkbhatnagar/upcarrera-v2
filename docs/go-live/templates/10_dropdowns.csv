@@ -1,0 +1,8 @@
+type,value,display_order,active
+lead_source,HighLevel,1,yes
+lead_source,Website,2,yes
+lead_source,Referral,3,yes
+rejection_reason,Does not meet eligibility,1,yes
+rejection_reason,Duplicate application,2,yes
+send_back_reason,Documents not legible,1,yes
+send_back_reason,Wrong program selected,2,yes

@@ -1,0 +1,2 @@
+employee_id,full_name,email,mobile_10_digit,role,reports_to_email,designation,team_code,status,joining_date
+UC-1024,Asha Menon,asha.menon@upcarrera.com,9876543210,Counsellor,ravi.kumar@upcarrera.com,Senior Counsellor,TEAM-TRG,Active,2026-01-15
