@@ -34,6 +34,7 @@ import { CommonModule } from './common/common.module';
 import { WorkflowModule } from './workflow/workflow.module';
 import { FeeStructuresModule } from './finance/fee-structures/fee-structures.module';
 import { ApplicantModule } from './applicant/applicant.module';
+import { PublicIntakeModule } from './public-intake/public-intake.module';
 import { MasterSettingsModule } from './master-settings/master-settings.module';
 
 @Module({
@@ -69,6 +70,7 @@ import { MasterSettingsModule } from './master-settings/master-settings.module';
     WorkflowModule,
     FeeStructuresModule,
     ApplicantModule,
+    PublicIntakeModule,
     MasterSettingsModule,
   ],
   providers: [
