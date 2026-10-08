@@ -117,7 +117,9 @@ describe('Public intake (e2e)', () => {
       await prisma.application_form.deleteMany({ where: { application_id: { in: appIds } } });
       await prisma.applications.deleteMany({ where: { application_id: { in: appIds } } });
     }
-    await prisma.applications.deleteMany({ where: { name: { startsWith: TAG } } });
+    // Online applications are identified by their TAG-based email (name is a fixed
+    // valid value, so it can't carry the TAG).
+    await prisma.applications.deleteMany({ where: { email: { startsWith: TAG.toLowerCase() } } });
     await prisma.university_course_intake.deleteMany({ where: { university_id: ids.university } });
     await prisma.university_course.deleteMany({ where: { university_id: ids.university } });
     await prisma.document_requirement.deleteMany({ where: { document_type_id: ids.docType } });
@@ -134,10 +136,11 @@ describe('Public intake (e2e)', () => {
       .field('university_id', String(ids.university))
       .field('course_id', String(ids.course))
       .field('intake_id', String(ids.intake))
-      .field('full_name', `${TAG} Student`)
+      // full_name must satisfy the name regex (letters/space/.'- only) — no TAG here.
+      .field('full_name', 'Test Student')
       .field('date_of_birth', '2000-05-12')
       .field('gender', 'Male')
-      .field('father_name', `${TAG} Father`)
+      .field('father_name', 'Test Father')
       .field('phone', uniquePhone())
       .field('whatsapp', '+919876543210')
       .field('email', uniqueEmail())
