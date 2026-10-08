@@ -1,0 +1,1788 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Student Application – upCarrera Education</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!--
+  ============================================================================
+  upCarrera Education — Student Application Form (front-end, v1.0, 07 Oct 2026)
+  ============================================================================
+  Single self-contained file: HTML + CSS + vanilla JS. No dependencies.
+  Wired to the upCarrera public-intake API (catalogue + submit). The ONLY changes
+  from the original are: CONFIG urls, the {data} envelope unwrap + rebuilding the
+  document slots from the server's document_rules (loadCatalogue), the submit
+  response unwrap (buildPayload), the loan-document uploads being deferred to a
+  counsellor (v1), and a hidden anti-abuse honeypot field. Everything else — the
+  photo editor, signature pad, dependent dropdowns and validation — is unchanged.
+  ============================================================================
+-->
+<style>
+:root{
+  --primary:#0B4834; --primary-hover:#003E29; --primary-fg:#FAFDFA;
+  --accent:#FF7350; --accent-hover:#F05940;
+  --brand-dark:#053122;
+  --bg:#F9FBF9; --surface:#FFFFFF; --fg:#09140F;
+  --secondary:#EFF5F2; --secondary-fg:#09251A;
+  --muted:#F1F4F1; --muted-fg:#596760;
+  --border:#E5E9E6; --input:#CFD8D3;
+  --success:#0FA05C; --warning:#EFA831; --destructive:#E62B34;
+  --radius:14px; --radius-sm:10px;
+  --ring:0 0 0 3px rgba(11,72,52,.18);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#070F0C; --surface:#0F1B16; --fg:#F3F6F3;
+    --primary:#419977; --primary-hover:#358566; --primary-fg:#04110B;
+    --secondary:#152920; --secondary-fg:#E6EFEA; --muted:#152920; --muted-fg:#9BA99F;
+    --border:rgba(255,255,255,.10); --input:rgba(255,255,255,.18);
+    --ring:0 0 0 3px rgba(65,153,119,.30);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#070F0C; --surface:#0F1B16; --fg:#F3F6F3;
+  --primary:#419977; --primary-hover:#358566; --primary-fg:#04110B;
+  --secondary:#152920; --secondary-fg:#E6EFEA; --muted:#152920; --muted-fg:#9BA99F;
+  --border:rgba(255,255,255,.10); --input:rgba(255,255,255,.18);
+  --ring:0 0 0 3px rgba(65,153,119,.30);
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 Inter,ui-sans-serif,system-ui,"Segoe UI",sans-serif}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+[hidden]{display:none!important}
+
+/* Top bar */
+.topbar{background:var(--brand-dark);color:#F1F7F1}
+.topbar-inner{max-width:920px;margin:0 auto;padding:14px 16px;display:flex;align-items:center;gap:12px}
+.logo{font-weight:700;font-size:20px;letter-spacing:-.02em}
+.logo b{color:var(--accent)}
+.topbar-sub{margin-left:auto;font-size:13px;color:#ACBCB0}
+
+.wrap{max-width:920px;margin:0 auto;padding:28px 16px 64px}
+.intro h1{font-size:26px;line-height:1.2;margin:0 0 6px;letter-spacing:-.02em}
+.intro p{margin:0;color:var(--muted-fg)}
+
+/* Stepper */
+.stepper{list-style:none;margin:24px 0 20px;padding:0;display:grid;grid-template-columns:repeat(6,1fr);gap:8px;counter-reset:s}
+.stepper li{position:relative}
+.stepper button{all:unset;box-sizing:border-box;width:100%;display:flex;flex-direction:column;gap:8px;cursor:default;font-size:12.5px;font-weight:500;color:var(--muted-fg)}
+.stepper .bar{height:4px;border-radius:4px;background:var(--border)}
+.stepper .lbl{display:flex;gap:6px;align-items:baseline}
+.stepper .num{font-variant-numeric:tabular-nums;font-weight:600}
+.stepper li.done .bar{background:var(--primary)}
+.stepper li.done button{cursor:pointer;color:var(--fg)}
+.stepper li.done button:hover .lbl{text-decoration:underline}
+.stepper li.current .bar{background:var(--accent)}
+.stepper li.current button{color:var(--fg);font-weight:600}
+.stepper button:focus-visible{outline:2px solid var(--primary);outline-offset:4px;border-radius:4px}
+.mprog{display:none;margin:20px 0 16px}
+.mprog-top{display:flex;justify-content:space-between;font-size:13px;color:var(--muted-fg);margin-bottom:8px}
+.mprog-top strong{color:var(--fg)}
+.mprog-bar{height:6px;background:var(--border);border-radius:6px;overflow:hidden}
+.mprog-bar span{display:block;height:100%;background:var(--primary);transition:width .25s}
+
+/* Cards & layout */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:16px}
+.card h2{font-size:18px;margin:0 0 4px;letter-spacing:-.01em}
+.card .desc{margin:0 0 20px;color:var(--muted-fg);font-size:14px}
+.card h3{font-size:15px;margin:24px 0 12px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px 18px}
+.grid .full{grid-column:1/-1}
+.grid3{grid-template-columns:repeat(3,1fr)}
+
+/* Fields */
+.field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.field>label,.field legend,.flabel{font-size:13.5px;font-weight:500;color:var(--fg)}
+.req{color:var(--destructive);margin-left:2px}
+.opt{color:var(--muted-fg);font-weight:400;font-size:12.5px;margin-left:4px}
+input[type=text],input[type=email],input[type=tel],input[type=date],input[type=number],select,textarea{
+  width:100%;font:inherit;color:var(--fg);background:var(--surface);
+  border:1px solid var(--input);border-radius:var(--radius-sm);padding:10px 12px;min-height:44px;
+  transition:border-color .15s, box-shadow .15s}
+textarea{min-height:84px;resize:vertical}
+select{appearance:none;-webkit-appearance:none;padding-right:36px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23596760' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:var(--ring)}
+input:disabled,select:disabled{background:var(--muted);color:var(--muted-fg);cursor:not-allowed}
+input[readonly]{background:var(--muted)}
+.invalid input,.invalid select,.invalid textarea,.invalid .drop,.invalid .sig-wrap{border-color:var(--destructive)!important}
+.err{color:var(--destructive);font-size:12.5px;margin:0;min-height:0}
+.err:empty{display:none}
+.help{color:var(--muted-fg);font-size:12.5px;margin:0}
+fieldset{border:0;margin:0;padding:0;min-width:0}
+fieldset legend{padding:0;margin-bottom:6px}
+
+.phone{display:grid;grid-template-columns:120px 1fr;gap:8px}
+/* ===== Custom dropdown (enhances native <select>) ===== */
+.dd{position:relative;min-width:0}
+.dd-native{position:absolute!important;width:1px!important;height:1px!important;opacity:0;pointer-events:none;overflow:hidden;clip:rect(0,0,0,0);border:0!important;padding:0!important;min-height:0!important}
+.dd-trigger{all:unset;box-sizing:border-box;width:100%;display:flex;align-items:center;gap:8px;min-height:44px;padding:10px 12px 10px 14px;border:1px solid var(--input);border-radius:var(--radius-sm);background:var(--surface);color:var(--fg);cursor:pointer;font-size:15px;transition:border-color .15s,box-shadow .15s,background .15s}
+.dd-trigger:hover:not(:disabled){border-color:color-mix(in oklab,var(--primary) 45%,var(--input))}
+.dd-trigger:focus-visible,.dd.open .dd-trigger{border-color:var(--primary);box-shadow:var(--ring)}
+.dd-value{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dd-trigger.placeholder .dd-value{color:var(--muted-fg)}
+.dd-chev{flex:none;color:var(--muted-fg);transition:transform .2s ease}
+.dd.open .dd-chev{transform:rotate(180deg);color:var(--primary)}
+.dd-trigger:disabled{background:var(--muted);cursor:not-allowed}
+.dd-trigger:disabled .dd-value{color:var(--muted-fg)}
+.invalid .dd-trigger{border-color:var(--destructive)!important}
+.dd-panel{position:absolute;left:0;top:calc(100% + 6px);z-index:60;min-width:100%;width:max-content;max-width:min(440px,calc(100vw - 32px));background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 14px 36px rgba(9,20,15,.16),0 2px 6px rgba(9,20,15,.06);padding:6px;display:flex;flex-direction:column;max-height:320px;animation:ddIn .14s ease-out}
+.dd.up .dd-panel{top:auto;bottom:calc(100% + 6px);animation-name:ddInUp}
+.dd-compact .dd-panel{min-width:230px}
+@keyframes ddIn{from{opacity:0;transform:translateY(-4px)}}
+@keyframes ddInUp{from{opacity:0;transform:translateY(4px)}}
+.dd-head{display:none}
+.dd-search{position:relative;margin:2px 2px 6px;flex:none}
+.dd-search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--muted-fg);pointer-events:none}
+.dd-search input{width:100%;font:inherit;font-size:14px;color:var(--fg);background:var(--muted);border:1px solid transparent;border-radius:8px;min-height:38px;padding:8px 10px 8px 34px;outline:none}
+.dd-search input:focus{border-color:var(--primary);background:var(--surface);box-shadow:none}
+.dd-list{list-style:none;margin:0;padding:0;overflow:auto;outline:none;overscroll-behavior:contain;flex:1}
+.dd-opt{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer;font-size:14.5px;line-height:1.35}
+.dd-opt.active{background:var(--secondary)}
+.dd-opt[aria-selected="true"]{color:var(--primary);font-weight:600}
+.dd-check{margin-left:auto;flex:none;opacity:0;color:var(--primary)}
+.dd-opt[aria-selected="true"] .dd-check{opacity:1}
+.dd-opt.dd-clear{color:var(--muted-fg);font-size:13.5px;border-bottom:1px solid var(--border);border-radius:8px 8px 0 0;margin-bottom:4px}
+.dd-label{min-width:0;flex:1}
+.dd-opt mark{background:none;color:var(--primary);font-weight:700}
+.dd-search input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+.dd-empty{padding:16px 10px;color:var(--muted-fg);font-size:13.5px;text-align:center}
+.dd-backdrop{position:fixed;inset:0;background:rgba(5,20,14,.45);z-index:59;animation:ddFade .15s}
+@keyframes ddFade{from{opacity:0}}
+@keyframes ddSheet{from{transform:translateY(100%)}}
+
+
+.choices{display:flex;flex-wrap:wrap;gap:8px}
+.choice{position:relative}
+.choice input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}
+.choice span{display:inline-flex;align-items:center;min-height:40px;padding:8px 16px;border:1px solid var(--input);border-radius:999px;font-size:14px;background:var(--surface);transition:all .15s}
+.choice input:checked+span{background:var(--secondary);border-color:var(--primary);color:var(--primary);font-weight:600}
+.choice input:focus-visible+span{box-shadow:var(--ring)}
+
+.check{display:flex;gap:10px;align-items:flex-start;font-size:14px;cursor:pointer}
+.check input{width:18px;height:18px;margin:2px 0 0;accent-color:var(--primary);flex:none;cursor:pointer}
+.inline-check{font-size:13px;color:var(--muted-fg);display:flex;gap:8px;align-items:center;cursor:pointer;font-weight:400}
+.inline-check input{accent-color:var(--primary);width:16px;height:16px;margin:0}
+.label-row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+
+/* Uploads */
+.uploads{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.upload{border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;display:flex;flex-direction:column;gap:10px;background:var(--surface)}
+.upload-label{font-weight:500;font-size:14px}
+.upload-hint{display:block;color:var(--muted-fg);font-size:12.5px;margin-top:2px}
+.drop{display:flex;align-items:center;gap:12px;border:1.5px dashed var(--input);border-radius:var(--radius-sm);padding:12px 14px;cursor:pointer;background:var(--muted);transition:all .15s}
+.drop:hover,.drop.over{border-color:var(--primary);background:var(--secondary)}
+.drop:focus-within{box-shadow:var(--ring);border-color:var(--primary)}
+.drop svg{flex:none;color:var(--primary)}
+.drop-txt{font-size:13.5px;line-height:1.35}
+.drop-txt strong{color:var(--primary);font-weight:600}
+.drop-txt small{display:block;color:var(--muted-fg);font-size:12px}
+.drop-row{display:flex;gap:8px}
+.drop-row .drop{flex:1;min-width:0}
+.upload.complete .drop,.upload.complete .drop-row{display:none}
+.upload.complete.multi .drop-row{display:flex}
+.upload.complete.multi .drop{display:flex}
+.files{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.file{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:var(--secondary)}
+.thumb{width:40px;height:40px;border-radius:6px;object-fit:cover;flex:none;background:var(--surface);display:grid;place-items:center;font-size:10px;font-weight:700;color:var(--primary);border:1px solid var(--border)}
+.file-meta{min-width:0;flex:1}
+.file-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-size{font-size:12px;color:var(--muted-fg)}
+.icon-btn{all:unset;cursor:pointer;width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:var(--muted-fg)}
+.icon-btn:hover{background:var(--surface);color:var(--destructive)}
+.icon-btn:focus-visible{box-shadow:var(--ring)}
+.badge-ok{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--success);font-weight:600}
+
+.note{display:flex;gap:10px;padding:12px 14px;border-radius:var(--radius-sm);background:var(--secondary);color:var(--secondary-fg);font-size:13.5px;margin-bottom:16px}
+.note svg{flex:none;margin-top:1px;color:var(--primary)}
+.note.warn{background:rgba(239,168,49,.14);color:inherit}
+.note.warn svg{color:#B97A0F}
+
+.toggle-row{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;padding:14px 16px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--muted)}
+.toggle-row p{margin:0}
+.toggle-row .help{margin-top:2px}
+
+/* Terms */
+.terms{max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px 18px;background:var(--muted);font-size:13.5px;line-height:1.6}
+.terms:focus-visible{outline:none;box-shadow:var(--ring)}
+.terms p{margin:0 0 10px}
+.terms ul{margin:0 0 12px;padding-left:20px}
+.terms li{margin-bottom:6px}
+.terms h4{margin:14px 0 6px;font-size:13.5px}
+.decl{display:flex;flex-direction:column;gap:12px;margin-top:18px}
+
+/* Signature */
+.sig-wrap{position:relative;border:1.5px dashed var(--input);border-radius:var(--radius-sm);background:#fff;overflow:hidden;touch-action:none}
+.sig-wrap canvas{display:block;width:100%;height:180px;cursor:crosshair}
+.sig-ph{position:absolute;inset:0;display:grid;place-items:center;color:#8A968F;font-size:14px;pointer-events:none}
+.sig-line{position:absolute;left:24px;right:24px;bottom:40px;border-bottom:1px solid #D5DCD8;pointer-events:none}
+.sig-actions{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
+.link-btn{all:unset;cursor:pointer;font-size:13px;font-weight:600;color:var(--primary);padding:4px 6px;border-radius:6px}
+.link-btn:hover{text-decoration:underline}
+.link-btn:focus-visible,label.link-btn:focus-within{box-shadow:var(--ring)}
+
+/* Review */
+.review-sec{border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:12px;overflow:hidden}
+.review-head{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--muted);font-weight:600;font-size:14px}
+.review-dl{display:grid;grid-template-columns:minmax(140px,220px) 1fr;margin:0;padding:6px 14px 10px;font-size:13.5px}
+.review-dl dt{color:var(--muted-fg);padding:6px 12px 6px 0}
+.review-dl dd{margin:0;padding:6px 0;word-break:break-word}
+.review-dl dt,.review-dl dd{border-bottom:1px solid var(--border)}
+.review-dl dt:nth-last-of-type(1),.review-dl dd:last-of-type{border-bottom:0}
+
+/* Actions */
+.alert{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:var(--radius-sm);background:rgba(230,43,52,.08);border:1px solid rgba(230,43,52,.25);color:var(--fg);font-size:14px;margin-bottom:16px}
+.alert svg{color:var(--destructive);flex:none;margin-top:1px}
+.actions{display:flex;justify-content:space-between;gap:12px;margin-top:8px}
+.btn{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:0 22px;border-radius:var(--radius-sm);font-weight:600;font-size:15px;cursor:pointer;transition:background .15s, box-shadow .15s}
+.btn:focus-visible{box-shadow:var(--ring)}
+.btn-primary{background:var(--primary);color:var(--primary-fg)}
+.btn-primary:hover{background:var(--primary-hover)}
+.btn-accent{background:var(--accent);color:#fff}
+.btn-accent:hover{background:var(--accent-hover)}
+.btn-ghost{background:transparent;color:var(--fg);border:1px solid var(--input)}
+.btn-ghost:hover{background:var(--muted)}
+.btn[disabled]{opacity:.6;pointer-events:none}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.5);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* Success */
+.success{text-align:center;padding:44px 24px}
+.success .tick{width:64px;height:64px;border-radius:50%;background:rgba(15,160,92,.12);color:var(--success);display:grid;place-items:center;margin:0 auto 16px}
+.success h2{font-size:22px;margin:0 0 8px}
+.success p{color:var(--muted-fg);max-width:520px;margin:0 auto 6px}
+.ref{display:inline-block;margin:14px 0 6px;padding:10px 18px;border-radius:var(--radius-sm);background:var(--secondary);font-weight:700;font-size:18px;letter-spacing:.02em;color:var(--primary);font-variant-numeric:tabular-nums}
+.next-steps{text-align:left;max-width:460px;margin:22px auto 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px;font-size:14px}
+.next-steps li{display:flex;gap:10px}
+.next-steps .n{flex:none;width:24px;height:24px;border-radius:50%;background:var(--secondary);color:var(--primary);font-weight:700;font-size:12px;display:grid;place-items:center}
+
+/* Passport photo */
+.photo-row{display:flex;gap:22px;align-items:flex-start}
+.photo-frame{width:140px;aspect-ratio:7/9;flex:none;border-radius:10px;border:1.5px dashed var(--input);background:var(--muted);overflow:hidden;display:grid;place-items:center}
+.photo-frame.has{border:1px solid var(--border);background:#fff}
+.photo-frame img{width:100%;height:100%;object-fit:cover;display:block}
+.photo-empty{display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--muted-fg);font-size:12px}
+.photo-side{min-width:0;flex:1}
+.photo-tips{margin:0 0 14px;padding-left:18px;font-size:13.5px;color:var(--muted-fg)}
+.photo-tips li{margin-bottom:3px}
+.photo-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.btn-sm{min-height:40px;padding:0 16px;font-size:14px}
+label.btn:focus-within{box-shadow:var(--ring)}
+.link-btn.danger{color:var(--destructive)}
+.warn-txt{color:#9A6408;font-size:12.5px;margin:8px 0 0}
+.invalid .photo-frame{border-color:var(--destructive)}
+.review-photo{display:flex;gap:16px;align-items:center;padding:14px}
+.review-photo img,.review-photo .photo-frame{width:105px;aspect-ratio:7/9;object-fit:cover;border-radius:8px;border:1px solid var(--border);flex:none}
+.review-photo p{margin:0 0 4px}
+.rh-actions{display:flex;gap:6px}
+
+/* Photo editor dialog */
+dialog.editor{border:0;padding:0;border-radius:16px;width:min(820px,calc(100vw - 32px));max-height:calc(100vh - 32px);background:var(--surface);color:var(--fg);box-shadow:0 24px 64px rgba(0,0,0,.35)}
+dialog.editor[open]{display:flex;flex-direction:column}
+dialog.editor::backdrop{background:rgba(5,20,14,.62)}
+.ed-head{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid var(--border)}
+.ed-head h2{font-size:17px;margin:0}
+.ed-body{display:grid;grid-template-columns:1fr 250px;gap:22px;padding:20px;overflow:auto;flex:1}
+.ed-stage{position:relative;width:100%;aspect-ratio:1/1.05;max-height:62vh;background:#16201C;border-radius:12px;overflow:hidden;touch-action:none;cursor:grab;user-select:none}
+.ed-stage.dragging{cursor:grabbing}
+.ed-stage:focus-visible{outline:none;box-shadow:var(--ring)}
+.ed-stage canvas{position:absolute;inset:0;width:100%;height:100%}
+.ed-hint{margin-top:10px;text-align:center}
+.ed-tools{display:flex;flex-direction:column;gap:20px}
+.ed-btns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.tool{all:unset;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;gap:5px;padding:10px 6px;border:1px solid var(--input);border-radius:10px;font-size:12.5px;font-weight:500;cursor:pointer;text-align:center;color:var(--fg)}
+.tool:hover{background:var(--muted)}
+.tool:focus-visible{box-shadow:var(--ring)}
+.tool[aria-pressed="true"]{background:var(--secondary);border-color:var(--primary);color:var(--primary)}
+.slider{display:flex;flex-direction:column;gap:6px;font-size:13.5px;font-weight:500}
+.slider-top{display:flex;justify-content:space-between}
+.slider output{color:var(--muted-fg);font-weight:400;font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--primary);margin:0}
+.ed-foot{display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid var(--border)}
+
+footer{text-align:center;color:var(--muted-fg);font-size:12.5px;margin-top:28px}
+
+/* Camera buttons – only on touch devices */
+.cam-only{display:none!important}
+.cam-btn{flex:none;width:76px;flex-direction:column;align-items:center;justify-content:center;gap:4px;border:1.5px dashed var(--input);border-radius:var(--radius-sm);background:var(--muted);color:var(--primary);font-size:12px;font-weight:600;cursor:pointer}
+.cam-btn:focus-within{box-shadow:var(--ring);border-color:var(--primary)}
+@media (pointer:coarse){
+  .cam-only{display:inline-flex!important}
+  .drag-txt{display:none}
+}
+.field,.upload,.card,.review-sec{scroll-margin-top:76px;scroll-margin-bottom:110px}
+
+@media (max-width:720px){
+  .dd-panel,.dd.up .dd-panel{position:fixed;left:0;right:0;bottom:0;top:auto;width:auto;max-width:none;min-width:0;max-height:78vh;border-radius:18px 18px 0 0;border:0;padding:6px 12px calc(14px + env(safe-area-inset-bottom));animation:ddSheet .22s cubic-bezier(.2,.8,.2,1)}
+  .dd-head{display:flex;align-items:center;justify-content:space-between;padding:10px 4px 10px;position:relative;flex:none}
+  .dd-head::before{content:"";position:absolute;top:0;left:50%;transform:translateX(-50%);width:38px;height:4px;border-radius:4px;background:var(--border)}
+  .dd-head strong{font-size:16px;margin-top:8px}
+  .dd-head .icon-btn{margin-top:8px}
+  .dd-opt{padding:13px 12px;font-size:15.5px}
+  .dd-search input{min-height:44px;font-size:16px}
+  .stepper{display:none}
+  .mprog{display:block}
+  .grid,.grid3,.uploads{grid-template-columns:1fr}
+  /* layout & spacing */
+  .wrap{padding:16px 16px 0}
+  .topbar-inner{padding:12px 16px}
+  .logo{font-size:18px}
+  .card{padding:20px 16px;margin-bottom:12px;border-radius:16px}
+  .card h2{font-size:17px}
+  .card .desc{font-size:13.5px;margin-bottom:16px}
+  .grid{gap:14px}
+  .intro h1{font-size:22px}
+  .intro p{font-size:14px}
+  body:not([data-step="1"]) .intro{display:none}
+
+  /* 16px text stops iOS zooming into fields */
+  input[type=text],input[type=email],input[type=tel],input[type=date],input[type=number],select,textarea,.dd-trigger{font-size:16px;min-height:48px}
+  textarea{min-height:96px}
+
+  /* sticky progress header */
+  .mprog{position:sticky;top:0;z-index:30;margin:0 -16px 14px;padding:10px 16px 12px;background:color-mix(in srgb,var(--bg) 92%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+  body[data-step="1"] .mprog{margin-top:16px}
+  .mprog-top{margin-bottom:8px;font-size:13px}
+  .mprog-top strong{font-size:15px}
+
+  /* sticky action bar */
+  .actions{position:sticky;bottom:0;z-index:30;margin:12px -16px 0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--surface) 94%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border-top:1px solid var(--border);box-shadow:0 -8px 24px rgba(9,20,15,.06);gap:10px;transition:transform .2s ease}
+  .actions>span{display:none}
+  .actions .btn{flex:1;min-height:50px}
+  .actions #backBtn{flex:none;width:52px;padding:0}
+  .actions #backBtn .btn-txt{display:none}
+  body.typing .actions{transform:translateY(110%)}
+  footer{padding:20px 0 24px;margin-top:8px}
+
+  /* choice chips fill the row */
+  .choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:8px}
+  .choice span{width:100%;justify-content:center;min-height:48px}
+  .toggle-row{flex-direction:column;align-items:stretch;gap:12px}
+
+  /* uploads: flat list instead of boxes inside boxes */
+  .uploads{gap:0}
+  .uploads .upload{border:0;border-radius:0;padding:16px 0;border-top:1px solid var(--border);background:none}
+  .uploads .upload:first-child{border-top:0;padding-top:4px}
+  .drop{min-height:64px}
+  .file{padding:10px}
+
+  /* passport photo card */
+  .photo-row{gap:16px}
+  .photo-frame{width:96px}
+  .photo-tips{font-size:13px;padding-left:16px;margin-bottom:12px}
+  .photo-actions{flex-direction:column;align-items:stretch;gap:8px}
+  .photo-actions .btn{width:100%;min-height:44px}
+  .photo-actions .link-btn{align-self:flex-start}
+  .upload .photo-actions{flex-direction:row;gap:16px}
+
+  /* review: label | value on one row */
+  .review-head{flex-wrap:wrap;gap:4px 12px;padding:12px 14px}
+  .rh-actions{gap:12px}
+  .review-dl{grid-template-columns:minmax(0,42%) 1fr;font-size:13.5px;padding:4px 14px 8px}
+  .review-dl dt{padding-right:10px}
+  .review-photo{padding:14px}
+  .review-photo img,.review-photo .photo-frame{width:84px}
+
+  /* comfortable tap targets */
+  .link-btn{padding:8px 8px}
+  .check{gap:12px;padding:4px 0}
+  .check input{width:22px;height:22px;margin-top:0}
+  .terms{max-height:46vh;padding:14px 14px}
+  .sig-wrap canvas{height:200px}
+  dialog.editor{width:100vw;max-width:100vw;height:100dvh;max-height:100dvh;border-radius:0;margin:0}
+  .ed-body{grid-template-columns:1fr;padding:14px 16px;gap:16px}
+  .ed-stage{max-height:none}
+  .ed-btns{grid-template-columns:repeat(4,1fr)}
+  .ed-foot .btn{flex:1}
+  .topbar-sub{display:none}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="logo">up<b>Carrera</b></div>
+    <div class="topbar-sub">Student Application</div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="formView">
+    <div class="intro">
+      <h1>Student Application Form</h1>
+      <p>Takes about 10 minutes. Keep scanned copies of your documents ready (PDF, JPG or PNG, up to 5 MB each).</p>
+    </div>
+
+    <ol class="stepper" id="stepper" aria-label="Application steps"></ol>
+    <div class="mprog" aria-hidden="true">
+      <div class="mprog-top"><strong id="mprogTitle"></strong><span id="mprogCount"></span></div>
+      <div class="mprog-bar"><span id="mprogBar"></span></div>
+    </div>
+
+    <form id="appForm" novalidate autocomplete="on">
+      <!-- Anti-abuse honeypot: must stay empty; the server silently drops bots that fill it. -->
+      <input type="text" name="company_website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0">
+      <div class="alert" id="formAlert" role="alert" hidden>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        <span id="formAlertText"></span>
+      </div>
+
+      <!-- STEP 1: COURSE -->
+      <section class="step" data-step="1" data-title="Course">
+        <div class="card">
+          <h2>Course details</h2>
+          <p class="desc">Choose your university first; the courses and intakes shown depend on it.</p>
+          <div class="grid">
+            <div class="field full">
+              <label for="university">University<span class="req">*</span></label>
+              <select id="university" name="university_id" required data-label="University">
+                <option value="">Loading universities…</option>
+              </select>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="course">Course<span class="req">*</span></label>
+              <select id="course" name="course_id" required disabled data-label="Course">
+                <option value="">Select university first</option>
+              </select>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="intake">Intake<span class="req">*</span></label>
+              <select id="intake" name="intake_id" required disabled data-label="Intake">
+                <option value="">Select course first</option>
+              </select>
+              <p class="err"></p>
+            </div>
+          </div>
+        </div>
+        <div class="note" id="docPreview" hidden>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+          <div><strong>Documents you'll need for this course:</strong> <span id="docPreviewList"></span></div>
+        </div>
+      </section>
+
+      <!-- STEP 2: PERSONAL -->
+      <section class="step" data-step="2" data-title="Personal" hidden>
+        <div class="card">
+          <h2>Personal information</h2>
+          <p class="desc">Enter your details exactly as they appear on your official documents.</p>
+          <div class="grid">
+            <div class="field full">
+              <label for="full_name">Full name<span class="req">*</span></label>
+              <input type="text" id="full_name" name="full_name" required autocomplete="name" maxlength="100" data-rule="name" data-label="Full name">
+              <p class="help">As on your Aadhaar / marksheet</p>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="dob">Date of birth<span class="req">*</span></label>
+              <input type="date" id="dob" name="date_of_birth" required autocomplete="bday" data-rule="dob" data-label="Date of birth">
+              <p class="err"></p>
+            </div>
+            <fieldset class="field">
+              <legend>Gender<span class="req">*</span></legend>
+              <div class="choices" data-required-group="gender" data-label="Gender">
+                <label class="choice"><input type="radio" name="gender" value="Male"><span>Male</span></label>
+                <label class="choice"><input type="radio" name="gender" value="Female"><span>Female</span></label>
+                <label class="choice"><input type="radio" name="gender" value="Other"><span>Other</span></label>
+              </div>
+              <p class="err"></p>
+            </fieldset>
+            <div class="field">
+              <label for="nationality">Nationality<span class="opt">Optional</span></label>
+              <input type="text" id="nationality" name="nationality" list="nationalities" value="Indian" maxlength="50" data-label="Nationality">
+              <datalist id="nationalities"><option value="Indian"><option value="Nepalese"><option value="Bangladeshi"><option value="Sri Lankan"><option value="Emirati"><option value="Other"></datalist>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="marital">Marital status<span class="opt">Optional</span></label>
+              <select id="marital" name="marital_status" data-label="Marital status">
+                <option value="">Select</option><option>Single</option><option>Married</option><option>Divorced</option><option>Widowed</option>
+              </select>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="aadhaar">Aadhaar number<span class="opt">Optional</span></label>
+              <input type="text" id="aadhaar" name="aadhaar_number" inputmode="numeric" placeholder="1234 5678 9012" maxlength="14" data-rule="aadhaar" data-label="Aadhaar number">
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="passport">Passport number<span class="opt">Optional</span></label>
+              <input type="text" id="passport" name="passport_number" maxlength="12" style="text-transform:uppercase" data-rule="passport" data-label="Passport number">
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="father">Father's name<span class="req">*</span></label>
+              <input type="text" id="father" name="father_name" required maxlength="100" data-rule="name" data-label="Father's name">
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="mother">Mother's name<span class="opt">Optional</span></label>
+              <input type="text" id="mother" name="mother_name" maxlength="100" data-rule="name" data-label="Mother's name">
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="guardian">Guardian's name<span class="opt">If applicable</span></label>
+              <input type="text" id="guardian" name="guardian_name" maxlength="100" data-rule="name" data-label="Guardian's name">
+              <p class="err"></p>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Passport size photo<span class="req">*</span></h2>
+          <p class="desc">This photo goes on your application and student records. After uploading you can crop, rotate and adjust it.</p>
+          <div class="field" id="photoField">
+            <div class="photo-row">
+              <div class="photo-frame" id="photoFrame">
+                <img data-photo-view alt="Your passport photo" hidden>
+                <div class="photo-empty" id="photoEmpty">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></svg>
+                  <span>35 × 45 mm</span>
+                </div>
+              </div>
+              <div class="photo-side">
+                <ul class="photo-tips">
+                  <li>Recent colour photo, face clearly visible</li>
+                  <li>Plain white or light background</li>
+                  <li>Look straight at the camera – no sunglasses or caps</li>
+                </ul>
+                <div class="photo-actions">
+                  <label class="btn btn-primary btn-sm">
+                    <input type="file" id="photoInput" class="sr-only" accept="image/jpeg,image/png">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></svg>
+                    <span id="photoUploadTxt">Upload photo</span>
+                  </label>
+                  <label class="btn btn-ghost btn-sm cam-only">
+                    <input type="file" id="photoCam" class="sr-only" accept="image/*" capture="user">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3.5"/></svg>
+                    Take selfie
+                  </label>
+                  <button type="button" class="btn btn-ghost btn-sm" id="photoAdjustBtn" hidden>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+                    Adjust photo</button>
+                  <button type="button" class="link-btn danger" id="photoRemoveBtn" hidden>Remove</button>
+                </div>
+                <p class="help" style="margin-top:8px">JPG or PNG, up to 15 MB.</p>
+                <p class="warn-txt" id="photoWarn" hidden>This photo looks low resolution and may be rejected. A clearer photo is recommended.</p>
+              </div>
+            </div>
+            <p class="err"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 3: CONTACT -->
+      <section class="step" data-step="3" data-title="Contact" hidden>
+        <div class="card">
+          <h2>Contact information</h2>
+          <p class="desc">We'll use these to send updates about your application.</p>
+          <div class="grid">
+            <div class="field">
+              <label for="phone">Phone number<span class="req">*</span></label>
+              <div class="phone">
+                <select id="phone_cc" name="phone_cc" aria-label="Country code" class="cc"></select>
+                <input type="tel" id="phone" name="phone" required inputmode="tel" autocomplete="tel-national" data-rule="phone" data-cc="phone_cc" data-label="Phone number">
+              </div>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="alt_phone">Alternative phone<span class="opt">Optional</span></label>
+              <div class="phone">
+                <select id="alt_phone_cc" name="alt_phone_cc" aria-label="Country code" class="cc"></select>
+                <input type="tel" id="alt_phone" name="alt_phone" inputmode="tel" data-rule="phone" data-cc="alt_phone_cc" data-label="Alternative phone">
+              </div>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <div class="label-row">
+                <label for="whatsapp" class="flabel">WhatsApp number<span class="req">*</span></label>
+                <label class="inline-check"><input type="checkbox" id="waSame" checked> Same as phone</label>
+              </div>
+              <div class="phone" id="waInputs" hidden>
+                <select id="whatsapp_cc" name="whatsapp_cc" aria-label="Country code" class="cc"></select>
+                <input type="tel" id="whatsapp" name="whatsapp" required inputmode="tel" data-rule="phone" data-cc="whatsapp_cc" data-label="WhatsApp number">
+              </div>
+              <p class="help" id="waSameNote">We'll use your phone number for WhatsApp.</p>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="email">Email<span class="req">*</span></label>
+              <input type="email" id="email" name="email" required autocomplete="email" maxlength="120" data-rule="email" data-label="Email">
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="country">Country<span class="opt">Optional</span></label>
+              <select id="country" name="country" autocomplete="country-name" data-label="Country"></select>
+              <p class="err"></p>
+            </div>
+            <div class="field" id="countryOtherWrap" hidden>
+              <label for="country_other">Country name<span class="req">*</span></label>
+              <input type="text" id="country_other" name="country_other" required maxlength="60" data-label="Country name">
+              <p class="err"></p>
+            </div>
+            <div class="field" id="stateSelWrap">
+              <label for="state_sel">State / UT<span class="opt">Optional</span></label>
+              <select id="state_sel" name="state" data-label="State"></select>
+              <p class="err"></p>
+            </div>
+            <div class="field" id="stateTxtWrap" hidden>
+              <label for="state_txt">State / Province<span class="opt">Optional</span></label>
+              <input type="text" id="state_txt" name="state" maxlength="60" data-label="State">
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="district">District<span class="opt">Optional</span></label>
+              <input type="text" id="district" name="district" maxlength="60" data-label="District">
+              <p class="err"></p>
+            </div>
+            <div class="field full">
+              <label for="perm_addr">Permanent address<span class="opt">Optional</span></label>
+              <textarea id="perm_addr" name="permanent_address" maxlength="400" autocomplete="street-address" data-label="Permanent address"></textarea>
+              <p class="err"></p>
+            </div>
+            <div class="field full">
+              <div class="label-row">
+                <label for="corr_addr" class="flabel">Correspondence address<span class="opt">Optional</span></label>
+                <label class="inline-check"><input type="checkbox" id="corrSame"> Same as permanent address</label>
+              </div>
+              <textarea id="corr_addr" name="correspondence_address" maxlength="400" data-label="Correspondence address"></textarea>
+              <p class="err"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 4: EDUCATION & WORK -->
+      <section class="step" data-step="4" data-title="Education & work" hidden>
+        <div class="card">
+          <h2>Qualification details</h2>
+          <p class="desc">Tell us about your highest completed qualification.</p>
+          <div class="grid">
+            <div class="field">
+              <label for="hq">Highest qualification<span class="opt">Optional</span></label>
+              <select id="hq" name="highest_qualification" data-label="Highest qualification">
+                <option value="">Select</option><option>Ph.D</option><option>Master's Degree</option><option>Bachelor's Degree</option><option>12th Standard</option><option>10th Standard</option>
+              </select>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="school">School / College<span class="opt">Optional</span></label>
+              <input type="text" id="school" name="school_college" maxlength="150" data-label="School / College">
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="yop">Year of passing<span class="opt">Optional</span></label>
+              <select id="yop" name="year_of_passing" data-label="Year of passing"></select>
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="grade">Percentage / Grade<span class="opt">Optional</span></label>
+              <input type="text" id="grade" name="percentage_grade" maxlength="10" placeholder="e.g. 78% or A+" data-label="Percentage / Grade">
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label for="teach">Teaching experience<span class="opt">Years, if any</span></label>
+              <input type="number" id="teach" name="teaching_experience_years" min="0" max="50" step="0.5" inputmode="decimal" placeholder="0" data-rule="teach" data-label="Teaching experience (years)">
+              <p class="err"></p>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Employment details</h2>
+          <p class="desc">Your current work status.</p>
+          <div class="grid">
+            <div class="field">
+              <label for="emp">Employment status<span class="req">*</span></label>
+              <select id="emp" name="employment_status" required data-label="Employment status">
+                <option value="">Select</option>
+                <option>Student</option>
+                <option>Currently unemployed</option>
+                <option>Homemaker</option>
+                <option data-work>Self-employed / Business</option>
+                <option data-work>Employed – Full time</option>
+                <option data-work>Employed – Part time</option>
+                <option data-work>Freelancer</option>
+                <option data-work>Retired</option>
+              </select>
+              <p class="err"></p>
+            </div>
+            <div class="field" aria-hidden="true"></div>
+            <div class="field work-only" hidden>
+              <label for="org" id="orgLabel">Organisation / Company name<span class="opt">Optional</span></label>
+              <input type="text" id="org" name="organisation_name" maxlength="150" autocomplete="organization" data-label="Organisation / Company">
+              <p class="err"></p>
+            </div>
+            <div class="field work-only" hidden>
+              <label for="desig">Designation / Job title<span class="opt">Optional</span></label>
+              <input type="text" id="desig" name="designation" maxlength="100" autocomplete="organization-title" data-label="Designation / Job title">
+              <p class="err"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 5: DOCUMENTS -->
+      <section class="step" data-step="5" data-title="Documents" hidden>
+        <div class="card">
+          <h2>Supporting documents</h2>
+          <p class="desc" id="docDesc">Upload clear scans or photos. PDF, JPG or PNG, up to 5 MB each.</p>
+          <div class="note">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            <div>Your <strong>photo</strong> is the same one from Step 2 – adjust or replace it here if needed. Your <strong>signature</strong> is drawn on screen in the final step.</div>
+          </div>
+          <div class="uploads" id="docSlots"></div>
+        </div>
+        <div class="card">
+          <h2>Student loan</h2>
+          <p class="desc">Only if you plan to finance your fees with a student loan.</p>
+          <div class="toggle-row">
+            <div><p class="flabel" id="loanQ">Are you applying for a student loan?<span class="req">*</span></p></div>
+            <div class="choices" role="radiogroup" aria-labelledby="loanQ" data-required-group="loan" data-label="Student loan">
+              <label class="choice"><input type="radio" name="student_loan" value="No"><span>No</span></label>
+              <label class="choice"><input type="radio" name="student_loan" value="Yes"><span>Yes</span></label>
+            </div>
+          </div>
+          <p class="err" id="loanErr" style="margin-top:6px"></p>
+          <div id="loanBlock" hidden style="margin-top:16px">
+            <div class="note">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="9"/></svg>
+              <div>Thanks — noted. A counsellor will contact you to collect the loan documents after you submit; you don't need to upload them here.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 6: REVIEW & SUBMIT -->
+      <section class="step" data-step="6" data-title="Review & submit" hidden>
+        <div class="card">
+          <h2>Review your application</h2>
+          <p class="desc">Check everything before you submit. Use <em>Edit</em> to change a section.</p>
+          <div id="reviewBox"></div>
+        </div>
+
+        <div class="card">
+          <h2>Terms and conditions</h2>
+          <p class="desc">Please read the terms in full.</p>
+          <div class="terms" tabindex="0" aria-label="Terms and conditions">
+            <p>By submitting this application form, I confirm that I have read, understood, and agreed to the following terms and conditions of upCarrera Education.</p>
+            <ul>
+              <li>I declare that all information, documents, academic details, identification details, contact information, and other particulars provided by me are true, complete, and accurate to the best of my knowledge.</li>
+              <li>If any information or document submitted by me is found to be false, misleading, incomplete, altered, or fraudulent, my application or admission may be rejected or cancelled by upCarrera Education and/or the concerned university or institution at any stage.</li>
+              <li>I understand that upCarrera Education may act as an education counselling, admission support, student support, or facilitation service for programs offered by various universities, institutions, educational bodies, or training providers.</li>
+              <li>Academic matters, including degrees, diplomas, certificates, examinations, evaluations, and academic approvals, are governed by the policies of the respective institution.</li>
+              <li>I understand that the concerned university or institution may revise its academic policies, examination procedures, program structure, schedules, fees, learning platforms, or administrative requirements.</li>
+              <li>upCarrera Education will make reasonable efforts to communicate significant updates but is not responsible for changes made independently by universities, institutions, regulators, or awarding bodies.</li>
+              <li>I understand that recognition, eligibility, examinations, certification, and academic regulations are governed by the respective university and relevant authorities.</li>
+              <li>I am responsible for ensuring that the selected qualification meets my academic, professional, employment, licensing, immigration, or career objectives.</li>
+              <li>I agree to pay all applicable registration, admission, tuition, examination, university, and other program-related fees within the prescribed timelines.</li>
+              <li>Fees are subject to the official fee structure and policies of the selected program.</li>
+              <li>Failure to make timely payments may result in delayed registration, service restrictions, cancellation of admission, or other actions permitted by the concerned institution.</li>
+              <li>upCarrera Education does not guarantee eligibility for any specific job, promotion, license, immigration benefit, or further study unless officially stated by the relevant authority.</li>
+              <li>I am responsible for understanding and complying with the academic rules, student policies, administrative procedures, examination requirements, attendance requirements, documentation requirements, and other conditions of the university or institution.</li>
+              <li>I understand that failure to meet academic, administrative, or financial requirements may affect my enrolment, continuation, examination eligibility, certification, or graduation.</li>
+              <li>I understand that upCarrera Education and/or the concerned university may communicate important information through email, telephone, WhatsApp, student portals, or other official communication channels.</li>
+              <li>I am responsible for regularly checking these channels and notifying upCarrera Education and the university of any changes to my contact information.</li>
+              <li>I understand that admission confirmation, registration, examinations, results, mark sheets, certificates, and other academic or administrative activities are managed by the concerned university or institution.</li>
+              <li>upCarrera Education is not responsible for delays, changes, or processing timelines arising from universities, institutions, regulatory authorities, or circumstances beyond its reasonable control.</li>
+              <li>I acknowledge that submission of this application form does not guarantee admission.</li>
+            </ul>
+            <h4>Admission is subject to:</h4>
+            <ul>
+              <li>Meeting the eligibility criteria of the selected university, institution, awarding body, or program.</li>
+              <li>Verification and approval of academic and personal documents.</li>
+              <li>Payment of applicable fees within the prescribed timeline.</li>
+              <li>Compliance with the admission policies of the concerned university or institution.</li>
+            </ul>
+            <p>The final decision regarding admission rests with the respective university, institution, or awarding body wherever applicable.</p>
+            <ul>
+              <li>I consent to the collection, processing, and sharing of my personal, academic, and application-related information with universities, institutions, authorized service providers, or regulatory authorities where required for admission, registration, academic administration, student support, examinations, certification, and related educational purposes, subject to applicable privacy and data-protection requirements.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Student declaration</h2>
+          <p class="desc">Tick each statement and sign below.</p>
+          <div class="field" data-required-checks="decl">
+            <div class="decl">
+              <label class="check"><input type="checkbox" name="decl_read" value="1" data-label="Declaration 1"> <span>I hereby confirm that I have carefully read and understood the above Terms and Conditions.</span></label>
+              <label class="check"><input type="checkbox" name="decl_genuine" value="1" data-label="Declaration 2"> <span>I certify that the information and documents provided by me are genuine and accurate. I understand the admission process, applicable fees, program requirements, refund conditions, and the role of upCarrera Education.</span></label>
+              <label class="check"><input type="checkbox" name="decl_proceed" value="1" data-label="Declaration 3"> <span>I voluntarily agree to proceed with my application and to comply with the applicable terms, policies, and academic requirements.</span></label>
+            </div>
+            <p class="err"></p>
+          </div>
+
+          <div class="grid" style="margin-top:22px">
+            <div class="field">
+              <label for="sig_name">Student name</label>
+              <input type="text" id="sig_name" name="declaration_name" readonly tabindex="-1">
+            </div>
+            <div class="field">
+              <label for="sig_date">Date</label>
+              <input type="text" id="sig_date" name="declaration_date" readonly tabindex="-1">
+            </div>
+            <div class="field full" id="sigField">
+              <span class="flabel" id="sigLbl">Student signature<span class="req">*</span></span>
+              <div class="sig-wrap" id="sigWrap">
+                <div class="sig-line"></div>
+                <canvas id="sigPad" role="img" aria-labelledby="sigLbl"></canvas>
+                <div class="sig-ph" id="sigPh">Sign here with your mouse or finger</div>
+              </div>
+              <div class="sig-actions">
+                <span class="help">Use the same signature as on your documents.</span>
+                <button type="button" class="link-btn" id="sigClear">Clear</button>
+              </div>
+              <p class="err"></p>
+            </div>
+            <div class="field full">
+              <label class="check" style="padding:14px 16px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--secondary)">
+                <input type="checkbox" name="agree_terms" id="agree" value="1">
+                <span><strong>I have read, understood, and agree to the Terms and Conditions.</strong></span>
+              </label>
+              <p class="err"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button type="button" class="btn btn-ghost" id="backBtn" hidden aria-label="Back">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span class="btn-txt">Back</span></button>
+        <span></span>
+        <button type="button" class="btn btn-primary" id="nextBtn">Continue
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
+        <button type="submit" class="btn btn-accent" id="submitBtn" hidden>Submit application</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- SUCCESS -->
+  <section id="successView" class="card success" hidden tabindex="-1">
+    <div class="tick"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+    <h2>Application submitted</h2>
+    <p>Thank you, <span id="succName"></span>. Please keep your application number for reference.</p>
+    <div class="ref" id="succRef"></div>
+    <p>A confirmation has been sent to <strong id="succEmail"></strong>.</p>
+    <ol class="next-steps">
+      <li><span class="n">1</span><span>Our admissions team verifies your details and documents.</span></li>
+      <li><span class="n">2</span><span>Your counsellor contacts you on phone / WhatsApp about fees and next steps.</span></li>
+      <li><span class="n">3</span><span>Once fees are paid and the university approves, your admission is confirmed.</span></li>
+    </ol>
+  </section>
+
+  <footer>© upCarrera Education · Your information is handled under our privacy and data-protection policy.</footer>
+</main>
+
+<!-- PHOTO EDITOR -->
+<dialog id="photoEditor" class="editor" aria-labelledby="edTitle">
+  <div class="ed-head">
+    <h2 id="edTitle">Adjust your photo</h2>
+    <button type="button" class="icon-btn" id="edClose" aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="ed-body">
+    <div>
+      <div class="ed-stage" id="edStage" tabindex="0" aria-label="Photo crop area. Drag, or use arrow keys to move the photo; plus and minus to zoom.">
+        <canvas id="edImg"></canvas><canvas id="edOverlay"></canvas>
+      </div>
+      <p class="help ed-hint">Drag to position · scroll or pinch to zoom · keep your face inside the oval.</p>
+      <p class="warn-txt" id="edWarn" hidden>Low resolution at this zoom – zoom out or use a clearer photo.</p>
+    </div>
+    <div class="ed-tools">
+      <div class="ed-btns">
+        <button type="button" class="tool" data-act="rotL"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>Rotate left</button>
+        <button type="button" class="tool" data-act="rotR"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Rotate right</button>
+        <button type="button" class="tool" data-act="flip" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M8 7 3 12l5 5V7z"/><path d="m16 7 5 5-5 5V7z"/></svg>Flip</button>
+        <button type="button" class="tool" data-act="reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.7 9.7 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/></svg>Reset</button>
+      </div>
+      <label class="slider"><span class="slider-top"><span>Zoom</span><output id="edZoomOut">100%</output></span><input type="range" id="edZoom" min="1" max="4" step="0.01" value="1"></label>
+      <label class="slider"><span class="slider-top"><span>Straighten</span><output id="edTiltOut">0°</output></span><input type="range" id="edTilt" min="-15" max="15" step="0.5" value="0"></label>
+      <label class="slider"><span class="slider-top"><span>Brightness</span><output id="edBrightOut">100%</output></span><input type="range" id="edBright" min="60" max="140" step="1" value="100"></label>
+    </div>
+  </div>
+  <div class="ed-foot">
+    <button type="button" class="btn btn-ghost" id="edCancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="edApply">Save photo</button>
+  </div>
+</dialog>
+
+<script>
+(function(){
+'use strict';
+
+/* ======================= CONFIG ======================= */
+const CONFIG = {
+  catalogueUrl: '/api/public/intake/catalogue',   // upCarrera public-intake API
+  submitUrl: '/api/public/intake/applications',
+  maxFileMB: 5,
+  maxFilesPerMultiSlot: 6,
+  acceptMime: ['application/pdf','image/jpeg','image/png'],
+  acceptAttr: '.pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png'
+};
+
+/* ============== SAMPLE DATA (design only; used if catalogueUrl is null) ============== */
+const C = (id,name,g)=>({id,name,document_group:g});
+const SCHOOL = [C('10th','10th','10th'),C('12h','12th Humanities','12th'),C('12c','12th Commerce','12th'),C('12pcm','12th Science (PCM)','12th'),C('12pcb','12th Science (PCB)','12th')];
+const UG = [C('ba','BA','ug'),C('bba','BBA','ug'),C('bcom','BCom','ug'),C('bca','BCA','ug'),C('lba','Lateral BA','ug'),C('lbba','Lateral BBA','ug'),C('lbcom','Lateral BCom','ug'),C('lbca','Lateral BCA','ug')];
+const DIP = [C('dart','Diploma in Art','ug'),C('dmgmt','Diploma in Management','ug'),C('dcom','Diploma in Commerce','ug'),C('dca','Diploma in Computer Application','ug')];
+const PG = [C('ma','MA','pg'),C('mba','MBA','pg'),C('mcom','MCom','pg'),C('mca','MCA','pg'),C('msc','MSc','pg'),C('msw','MSW','pg'),C('lma','Lateral MA','pg'),C('lmba','Lateral MBA','pg'),C('lmcom','Lateral MCom','pg'),C('lmca','Lateral MCA','pg')];
+const PGD = [C('pgda','PG Diploma Arts','pg'),C('pgdm','PG Diploma Management','pg'),C('pgdc','PG Diploma Commerce','pg'),C('pgdca','PG Diploma Computer Application','pg')];
+const withIntakes = (list, intakes)=>list.map(c=>({...c, id:c.id, intakes:intakes.map((n,i)=>({id:c.id+'-i'+i,name:n}))}));
+const SAMPLE_CATALOGUE = { universities: [
+  {id:'u-sunrise', name:'Sunrise Board of Open Schooling (sample)', courses: withIntakes(SCHOOL, ['October 2026','April 2027'])},
+  {id:'u-northfield', name:'Northfield University (sample)', courses: withIntakes([...UG,...PG], ['January 2027','July 2027'])},
+  {id:'u-crescent', name:'Crescent Open University (sample)', courses: withIntakes([...DIP,...PGD,UG[0],UG[2],PG[0],PG[1],PG[2]], ['January 2027 (Winter)','July 2027 (Summer)'])}
+]};
+
+/* ======================= DOCUMENT RULES =======================
+   DOCS + DOC_GROUPS are the SAMPLE-mode fallback; when the live catalogue loads,
+   loadCatalogue() rebuilds the course-document slots from the server's
+   `document_rules` (keyed by canonical course level) so the form asks for exactly
+   what Student Affairs verifies. `let` so they can be rebuilt. */
+let DOCS = {
+  photo:          {label:'Passport size photo', hint:'Recent photo, plain light background', images:true},
+  aadhaar_front:  {label:'Aadhaar card – front'},
+  aadhaar_back:   {label:'Aadhaar card – back'},
+  sslc:           {label:'SSLC (10th) certificate', hint:'Scanned copy'},
+  hsc:            {label:'12th certificate', hint:'Scanned copy'},
+  degree:         {label:'Degree final certificate', hint:'Scanned copy'},
+  marksheet:      {label:'Marksheet(s)', hint:'Consolidated or all semester / year marksheets', multi:true}
+};
+const BASE = ['aadhaar_front','aadhaar_back'];   // passport photo is handled separately in Step 1
+let DOC_GROUPS = {
+  '10th': BASE,
+  '12th': [...BASE,'sslc'],
+  'ug':   [...BASE,'sslc','hsc'],
+  'pg':   [...BASE,'sslc','hsc','degree','marksheet']
+};
+
+/* ======================= REFERENCE LISTS ======================= */
+const DIAL = [['+91','IN'],['+971','AE'],['+966','SA'],['+974','QA'],['+968','OM'],['+965','KW'],['+973','BH'],['+977','NP'],['+880','BD'],['+94','LK'],['+44','UK'],['+1','US/CA'],['+61','AU']];
+const COUNTRIES = ['India','United Arab Emirates','Saudi Arabia','Qatar','Oman','Kuwait','Bahrain','Nepal','Bangladesh','Sri Lanka','United Kingdom','United States','Canada','Australia','Other'];
+const STATES = ['Andaman and Nicobar Islands','Andhra Pradesh','Arunachal Pradesh','Assam','Bihar','Chandigarh','Chhattisgarh','Dadra and Nagar Haveli and Daman and Diu','Delhi','Goa','Gujarat','Haryana','Himachal Pradesh','Jammu and Kashmir','Jharkhand','Karnataka','Kerala','Ladakh','Lakshadweep','Madhya Pradesh','Maharashtra','Manipur','Meghalaya','Mizoram','Nagaland','Odisha','Puducherry','Punjab','Rajasthan','Sikkim','Tamil Nadu','Telangana','Tripura','Uttar Pradesh','Uttarakhand','West Bengal'];
+
+/* ======================= HELPERS ======================= */
+const $ = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
+const esc = s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const isVisible = el=>{ for(let n=el; n && n!==document.body; n=n.parentElement){ if(n.classList?.contains('step')) return true; if(n.hidden) return false; } return true; };
+const fmtSize = b=> b<1024*1024 ? Math.max(1,Math.round(b/1024))+' KB' : (b/1048576).toFixed(1)+' MB';
+const opt = (v,t,sel)=>{const o=document.createElement('option');o.value=v;o.textContent=t??v;if(sel)o.selected=true;return o;};
+
+// Verhoeff checksum (Aadhaar)
+const VD=[[0,1,2,3,4,5,6,7,8,9],[1,2,3,4,0,6,7,8,9,5],[2,3,4,0,1,7,8,9,5,6],[3,4,0,1,2,8,9,5,6,7],[4,0,1,2,3,9,5,6,7,8],[5,9,8,7,6,0,4,3,2,1],[6,5,9,8,7,1,0,4,3,2],[7,6,5,9,8,2,1,0,4,3],[8,7,6,5,9,3,2,1,0,4],[9,8,7,6,5,4,3,2,1,0]];
+const VP=[[0,1,2,3,4,5,6,7,8,9],[1,5,7,6,2,8,3,0,9,4],[5,8,0,3,7,9,6,1,4,2],[8,9,1,6,0,4,3,5,2,7],[9,4,5,3,1,2,6,8,7,0],[4,2,8,6,5,7,3,9,0,1],[2,7,9,3,8,0,6,4,1,5],[7,0,4,6,9,1,3,2,5,8]];
+const verhoeff = num=>{let c=0;const a=num.split('').reverse().map(Number);for(let i=0;i<a.length;i++)c=VD[c][VP[i%8][a[i]]];return c===0;};
+
+/* ======================= STATE ======================= */
+const form = $('#appForm');
+const steps = $$('.step', form);
+const TOTAL = steps.length;
+let current = 1, maxReached = 1;
+let catalogue = null;
+let liveCatalogue = false;   // true once the server catalogue (document_rules) is loaded
+const fileStore = {};   // slot -> File[]
+
+/* ======================= INIT LISTS ======================= */
+$$('.cc').forEach(s=>DIAL.forEach(([c,n],i)=>s.appendChild(opt(c,`${n} ${c}`,i===0))));
+const country = $('#country'); country.appendChild(opt('','Select'));
+COUNTRIES.forEach(c=>country.appendChild(opt(c,c,c==='India')));
+const stateSel = $('#state_sel'); stateSel.appendChild(opt('','Select'));
+STATES.forEach(s=>stateSel.appendChild(opt(s)));
+const yop = $('#yop'); yop.appendChild(opt('','Select'));
+for(let y=new Date().getFullYear()+1;y>=1960;y--) yop.appendChild(opt(String(y)));
+const today = new Date();
+const iso = d=>d.toISOString().slice(0,10);
+$('#dob').max = iso(new Date(today.getFullYear()-10, today.getMonth(), today.getDate()));
+$('#dob').min = '1940-01-01';
+$('#sig_date').value = today.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+
+/* ======================= STEPPER ======================= */
+const stepper = $('#stepper');
+steps.forEach((s,i)=>{
+  const li=document.createElement('li');
+  li.innerHTML=`<button type="button" data-go="${i+1}"><span class="bar"></span><span class="lbl"><span class="num">${i+1}</span>${esc(s.dataset.title)}</span></button>`;
+  stepper.appendChild(li);
+});
+stepper.addEventListener('click',e=>{
+  const b=e.target.closest('[data-go]'); if(!b) return;
+  const n=+b.dataset.go; if(n<current || n<=maxReached && n!==current && validateUpTo(n-1)) go(n);
+});
+function renderStepper(){
+  $$('li',stepper).forEach((li,i)=>{
+    const n=i+1;
+    li.className = n===current?'current':(n<=maxReached?'done':'');
+    const b=$('button',li);
+    if(n===current) b.setAttribute('aria-current','step'); else b.removeAttribute('aria-current');
+    b.tabIndex = (n<=maxReached && n!==current)?0:-1;
+  });
+  $('#mprogTitle').textContent = steps[current-1].dataset.title;
+  $('#mprogCount').textContent = `Step ${current} of ${TOTAL}`;
+  $('#mprogBar').style.width = (current/TOTAL*100)+'%';
+}
+function go(n){
+  steps.forEach(s=>s.hidden = +s.dataset.step!==n);
+  current=n; maxReached=Math.max(maxReached,n);
+  $('#backBtn').hidden = n===1;
+  $('#nextBtn').hidden = n===TOTAL;
+  $('#submitBtn').hidden = n!==TOTAL;
+  hideAlert();
+  if(n===TOTAL){ buildReview(); $('#sig_name').value = $('#full_name').value.trim(); requestAnimationFrame(sizeCanvas); }
+  renderStepper();
+  document.body.dataset.step=n;
+  $('#formView').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function validateUpTo(n){ for(let i=1;i<=n;i++){ if(!validateStep(i,false)){ go(i); validateStep(i,true); return false; } } return true; }
+
+$('#nextBtn').addEventListener('click',()=>{ if(validateStep(current,true)) go(current+1); });
+$('#backBtn').addEventListener('click',()=>go(current-1));
+
+/* ======================= CATALOGUE / DEPENDENT DROPDOWNS ======================= */
+const uniSel=$('#university'), courseSel=$('#course'), intakeSel=$('#intake');
+async function loadCatalogue(){
+  try{
+    if(CONFIG.catalogueUrl){
+      const r=await fetch(CONFIG.catalogueUrl,{headers:{Accept:'application/json'}}); if(!r.ok) throw new Error(r.status);
+      const json=await r.json();
+      // The upCarrera API wraps responses in { status, message, data }.
+      catalogue=(json && json.data) ? json.data : json;
+      rebuildDocsFromCatalogue(catalogue);
+    }
+    else catalogue=SAMPLE_CATALOGUE;
+  }catch(err){
+    console.error('Catalogue load failed',err);
+    uniSel.innerHTML=''; uniSel.appendChild(opt('','Could not load universities – please refresh'));
+    return;
+  }
+  uniSel.innerHTML=''; uniSel.appendChild(opt('','Select university'));
+  (catalogue.universities||[]).forEach(u=>uniSel.appendChild(opt(u.id,u.name)));
+}
+// Server drives the per-course documents: rebuild DOC_GROUPS + DOCS from
+// catalogue.document_rules (keyed by canonical course level). Photo + signature
+// stay separate. Slots are `doc_<document_type_id>` — the shape the API accepts.
+function rebuildDocsFromCatalogue(cat){
+  const rules = (cat && cat.document_rules) || null;
+  if(!rules) return;
+  liveCatalogue = true;         // from here, no sample-mode BASE fallback
+  DOC_GROUPS = {};
+  for(const [level,list] of Object.entries(rules)){
+    DOC_GROUPS[level] = (list||[]).map(r=>r.slot);
+    for(const r of (list||[])) DOCS[r.slot] = { label:r.label, hint:r.help_text||'', multi:(r.max_files>1) };
+  }
+}
+const getUni = ()=>catalogue?.universities.find(u=>String(u.id)===String(uniSel.value));
+const getCourse = ()=>getUni()?.courses.find(c=>String(c.id)===String(courseSel.value));
+uniSel.addEventListener('change',()=>{
+  const u=getUni();
+  courseSel.innerHTML=''; intakeSel.innerHTML='';
+  intakeSel.appendChild(opt('','Select course first')); intakeSel.disabled=true;
+  if(!u){ courseSel.appendChild(opt('','Select university first')); courseSel.disabled=true; }
+  else { courseSel.appendChild(opt('','Select course')); u.courses.forEach(c=>courseSel.appendChild(opt(c.id,c.name))); courseSel.disabled=false; }
+  onCourseChange();
+});
+courseSel.addEventListener('change',()=>{
+  const c=getCourse();
+  intakeSel.innerHTML='';
+  if(!c){ intakeSel.appendChild(opt('','Select course first')); intakeSel.disabled=true; }
+  else { intakeSel.appendChild(opt('','Select intake')); c.intakes.forEach(i=>intakeSel.appendChild(opt(i.id,i.name))); intakeSel.disabled=false; if(c.intakes.length===1) intakeSel.value=c.intakes[0].id; }
+  onCourseChange();
+});
+function requiredDocSlots(){ const c=getCourse(); if(!c) return []; return DOC_GROUPS[c.document_group] || (liveCatalogue ? [] : BASE); }
+function onCourseChange(){
+  const slots=requiredDocSlots();
+  const prev=$('#docPreview');
+  if(slots.length){ prev.hidden=false; $('#docPreviewList').textContent=['Passport photo (Step 2)','Signature (drawn on screen)',...slots.map(s=>(DOCS[s]?.label)||s)].join(' · '); }
+  else prev.hidden=true;
+  renderSlots($('#docSlots'), slots);
+}
+
+/* ======================= UPLOADS ======================= */
+const UP_ICON='<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></svg>';
+const X_ICON='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+function renderSlots(container, slots){
+  container.innerHTML='';
+  if(container.id==='docSlots'){ const t=document.createElement('div'); t.className='upload field'; t.id='docPhotoTile'; container.appendChild(t); renderDocPhotoTile(); }
+  if(!slots.length){ container.insertAdjacentHTML('beforeend','<p class="help">Select a course in Step 1 to see the other documents required.</p>'); return; }
+  slots.forEach(slot=>{
+    const d=DOCS[slot]||{label:slot}, id='f_'+slot;
+    const accept = d.images ? '.jpg,.jpeg,.png,image/jpeg,image/png' : CONFIG.acceptAttr;
+    const types = d.images ? 'JPG or PNG' : 'PDF, JPG or PNG';
+    const el=document.createElement('div');
+    el.className='upload field'+(d.multi?' multi':''); el.dataset.slot=slot;
+    el.innerHTML=`
+      <div><span class="upload-label" id="${id}_l">${esc(d.label)}<span class="req">*</span></span>${d.hint?`<span class="upload-hint">${esc(d.hint)}</span>`:''}</div>
+      <div class="drop-row">
+        <label class="drop">${UP_ICON}
+          <input type="file" id="${id}" class="sr-only" accept="${accept}" ${d.multi?'multiple':''} aria-labelledby="${id}_l">
+          <span class="drop-txt"><strong>${d.multi?'Add files':'Choose file'}</strong><span class="drag-txt"> or drag here</span><small>${types} · max ${CONFIG.maxFileMB} MB${d.multi?' each':''}</small></span>
+        </label>
+        <label class="cam-btn cam-only" title="Take a photo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3.5"/></svg><span>Camera</span>
+          <input type="file" class="sr-only cam-in" accept="image/jpeg,image/png,image/*" capture="environment" aria-label="Take a photo of ${esc(d.label)}">
+        </label>
+      </div>
+      <ul class="files"></ul>
+      <p class="err"></p>`;
+    container.appendChild(el);
+    const input=$('input',el), drop=$('.drop',el);
+    input.addEventListener('change',()=>{ addFiles(el, Array.from(input.files)); input.value=''; });
+    const cam=$('.cam-in',el); cam.addEventListener('change',()=>{ addFiles(el, Array.from(cam.files)); cam.value=''; });
+    ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+    ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+    drop.addEventListener('drop',e=>addFiles(el, Array.from(e.dataTransfer.files)));
+    renderFiles(el);
+  });
+}
+function addFiles(el, files){
+  const slot=el.dataset.slot, d=DOCS[slot]||{};
+  const okTypes = d.images ? ['image/jpeg','image/png'] : CONFIG.acceptMime;
+  const errs=[]; let list = d.multi ? [...(fileStore[slot]||[])] : [];
+  for(const f of files){
+    if(!okTypes.includes(f.type)){ errs.push(`${f.name}: ${d.images?'only JPG or PNG':'only PDF, JPG or PNG'} allowed`); continue; }
+    if(f.size>CONFIG.maxFileMB*1048576){ errs.push(`${f.name}: larger than ${CONFIG.maxFileMB} MB`); continue; }
+    if(d.multi && list.length>=CONFIG.maxFilesPerMultiSlot){ errs.push(`Up to ${CONFIG.maxFilesPerMultiSlot} files`); break; }
+    if(d.multi) list.push(f); else list=[f];
+    if(!d.multi) break;
+  }
+  if(list.length) fileStore[slot]=list;
+  renderFiles(el);
+  setErr(el, errs.join('. '));
+}
+function renderFiles(el){
+  const slot=el.dataset.slot, list=fileStore[slot]||[], ul=$('.files',el);
+  ul.innerHTML='';
+  el.classList.toggle('complete', list.length>0);
+  list.forEach((f,i)=>{
+    const li=document.createElement('li'); li.className='file';
+    const isImg=f.type.startsWith('image/');
+    li.innerHTML=`${isImg?'<img class="thumb" alt="">':'<span class="thumb">PDF</span>'}
+      <div class="file-meta"><div class="file-name" title="${esc(f.name)}">${esc(f.name)}</div><div class="file-size">${fmtSize(f.size)} · <span class="badge-ok">✓ Ready</span></div></div>
+      <button type="button" class="icon-btn" aria-label="Remove ${esc(f.name)}">${X_ICON}</button>`;
+    if(isImg){ const img=$('img',li), url=URL.createObjectURL(f); img.src=url; img.onload=()=>URL.revokeObjectURL(url); }
+    $('button',li).addEventListener('click',()=>{ list.splice(i,1); if(!list.length) delete fileStore[slot]; renderFiles(el); $('input[type=file]',el).focus(); });
+    ul.appendChild(li);
+  });
+  if(list.length) setErr(el,'');
+}
+
+/* Loan toggle — v1 collects only the yes/no; loan documents are gathered by a
+   counsellor after submission (no loan uploads here). */
+$$('input[name=student_loan]').forEach(r=>r.addEventListener('change',()=>{
+  const yes=$('input[name=student_loan]:checked')?.value==='Yes';
+  $('#loanBlock').hidden=!yes;
+  $('#loanErr').textContent='';
+}));
+
+/* ======================= PASSPORT PHOTO + EDITOR ======================= */
+const PHOTO = { outW:630, outH:810, maxSourceMB:15, minSourcePx:300, quality:0.92 }; // 35×45 mm (7:9)
+const photoState = { img:null, srcUrl:null, settings:null, output:null, url:null, lowRes:false };
+const ED_DEFAULTS = { rot:0, tilt:0, flip:false, zoom:1, nx:0, ny:0, bright:100 };
+const ed = { img:null, pendingFile:null, fw:0, fh:0, cw:0, ch:0, lowRes:false, ...ED_DEFAULTS };
+const dlg=$('#photoEditor'), stage=$('#edStage'), cImg=$('#edImg'), cOv=$('#edOverlay');
+const gImg=cImg.getContext('2d'), gOv=cOv.getContext('2d');
+const zoomIn=$('#edZoom'), tiltIn=$('#edTilt'), brightIn=$('#edBright');
+const photoField=$('#photoField'), photoInput=$('#photoInput');
+
+function loadImage(file){
+  return new Promise((res,rej)=>{ const u=URL.createObjectURL(file), i=new Image();
+    i.onload=()=>res(i); i.onerror=()=>{ URL.revokeObjectURL(u); rej(new Error('decode')); }; i.src=u; });
+}
+photoInput.addEventListener('change',()=>handlePhotoInput(photoInput));
+$('#photoCam').addEventListener('change',()=>handlePhotoInput($('#photoCam')));
+function photoErr(msg){ setErr(photoField,msg); const t=$('#docPhotoTile'); if(t) setErr(t,msg); if(current!==2 && current!==5) showAlert(msg); }
+async function handlePhotoInput(inp){
+  const f=inp.files[0]; inp.value=''; if(!f) return;
+  const err = !['image/jpeg','image/png'].includes(f.type) ? 'Please upload a JPG or PNG photo'
+            : f.size>PHOTO.maxSourceMB*1048576 ? `Photo must be smaller than ${PHOTO.maxSourceMB} MB` : '';
+  if(err){ photoErr(err); return; }
+  try{ openEditor(await loadImage(f), null, f); }
+  catch(_){ photoErr('This image could not be opened. Please try another photo.'); }
+}
+$('#photoAdjustBtn').addEventListener('click',()=>openEditor(photoState.img, photoState.settings, null));
+$('#photoRemoveBtn').addEventListener('click',()=>{
+  [photoState.srcUrl, photoState.url].forEach(u=>u&&URL.revokeObjectURL(u));
+  Object.assign(photoState,{img:null,srcUrl:null,settings:null,output:null,url:null,lowRes:false});
+  refreshPhoto(); photoInput.focus();
+});
+
+function openEditor(img, settings, file){
+  Object.assign(ed, ED_DEFAULTS, settings||{}, {img, pendingFile:file||null});
+  syncControls(); dlg.showModal();
+  requestAnimationFrame(()=>{ edLayout(); stage.focus(); });
+}
+const edAngle = ()=>(ed.rot*90 + ed.tilt)*Math.PI/180;
+function edScale(){
+  const t=edAngle(), c=Math.abs(Math.cos(t)), s=Math.abs(Math.sin(t)), W=ed.img.naturalWidth, H=ed.img.naturalHeight;
+  return Math.max((ed.fw*c+ed.fh*s)/W, (ed.fw*s+ed.fh*c)/H) * ed.zoom;
+}
+function clampPan(){
+  const {fw,fh}=ed, t=edAngle(), c=Math.cos(t), s=Math.sin(t), S=edScale(), W=ed.img.naturalWidth, H=ed.img.naturalHeight;
+  const px=ed.nx*fw, py=ed.ny*fw;
+  let vx=(-c*px - s*py)/S, vy=(s*px - c*py)/S;
+  const ac=Math.abs(c), as=Math.abs(s);
+  const lx=Math.max(0,(W-(fw*ac+fh*as)/S)/2), ly=Math.max(0,(H-(fw*as+fh*ac)/S)/2);
+  vx=Math.min(lx,Math.max(-lx,vx)); vy=Math.min(ly,Math.max(-ly,vy));
+  ed.nx=-(c*vx - s*vy)*S/fw; ed.ny=-(s*vx + c*vy)*S/fw;
+}
+function paint(g, cw, ch, k, solidBg){
+  g.save();
+  if(solidBg){ g.fillStyle='#fff'; g.fillRect(0,0,cw,ch); } else g.clearRect(0,0,cw,ch);
+  const S=edScale();
+  g.translate(cw/2 + ed.nx*ed.fw*k, ch/2 + ed.ny*ed.fw*k);
+  g.rotate(edAngle());
+  g.scale(S*k*(ed.flip?-1:1), S*k);
+  g.imageSmoothingEnabled=true; g.imageSmoothingQuality='high';
+  g.drawImage(ed.img, -ed.img.naturalWidth/2, -ed.img.naturalHeight/2);
+  g.restore();
+}
+function edLayout(){
+  const r=stage.getBoundingClientRect(); if(!r.width) return;
+  const dpr=window.devicePixelRatio||1;
+  ed.cw=r.width; ed.ch=r.height;
+  [cImg,cOv].forEach(c=>{ c.width=Math.round(r.width*dpr); c.height=Math.round(r.height*dpr); });
+  gImg.setTransform(dpr,0,0,dpr,0,0); gOv.setTransform(dpr,0,0,dpr,0,0);
+  let fh=r.height*0.84, fw=fh*7/9;
+  if(fw>r.width*0.84){ fw=r.width*0.84; fh=fw*9/7; }
+  ed.fw=fw; ed.fh=fh;
+  clampPan(); edDraw(); drawOverlay();
+}
+function edDraw(){
+  paint(gImg, ed.cw, ed.ch, 1, false);
+  cImg.style.filter=`brightness(${ed.bright}%)`;
+  ed.lowRes = ed.fw/edScale() < PHOTO.minSourcePx;
+  $('#edWarn').hidden=!ed.lowRes;
+}
+function drawOverlay(){
+  const {cw,ch,fw,fh}=ed, x=(cw-fw)/2, y=(ch-fh)/2, g=gOv;
+  g.clearRect(0,0,cw,ch);
+  g.fillStyle='rgba(8,16,12,.62)'; g.beginPath(); g.rect(0,0,cw,ch); g.rect(x,y,fw,fh); g.fill('evenodd');
+  g.strokeStyle='rgba(255,255,255,.22)'; g.lineWidth=1; g.beginPath();
+  for(let i=1;i<3;i++){ g.moveTo(x+fw*i/3,y); g.lineTo(x+fw*i/3,y+fh); g.moveTo(x,y+fh*i/3); g.lineTo(x+fw,y+fh*i/3); }
+  g.stroke();
+  const guide=(fn)=>{ [['rgba(0,0,0,.45)',3.5],['#fff',1.6]].forEach(([c,w])=>{ g.strokeStyle=c; g.lineWidth=w; g.beginPath(); fn(); g.stroke(); }); };
+  guide(()=>g.rect(x,y,fw,fh));
+  g.setLineDash([7,5]);
+  guide(()=>g.ellipse(cw/2, y+fh*0.42, fw*0.30, fh*0.29, 0, 0, Math.PI*2));
+  g.setLineDash([]);
+}
+function syncOutputs(){
+  $('#edZoomOut').textContent=Math.round(ed.zoom*100)+'%';
+  $('#edTiltOut').textContent=(ed.tilt>0?'+':'')+ed.tilt+'°';
+  $('#edBrightOut').textContent=ed.bright+'%';
+}
+function syncControls(){ zoomIn.value=ed.zoom; tiltIn.value=ed.tilt; brightIn.value=ed.bright; $('[data-act=flip]').setAttribute('aria-pressed',String(ed.flip)); syncOutputs(); }
+function update(){ clampPan(); edDraw(); syncControls(); }
+function setZoom(z){ ed.zoom=Math.min(4,Math.max(1,z)); update(); }
+
+zoomIn.addEventListener('input',()=>setZoom(+zoomIn.value));
+tiltIn.addEventListener('input',()=>{ ed.tilt=+tiltIn.value; update(); });
+brightIn.addEventListener('input',()=>{ ed.bright=+brightIn.value; edDraw(); syncOutputs(); });
+$$('.tool',dlg).forEach(b=>b.addEventListener('click',()=>{
+  const a=b.dataset.act;
+  if(a==='rotL') ed.rot=(ed.rot+3)%4;
+  if(a==='rotR') ed.rot=(ed.rot+1)%4;
+  if(a==='flip') ed.flip=!ed.flip;
+  if(a==='reset') Object.assign(ed, ED_DEFAULTS);
+  update();
+}));
+const ptrs=new Map(); let pinch=null;
+stage.addEventListener('pointerdown',e=>{
+  stage.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); stage.classList.add('dragging');
+  if(ptrs.size===2){ const [a,b]=[...ptrs.values()]; pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1, z:ed.zoom}; }
+});
+stage.addEventListener('pointermove',e=>{
+  const p=ptrs.get(e.pointerId); if(!p) return;
+  const dx=e.clientX-p.x, dy=e.clientY-p.y; p.x=e.clientX; p.y=e.clientY;
+  if(ptrs.size>=2 && pinch){ const [a,b]=[...ptrs.values()]; setZoom(pinch.z*Math.hypot(a.x-b.x,a.y-b.y)/pinch.d); }
+  else { ed.nx+=dx/ed.fw; ed.ny+=dy/ed.fw; clampPan(); edDraw(); }
+});
+const ptrEnd=e=>{ ptrs.delete(e.pointerId); if(ptrs.size<2) pinch=null; if(!ptrs.size) stage.classList.remove('dragging'); };
+stage.addEventListener('pointerup',ptrEnd); stage.addEventListener('pointercancel',ptrEnd);
+stage.addEventListener('wheel',e=>{ e.preventDefault(); setZoom(ed.zoom*Math.exp(-e.deltaY*0.0015)); },{passive:false});
+stage.addEventListener('keydown',e=>{
+  const step=8/ed.fw, k=e.key;
+  if(k==='ArrowLeft') ed.nx-=step; else if(k==='ArrowRight') ed.nx+=step;
+  else if(k==='ArrowUp') ed.ny-=step; else if(k==='ArrowDown') ed.ny+=step;
+  else if(k==='+'||k==='=') return setZoom(ed.zoom*1.1), e.preventDefault();
+  else if(k==='-'||k==='_') return setZoom(ed.zoom/1.1), e.preventDefault();
+  else return;
+  e.preventDefault(); clampPan(); edDraw();
+});
+window.addEventListener('resize',()=>{ if(dlg.open) edLayout(); });
+
+$('#edCancel').addEventListener('click',()=>dlg.close());
+$('#edClose').addEventListener('click',()=>dlg.close());
+dlg.addEventListener('close',()=>{
+  if(ed.pendingFile && ed.img && ed.img.src!==photoState.srcUrl) URL.revokeObjectURL(ed.img.src);
+  ed.pendingFile=null;
+});
+$('#edApply').addEventListener('click',async ()=>{
+  const btn=$('#edApply'); btn.disabled=true;
+  const c=document.createElement('canvas'); c.width=PHOTO.outW; c.height=PHOTO.outH;
+  const g=c.getContext('2d');
+  paint(g, PHOTO.outW, PHOTO.outH, PHOTO.outW/ed.fw, true);
+  if(ed.bright!==100){
+    const d=g.getImageData(0,0,c.width,c.height), a=d.data, m=ed.bright/100;
+    for(let i=0;i<a.length;i+=4){ a[i]=Math.min(255,a[i]*m); a[i+1]=Math.min(255,a[i+1]*m); a[i+2]=Math.min(255,a[i+2]*m); }
+    g.putImageData(d,0,0);
+  }
+  const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',PHOTO.quality));
+  if(ed.pendingFile){
+    if(photoState.srcUrl && photoState.srcUrl!==ed.img.src) URL.revokeObjectURL(photoState.srcUrl);
+    photoState.img=ed.img; photoState.srcUrl=ed.img.src;
+  }
+  photoState.settings={rot:ed.rot,tilt:ed.tilt,flip:ed.flip,zoom:ed.zoom,nx:ed.nx,ny:ed.ny,bright:ed.bright};
+  photoState.output=new File([blob],'passport-photo.jpg',{type:'image/jpeg'});
+  photoState.lowRes=ed.lowRes;
+  if(photoState.url) URL.revokeObjectURL(photoState.url);
+  photoState.url=URL.createObjectURL(photoState.output);
+  btn.disabled=false; dlg.close(); refreshPhoto();
+});
+function refreshPhoto(){
+  const has=!!photoState.output;
+  $$('[data-photo-view]').forEach(i=>{ if(has) i.src=photoState.url; else i.removeAttribute('src'); i.hidden=!has; });
+  $('#photoEmpty').hidden=has; $('#photoFrame').classList.toggle('has',has);
+  $('#photoAdjustBtn').hidden=!has; $('#photoRemoveBtn').hidden=!has;
+  $('#photoUploadTxt').textContent=has?'Replace photo':'Upload photo';
+  $('#photoWarn').hidden=!(has&&photoState.lowRes);
+  if(has) setErr(photoField,'');
+  renderDocPhotoTile();
+  if(current===TOTAL) buildReview();
+}
+function renderDocPhotoTile(){
+  const t=$('#docPhotoTile'); if(!t) return;
+  const has=!!photoState.output;
+  t.classList.toggle('complete',has);
+  t.innerHTML=`
+    <div><span class="upload-label">Passport size photo<span class="req">*</span></span><span class="upload-hint">Same photo as in Step 2 – Personal</span></div>
+    ${has?`<ul class="files"><li class="file">
+        <img class="thumb" data-photo-view src="${photoState.url}" alt="" style="object-fit:cover">
+        <div class="file-meta"><div class="file-name">passport-photo.jpg</div><div class="file-size">${fmtSize(photoState.output.size)} · <span class="badge-ok">✓ Ready</span></div></div>
+      </li></ul>
+      <div class="photo-actions">
+        <button type="button" class="link-btn" data-tile-adjust>Adjust photo</button>
+        <label class="link-btn" style="position:relative">Replace<input type="file" class="sr-only" accept="image/jpeg,image/png"></label>
+      </div>
+      ${photoState.lowRes?'<p class="warn-txt" style="margin:0">Low resolution – may be rejected.</p>':''}`
+    :`<label class="drop">${UP_ICON}<input type="file" class="sr-only" accept="image/jpeg,image/png" aria-label="Upload passport size photo">
+        <span class="drop-txt"><strong>Upload photo</strong><small>JPG or PNG · up to ${PHOTO.maxSourceMB} MB · you can crop &amp; adjust it</small></span></label>`}
+    <p class="err"></p>`;
+  const inp=$('input[type=file]',t); inp.addEventListener('change',()=>handlePhotoInput(inp));
+  $('[data-tile-adjust]',t)?.addEventListener('click',()=>openEditor(photoState.img, photoState.settings, null));
+}
+
+/* ======================= CONTACT BEHAVIOUR ======================= */
+const waSame=$('#waSame');
+function syncWa(){ $('#waInputs').hidden=waSame.checked; $('#waSameNote').hidden=!waSame.checked; }
+waSame.addEventListener('change',()=>{ syncWa(); if(!waSame.checked){ $('#whatsapp_cc').value=$('#phone_cc').value; $('#whatsapp').focus(); } });
+syncWa();
+const corrSame=$('#corrSame'), corr=$('#corr_addr'), perm=$('#perm_addr');
+corrSame.addEventListener('change',()=>{ corr.readOnly=corrSame.checked; if(corrSame.checked) corr.value=perm.value; });
+perm.addEventListener('input',()=>{ if(corrSame.checked) corr.value=perm.value; });
+function syncCountry(){
+  const v=country.value;
+  $('#countryOtherWrap').hidden = v!=='Other';
+  const india = v==='India' || v==='';
+  $('#stateSelWrap').hidden=!india; $('#stateTxtWrap').hidden=india;
+}
+country.addEventListener('change',syncCountry); syncCountry();
+
+/* Employment */
+const emp=$('#emp');
+emp.addEventListener('change',()=>{
+  const work = !!emp.selectedOptions[0]?.hasAttribute('data-work');
+  $$('.work-only').forEach(w=>w.hidden=!work);
+  const retired = emp.value==='Retired', self = emp.value.startsWith('Self');
+  $('#orgLabel').firstChild.textContent = retired ? 'Last organisation' : self ? 'Business / Company name' : 'Organisation / Company name';
+});
+
+/* Input formatting */
+$('#aadhaar').addEventListener('input',e=>{ const d=e.target.value.replace(/\D/g,'').slice(0,12); e.target.value=d.replace(/(\d{4})(?=\d)/g,'$1 '); });
+$('#passport').addEventListener('input',e=>{ e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''); });
+$$('input[type=tel]').forEach(i=>i.addEventListener('input',()=>{ i.value=i.value.replace(/[^\d]/g,'').slice(0,14); }));
+
+/* ======================= SIGNATURE PAD ======================= */
+const canvas=$('#sigPad'), ctx=canvas.getContext('2d');
+let drawing=false, hasSig=false, strokes=[], cur=null;
+function sizeCanvas(){
+  const r=canvas.getBoundingClientRect(); if(!r.width) return;
+  const dpr=window.devicePixelRatio||1;
+  canvas.width=Math.round(r.width*dpr); canvas.height=Math.round(r.height*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0); redraw();
+}
+function redraw(){
+  const r=canvas.getBoundingClientRect();
+  ctx.clearRect(0,0,r.width,r.height);
+  ctx.lineWidth=2.2; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#0A1F33';
+  strokes.forEach(s=>{ ctx.beginPath(); s.forEach((p,i)=>{ const x=p[0]*r.width,y=p[1]*r.height; i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); if(s.length===1){ctx.lineTo(s[0][0]*r.width+.1,s[0][1]*r.height);} ctx.stroke(); });
+}
+function pt(e){ const r=canvas.getBoundingClientRect(); return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height]; }
+canvas.addEventListener('pointerdown',e=>{ e.preventDefault(); canvas.setPointerCapture(e.pointerId); drawing=true; cur=[pt(e)]; strokes.push(cur); $('#sigPh').hidden=true; redraw(); });
+canvas.addEventListener('pointermove',e=>{ if(!drawing) return; cur.push(pt(e)); redraw(); });
+const end=()=>{ if(!drawing) return; drawing=false; hasSig = strokes.some(s=>s.length>3); if(hasSig) setErr($('#sigField'),''); };
+canvas.addEventListener('pointerup',end); canvas.addEventListener('pointercancel',end);
+$('#sigClear').addEventListener('click',()=>{ strokes=[]; hasSig=false; $('#sigPh').hidden=false; redraw(); });
+window.addEventListener('resize',()=>{ if(current===TOTAL) sizeCanvas(); });
+function signatureBlob(){
+  const W=900,H=300,c=document.createElement('canvas'); c.width=W;c.height=H;
+  const x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,W,H);
+  x.lineWidth=4; x.lineCap='round'; x.lineJoin='round'; x.strokeStyle='#0A1F33';
+  strokes.forEach(s=>{ x.beginPath(); s.forEach((p,i)=>i?x.lineTo(p[0]*W,p[1]*H):x.moveTo(p[0]*W,p[1]*H)); x.stroke(); });
+  return new Promise(res=>c.toBlob(res,'image/png'));
+}
+
+/* ======================= VALIDATION ======================= */
+function setErr(fieldEl,msg){
+  if(!fieldEl) return;
+  const e=$(':scope > .err',fieldEl) || $('.err',fieldEl);
+  if(e) e.textContent=msg||'';
+  fieldEl.classList.toggle('invalid',!!msg);
+  $$('input,select,textarea',fieldEl).forEach(i=>{ if(msg) i.setAttribute('aria-invalid','true'); else i.removeAttribute('aria-invalid'); });
+}
+function phoneOk(cc,v){ return cc==='+91' ? /^[6-9]\d{9}$/.test(v) : /^\d{6,14}$/.test(v); }
+function checkInput(el){
+  const v=el.value.trim(), label=el.dataset.label||'This field';
+  if(el.required && !v) return el.tagName==='SELECT' ? `Please select ${label.toLowerCase()}` : `${label} is required`;
+  if(!v) return '';
+  switch(el.dataset.rule){
+    case 'name': if(!/^[A-Za-z][A-Za-z .'-]{1,99}$/.test(v)) return 'Use letters, spaces, dot, apostrophe or hyphen only'; break;
+    case 'email': if(!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) return 'Enter a valid email address'; break;
+    case 'phone': { const cc=$('#'+el.dataset.cc).value; if(!phoneOk(cc,v)) return cc==='+91'?'Enter a valid 10-digit mobile number':'Enter a valid phone number'; break; }
+    case 'aadhaar': { const d=v.replace(/\s/g,''); if(!/^[2-9]\d{11}$/.test(d)||!verhoeff(d)) return 'Enter a valid 12-digit Aadhaar number'; break; }
+    case 'passport': if(!/^[A-Z0-9]{6,12}$/.test(v)) return 'Enter a valid passport number'; break;
+    case 'dob': { if(v<el.min||v>el.max) return 'Enter a valid date of birth (minimum age 10)'; break; }
+    case 'teach': { const n=+v; if(isNaN(n)||n<0||n>50) return 'Enter years between 0 and 50'; break; }
+  }
+  return '';
+}
+function validateStep(n, show){
+  const step=steps[n-1]; let errors=0, first=null;
+  const flag=(fieldEl,msg,focusEl)=>{ if(show) setErr(fieldEl,msg); if(msg){ errors++; if(!first) first=focusEl||fieldEl; } };
+
+  $$('input[type=text],input[type=email],input[type=tel],input[type=date],input[type=number],select,textarea',step).forEach(el=>{
+    if(!isVisible(el) || el.readOnly && el.id!=='corr_addr' || el.classList.contains('cc')) return;
+    const f=el.closest('.field'); if(!f) return;
+    if(f.querySelector('input[type=file]')) return;
+    flag(f, checkInput(el), el);
+  });
+  $$('[data-required-group]',step).forEach(g=>{
+    if(!isVisible(g)) return;
+    const ok=$$('input[type=radio]',g).some(r=>r.checked);
+    const f=g.closest('.field');
+    const msg= ok?'':`Please choose ${g.dataset.label.toLowerCase()==='student loan'?'Yes or No':g.dataset.label.toLowerCase()}`;
+    if(f) flag(f,msg,$('input',g)); else { if(show) $('#loanErr').textContent=msg; if(msg){errors++; if(!first) first=$('input',g);} }
+  });
+  $$('.upload',step).forEach(u=>{ if(!isVisible(u)||u.id==='docPhotoTile') return; const ok=(fileStore[u.dataset.slot]||[]).length>0; flag(u, ok?'':'Please upload this document', $('input[type=file]',u)); });
+  if(n===5 && !getCourse()){ errors++; if(show) showAlert('Select your course in Step 1 first.'); }
+  if(n===2) flag(photoField, photoState.output?'':'Please upload your passport size photo', photoInput);
+  if(n===5){ const t=$('#docPhotoTile'); if(t) flag(t, photoState.output?'':'Please upload your passport size photo', $('input',t)); }
+  if(n===TOTAL){
+    const d=$('[data-required-checks]',step);
+    const all=$$('input[type=checkbox]',d).every(c=>c.checked);
+    flag(d, all?'':'Please tick all three declarations', $('input[type=checkbox]:not(:checked)',d));
+    flag($('#sigField'), hasSig?'':'Please draw your signature', canvas);
+    const agree=$('#agree'); flag(agree.closest('.field'), agree.checked?'':'You must agree to the Terms and Conditions to submit', agree);
+  }
+  if(show && errors){
+    showAlert(errors===1?'Please fix the highlighted field.':`Please fix the ${errors} highlighted fields.`);
+    if(first){ first.focus({preventScroll:true}); first.scrollIntoView({behavior:'smooth',block:'center'}); }
+  } else if(show) hideAlert();
+  return errors===0;
+}
+function showAlert(t){ $('#formAlertText').textContent=t; $('#formAlert').hidden=false; }
+function hideAlert(){ $('#formAlert').hidden=true; }
+
+form.addEventListener('input',e=>{ const f=e.target.closest('.field'); if(f&&f.classList.contains('invalid')&&e.target.type!=='file') setErr(f, e.target.type==='checkbox'||e.target.type==='radio' ? '' : checkInput(e.target)); });
+form.addEventListener('change',e=>{ const f=e.target.closest('.field'); if(f&&f.classList.contains('invalid')&&e.target.type!=='file') setErr(f, (e.target.type==='checkbox'||e.target.type==='radio') ? '' : checkInput(e.target)); });
+['input','change','pointerup'].forEach(ev=>form.addEventListener(ev,()=>setTimeout(()=>{ if(!$('#formAlert').hidden && !$$('.invalid',steps[current-1]).length && !$('#loanErr').textContent) hideAlert(); })));
+
+/* ======================= REVIEW ======================= */
+function displayValue(f){
+  const radios=$$('input[type=radio]',f); if(radios.length){ return radios.find(r=>r.checked)?.value||''; }
+  const el=$('select,textarea,input:not([type=checkbox]):not([type=file])',f); if(!el) return null;
+  if(el.classList.contains('cc')){ const tel=$('input[type=tel]',f); return tel.value?`${el.value} ${tel.value}`:''; }
+  if(el.tagName==='SELECT') return el.value ? el.selectedOptions[0].textContent : '';
+  if(el.type==='date' && el.value) return new Date(el.value+'T00:00').toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+  return el.value.trim();
+}
+function labelOf(f){ const l=$('label:not(.inline-check):not(.choice), legend, .flabel',f); if(!l) return ''; const c=l.cloneNode(true); $$('.req,.opt',c).forEach(x=>x.remove()); return c.textContent.trim(); }
+function buildReview(){
+  const box=$('#reviewBox'); box.innerHTML='';
+  for(let n=1;n<TOTAL;n++){
+    const step=steps[n-1]; let rows='';
+    if(n===5){
+      const slots=requiredDocSlots();
+      slots.forEach(s=>{ const files=fileStore[s]||[]; rows+=`<dt>${esc((DOCS[s]?.label)||s)}</dt><dd>${files.length?files.map(f=>esc(f.name)).join('<br>'):'<span style="color:var(--destructive)">Missing</span>'}</dd>`; });
+      rows+=`<dt>Student loan</dt><dd>${esc($('input[name=student_loan]:checked')?.value||'—')}</dd>`;
+    } else {
+      $$('.field',step).forEach(f=>{
+        if(!isVisible(f)||f.getAttribute('aria-hidden')==='true') return;
+        const lbl=labelOf(f); let val=displayValue(f); if(val===null||!lbl) return;
+        if(f.contains($('#whatsapp')) && waSame.checked){ val=`${$('#phone_cc').value} ${$('#phone').value} (same as phone)`; }
+        if(f.contains(corr) && corrSame.checked) val='Same as permanent address';
+        rows+=`<dt>${esc(lbl)}</dt><dd>${val?esc(val).replace(/\n/g,'<br>'):'<span style="color:var(--muted-fg)">—</span>'}</dd>`;
+      });
+    }
+    const sec=document.createElement('div'); sec.className='review-sec';
+    sec.innerHTML=`<div class="review-head"><span>${n}. ${esc(step.dataset.title)}</span><button type="button" class="link-btn" data-edit="${n}">Edit</button></div><dl class="review-dl">${rows}</dl>`;
+    box.appendChild(sec);
+  }
+  const has=!!photoState.output, ps=document.createElement('div'); ps.className='review-sec';
+  ps.innerHTML=`<div class="review-head"><span>Passport size photo</span><span class="rh-actions">
+      <label class="link-btn" style="position:relative">Replace<input type="file" class="sr-only" accept="image/jpeg,image/png" data-photo-replace></label>
+      ${has?'<button type="button" class="link-btn" data-photo-adjust>Adjust photo</button>':''}</span></div>
+    <div class="review-photo">
+      ${has?`<img data-photo-view src="${photoState.url}" alt="Your passport photo">`:'<div class="photo-frame"></div>'}
+      <div>
+        <p><strong>${has?'This is the photo that will be submitted.':'<span style="color:var(--destructive)">No photo uploaded</span>'}</strong></p>
+        <p class="help">Check that your face is clear, centred and well lit. Use <em>Adjust photo</em> to crop, rotate or brighten it before you submit.</p>
+        ${has&&photoState.lowRes?'<p class="warn-txt">This photo looks low resolution and may be rejected.</p>':''}
+      </div>
+    </div>`;
+  box.appendChild(ps);
+  const rep=$('[data-photo-replace]',ps); rep.addEventListener('change',()=>handlePhotoInput(rep));
+  $('[data-photo-adjust]',ps)?.addEventListener('click',()=>openEditor(photoState.img, photoState.settings, null));
+  $$('[data-edit]',box).forEach(b=>b.addEventListener('click',()=>go(+b.dataset.edit)));
+}
+
+/* ======================= SUBMIT ======================= */
+function e164(ccId,telId){ const v=$('#'+telId).value.trim(); return v?($('#'+ccId).value+v):''; }
+async function buildPayload(){
+  const fd=new FormData();
+  const skip=new Set(['phone','phone_cc','alt_phone','alt_phone_cc','whatsapp','whatsapp_cc','student_loan']);
+  $$('input,select,textarea',form).forEach(el=>{
+    if(!el.name||skip.has(el.name)||el.type==='file'||!isVisible(el)) return;
+    if((el.type==='checkbox'||el.type==='radio') && !el.checked) return;
+    let v=el.value; if(el.name==='aadhaar_number') v=v.replace(/\s/g,'');
+    if(v!=='') fd.append(el.name, v);
+  });
+  fd.append('university_name', uniSel.selectedOptions[0]?.textContent||'');
+  fd.append('course_name', courseSel.selectedOptions[0]?.textContent||'');
+  fd.append('intake_name', intakeSel.selectedOptions[0]?.textContent||'');
+  fd.append('document_group', getCourse()?.document_group||'');
+  fd.append('phone', e164('phone_cc','phone'));
+  const alt=e164('alt_phone_cc','alt_phone'); if(alt) fd.append('alt_phone',alt);
+  fd.append('whatsapp', waSame.checked ? e164('phone_cc','phone') : e164('whatsapp_cc','whatsapp'));
+  if(corrSame.checked) fd.set('correspondence_address', perm.value.trim());
+  const loan=$('input[name=student_loan]:checked')?.value; fd.append('student_loan', loan==='Yes'?'1':'0');
+  const slots=requiredDocSlots();   // course documents only; loan docs collected later
+  fd.append('documents[photo]', photoState.output, 'passport-photo.jpg');
+  slots.forEach(s=>(fileStore[s]||[]).forEach(f=>fd.append(`documents[${s}]`, f, f.name)));
+  fd.append('documents[signature]', await signatureBlob(), 'signature.png');
+  fd.append('submitted_at', new Date().toISOString());
+  return fd;
+}
+form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  if(!validateUpTo(TOTAL)) return;
+  const btn=$('#submitBtn'); btn.disabled=true; btn.innerHTML='<span class="spin"></span>Submitting…';
+  try{
+    const fd=await buildPayload(); let ref;
+    if(CONFIG.submitUrl){
+      const r=await fetch(CONFIG.submitUrl,{method:'POST',body:fd,headers:{Accept:'application/json'}});
+      if(!r.ok){ let m=''; try{ m=(await r.json()).message||''; }catch(_){} throw new Error(m||`Server error (${r.status})`); }
+      const json=await r.json();
+      ref=(json && json.data) ? json.data.application_no : json.application_no;
+    } else {
+      const dump={}; for(const [k,v] of fd.entries()){ const val=v instanceof File?`[File ${v.name}, ${fmtSize(v.size)}]`:v; dump[k]= k in dump ? [].concat(dump[k],val) : val; }
+      console.info('[DEMO] Application payload', JSON.stringify(dump,null,2));
+      await new Promise(r=>setTimeout(r,900));
+      ref='APP-'+new Date().getFullYear()+'-'+String(Math.floor(Math.random()*99999)).padStart(5,'0')+' (demo)';
+    }
+    $('#succName').textContent=$('#full_name').value.trim().split(' ')[0];
+    $('#succRef').textContent=ref||'—';
+    $('#succEmail').textContent=$('#email').value.trim();
+    $('#formView').hidden=true; const s=$('#successView'); s.hidden=false; s.focus(); window.scrollTo({top:0,behavior:'smooth'});
+  }catch(err){
+    console.error(err);
+    showAlert('We could not submit your application. '+(err.message||'Please check your connection and try again.'));
+    btn.disabled=false; btn.textContent='Submit application';
+    $('#formAlert').scrollIntoView({behavior:'smooth',block:'center'});
+  }
+});
+
+/* ======================= CUSTOM DROPDOWN ======================= */
+const DD_CHEV='<svg class="dd-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+const DD_CHECK='<svg class="dd-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+const DD_SEARCH='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+const DD_SEARCH_MIN=8;
+const mobileDD=()=>window.matchMedia('(max-width:720px)').matches;
+let ddOpen=null, ddBackdrop=null;
+const valueDesc=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value');
+const indexDesc=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'selectedIndex');
+let ddSeq=0;
+
+function enhanceSelect(sel){
+  const compact=sel.classList.contains('cc');
+  const wrap=document.createElement('div'); wrap.className='dd'+(compact?' dd-compact':'');
+  sel.parentNode.insertBefore(wrap,sel); wrap.appendChild(sel);
+  sel.classList.add('dd-native'); sel.tabIndex=-1; sel.setAttribute('aria-hidden','true');
+  const uid='dd'+(++ddSeq), btnId=(sel.id||uid)+'_btn', listId=uid+'_list';
+  const lbl=sel.id && document.querySelector(`label[for="${sel.id}"]`);
+  const title = sel.getAttribute('aria-label') || (lbl ? (()=>{const c=lbl.cloneNode(true); $$('.req,.opt',c).forEach(x=>x.remove()); return c.textContent.trim();})() : 'Select');
+  if(lbl) lbl.htmlFor=btnId;
+
+  const btn=document.createElement('button');
+  btn.type='button'; btn.className='dd-trigger'; btn.id=btnId;
+  btn.setAttribute('aria-haspopup','listbox'); btn.setAttribute('aria-expanded','false'); btn.setAttribute('aria-controls',listId);
+  if(compact) btn.setAttribute('aria-label',title);
+  btn.innerHTML=`<span class="dd-value"></span>${DD_CHEV}`;
+  wrap.appendChild(btn);
+  const valEl=$('.dd-value',btn);
+
+  const panel=document.createElement('div'); panel.className='dd-panel'; panel.hidden=true;
+  panel.innerHTML=`<div class="dd-head"><strong>${esc(title)}</strong><button type="button" class="icon-btn" aria-label="Close">${X_ICON}</button></div>
+    <div class="dd-search" hidden>${DD_SEARCH}<input type="search" placeholder="Search…" aria-label="Search ${esc(title)}" autocomplete="off" aria-controls="${listId}"></div>
+    <ul class="dd-list" id="${listId}" role="listbox" tabindex="-1" aria-label="${esc(title)}"></ul>`;
+  wrap.appendChild(panel);
+  const list=$('.dd-list',panel), searchBox=$('.dd-search',panel), search=$('input',searchBox);
+  let items=[], active=-1, typeBuf='', typeT=0;
+
+  function sync(){
+    btn.disabled=sel.disabled;
+    const o=sel.options[indexDesc.get.call(sel)], has=!!(o&&o.value!=='');
+    valEl.textContent=o?o.textContent:'';
+    btn.classList.toggle('placeholder',!has);
+    if(!panel.hidden) build(search.value);
+  }
+  Object.defineProperty(sel,'value',{configurable:true,get(){return valueDesc.get.call(this);},set(v){valueDesc.set.call(this,v);sync();}});
+  Object.defineProperty(sel,'selectedIndex',{configurable:true,get(){return indexDesc.get.call(this);},set(v){indexDesc.set.call(this,v);sync();}});
+  new MutationObserver(sync).observe(sel,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['disabled']});
+  sel.addEventListener('focus',()=>btn.focus());
+
+  function build(q=''){
+    const needle=q.trim().toLowerCase(), cur=sel.value;
+    list.innerHTML=''; items=[];
+    if(!sel.required && cur && !needle){
+      const li=document.createElement('li'); li.className='dd-opt dd-clear'; li.setAttribute('role','option'); li.dataset.value='';
+      li.id=uid+'_clear'; li.textContent='Clear selection'; list.appendChild(li); items.push(li);
+    }
+    Array.from(sel.options).forEach((o,i)=>{
+      if(o.value==='') return;
+      const t=o.textContent, at=needle?t.toLowerCase().indexOf(needle):0;
+      if(needle && at<0) return;
+      const li=document.createElement('li'); li.className='dd-opt'; li.setAttribute('role','option');
+      li.id=`${uid}_o${i}`; li.dataset.value=o.value; li.setAttribute('aria-selected',String(o.value===cur));
+      li.innerHTML = '<span class="dd-label">'+(needle ? esc(t.slice(0,at))+'<mark>'+esc(t.slice(at,at+needle.length))+'</mark>'+esc(t.slice(at+needle.length)) : esc(t))+'</span>' + DD_CHECK;
+      list.appendChild(li); items.push(li);
+    });
+    if(!items.length) list.innerHTML='<li class="dd-empty" role="presentation">No matches found</li>';
+    const selIdx=items.findIndex(li=>li.getAttribute('aria-selected')==='true');
+    setActive(needle ? (items.length?0:-1) : (selIdx>=0?selIdx:0), false);
+  }
+  function setActive(i,scroll=true){
+    items.forEach(li=>li.classList.remove('active'));
+    active=i;
+    if(i<0||!items[i]){ list.removeAttribute('aria-activedescendant'); search.removeAttribute('aria-activedescendant'); return; }
+    items[i].classList.add('active');
+    list.setAttribute('aria-activedescendant',items[i].id); search.setAttribute('aria-activedescendant',items[i].id);
+    if(scroll) items[i].scrollIntoView({block:'nearest'});
+  }
+  function open(){
+    if(sel.disabled||!panel.hidden) return;
+    if(ddOpen) ddOpen.close(false);
+    const many=Array.from(sel.options).filter(o=>o.value!=='').length>DD_SEARCH_MIN;
+    searchBox.hidden=!many; search.value='';
+    build('');
+    panel.hidden=false; wrap.classList.add('open'); btn.setAttribute('aria-expanded','true');
+    ddOpen={close, wrap};
+    if(mobileDD()){
+      ddBackdrop=document.createElement('div'); ddBackdrop.className='dd-backdrop';
+      ddBackdrop.addEventListener('click',()=>close(true)); document.body.appendChild(ddBackdrop);
+      document.body.style.overflow='hidden';
+      list.focus({preventScroll:true});
+    } else {
+      wrap.classList.remove('up');
+      const r=btn.getBoundingClientRect(), ph=panel.offsetHeight;
+      if(window.innerHeight-r.bottom < ph+16 && r.top > window.innerHeight-r.bottom) wrap.classList.add('up');
+      (many?search:list).focus({preventScroll:true});
+    }
+    items[active]?.scrollIntoView({block:'nearest'});
+  }
+  function close(refocus=true){
+    if(panel.hidden) return;
+    panel.hidden=true; wrap.classList.remove('open','up'); btn.setAttribute('aria-expanded','false');
+    if(ddBackdrop){ ddBackdrop.remove(); ddBackdrop=null; document.body.style.overflow=''; }
+    if(ddOpen&&ddOpen.wrap===wrap) ddOpen=null;
+    if(refocus) btn.focus({preventScroll:true});
+  }
+  function choose(li){
+    if(!li) return;
+    const v=li.dataset.value, changed=v!==sel.value;
+    sel.value=v; close(true);
+    if(changed) sel.dispatchEvent(new Event('change',{bubbles:true}));
+  }
+
+  btn.addEventListener('click',()=> panel.hidden?open():close());
+  btn.addEventListener('keydown',e=>{
+    if(['ArrowDown','ArrowUp'].includes(e.key)){ e.preventDefault(); open(); }
+  });
+  $('.dd-head .icon-btn',panel).addEventListener('click',()=>close(true));
+  list.addEventListener('pointermove',e=>{ const li=e.target.closest('.dd-opt'); if(li){ const i=items.indexOf(li); if(i!==active) setActive(i,false); } });
+  list.addEventListener('click',e=>choose(e.target.closest('.dd-opt')));
+  ['input','change'].forEach(ev=>search.addEventListener(ev,e=>{ e.stopPropagation(); if(ev==='input') build(search.value); }));
+  panel.addEventListener('keydown',e=>{
+    const n=items.length;
+    switch(e.key){
+      case 'ArrowDown': e.preventDefault(); if(n) setActive((active+1)%n); return;
+      case 'ArrowUp':   e.preventDefault(); if(n) setActive((active-1+n)%n); return;
+      case 'Home': if(e.target===search) return; e.preventDefault(); setActive(0); return;
+      case 'End':  if(e.target===search) return; e.preventDefault(); setActive(n-1); return;
+      case 'Enter': e.preventDefault(); choose(items[active]); return;
+      case 'Escape': e.preventDefault(); e.stopPropagation(); close(true); return;
+      case 'Tab': close(false); return;
+    }
+    if(e.target===list && e.key.length===1 && !e.ctrlKey && !e.metaKey){
+      clearTimeout(typeT); typeBuf+=e.key.toLowerCase(); typeT=setTimeout(()=>typeBuf='',600);
+      const i=items.findIndex(li=>li.textContent.trim().toLowerCase().startsWith(typeBuf)); if(i>=0) setActive(i);
+    }
+  });
+  sync();
+}
+document.addEventListener('pointerdown',e=>{ if(ddOpen && !ddOpen.wrap.contains(e.target) && !e.target.classList.contains('dd-backdrop')) ddOpen.close(false); });
+window.addEventListener('resize',()=>{ if(ddOpen && !mobileDD()) ddOpen.close(false); });
+
+/* ======================= MOBILE KEYBOARD HELPERS ======================= */
+$$('input[data-rule=name]').forEach(i=>{ i.setAttribute('autocapitalize','words'); i.setAttribute('autocorrect','off'); });
+$$('input[type=email]').forEach(i=>{ i.setAttribute('autocapitalize','none'); i.setAttribute('autocorrect','off'); i.spellcheck=false; i.setAttribute('inputmode','email'); });
+$('#passport').setAttribute('autocapitalize','characters'); $('#passport').setAttribute('autocorrect','off');
+['#aadhaar','#passport','#grade'].forEach(sl=>$(sl).setAttribute('autocomplete','off'));
+$('#district').setAttribute('autocomplete','address-level2');
+$$('input[type=text],input[type=email],input[type=tel],input[type=number]',form).forEach(i=>i.setAttribute('enterkeyhint','next'));
+
+function stepFocusables(){
+  return $$('input[type=text],input[type=email],input[type=tel],input[type=date],input[type=number],textarea,.dd-trigger',steps[current-1])
+    .filter(el=>isVisible(el) && !el.readOnly && !el.disabled && el.offsetParent!==null);
+}
+form.addEventListener('keydown',e=>{
+  if(e.key!=='Enter' || e.isComposing) return;
+  const t=e.target;
+  if(!t.matches('input[type=text],input[type=email],input[type=tel],input[type=date],input[type=number]')) return;
+  e.preventDefault();
+  const list=stepFocusables(), i=list.indexOf(t), nxt=list[i+1];
+  if(nxt){ nxt.focus(); if(!nxt.classList.contains('dd-trigger')) nxt.scrollIntoView({block:'center',behavior:'smooth'}); }
+  else { t.blur(); if(current<TOTAL) $('#nextBtn').click(); }
+});
+
+const isTextEntry=el=>el && el.matches && el.matches('input[type=text],input[type=email],input[type=tel],input[type=number],textarea,.dd-search input');
+document.addEventListener('focusin',e=>{ if(mobileDD() && isTextEntry(e.target)) document.body.classList.add('typing'); });
+document.addEventListener('focusout',()=>setTimeout(()=>{ if(!isTextEntry(document.activeElement)) document.body.classList.remove('typing'); },50));
+
+/* ======================= START ======================= */
+$$('select',form).forEach(enhanceSelect);
+loadCatalogue();
+renderSlots($('#docSlots'),[]);
+go(1);
+})();
+</script>
+</body>
+</html>
