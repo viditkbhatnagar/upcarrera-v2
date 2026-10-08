@@ -129,25 +129,29 @@ describe('Public intake (e2e)', () => {
     await prisma.university.deleteMany({ where: { id: ids.university } });
   }
 
-  /** A supertest POST pre-filled with a valid submission; callers tweak via .field/.attach. */
+  /** A supertest POST pre-filled with a valid submission; callers tweak via `overrides`.
+   *  Fields are MERGED into one set first (a repeated multipart field name would arrive
+   *  as an array and fail validation), then each is sent once. full_name must satisfy
+   *  the name regex (letters/space/.'- only), so it never carries the TAG. */
   function submit(overrides: Record<string, string> = {}) {
-    const req = request(http)
-      .post('/api/public/intake/applications')
-      .field('university_id', String(ids.university))
-      .field('course_id', String(ids.course))
-      .field('intake_id', String(ids.intake))
-      // full_name must satisfy the name regex (letters/space/.'- only) — no TAG here.
-      .field('full_name', 'Test Student')
-      .field('date_of_birth', '2000-05-12')
-      .field('gender', 'Male')
-      .field('father_name', 'Test Father')
-      .field('phone', uniquePhone())
-      .field('whatsapp', '+919876543210')
-      .field('email', uniqueEmail())
-      .field('employment_status', 'Student')
-      .field('aadhaar_number', '123412341234')
-      .field('agree_terms', '1');
-    for (const [k, v] of Object.entries(overrides)) req.field(k, v);
+    const fields: Record<string, string> = {
+      university_id: String(ids.university),
+      course_id: String(ids.course),
+      intake_id: String(ids.intake),
+      full_name: 'Test Student',
+      date_of_birth: '2000-05-12',
+      gender: 'Male',
+      father_name: 'Test Father',
+      phone: uniquePhone(),
+      whatsapp: '+919876543210',
+      email: uniqueEmail(),
+      employment_status: 'Student',
+      aadhaar_number: '123412341234',
+      agree_terms: '1',
+      ...overrides,
+    };
+    const req = request(http).post('/api/public/intake/applications');
+    for (const [k, v] of Object.entries(fields)) req.field(k, v);
     return req;
   }
   const withDocs = (req: request.Test) =>
@@ -171,8 +175,6 @@ describe('Public intake (e2e)', () => {
   it('happy path creates an UNASSIGNED lead, APP number, and stores docs + aadhaar last-4 only', async () => {
     const email = uniqueEmail();
     const res = await withDocs(submit({ email }));
-    // eslint-disable-next-line no-console
-    if (res.status !== 201) console.log('SUBMIT_DEBUG', res.status, JSON.stringify(res.body));
     expect(res.status).toBe(201);
     expect(res.body.data.application_no).toMatch(/^APP-\d{4}-\d{6}$/);
 
