@@ -171,6 +171,8 @@ describe('Public intake (e2e)', () => {
   it('happy path creates an UNASSIGNED lead, APP number, and stores docs + aadhaar last-4 only', async () => {
     const email = uniqueEmail();
     const res = await withDocs(submit({ email }));
+    // eslint-disable-next-line no-console
+    if (res.status !== 201) console.log('SUBMIT_DEBUG', res.status, JSON.stringify(res.body));
     expect(res.status).toBe(201);
     expect(res.body.data.application_no).toMatch(/^APP-\d{4}-\d{6}$/);
 
