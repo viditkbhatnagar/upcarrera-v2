@@ -12,12 +12,46 @@
   upCarrera Education — Student Application Form (front-end, v1.0, 07 Oct 2026)
   ============================================================================
   Single self-contained file: HTML + CSS + vanilla JS. No dependencies.
-  Wired to the upCarrera public-intake API (catalogue + submit). The ONLY changes
-  from the original are: CONFIG urls, the {data} envelope unwrap + rebuilding the
-  document slots from the server's document_rules (loadCatalogue), the submit
-  response unwrap (buildPayload), the loan-document uploads being deferred to a
-  counsellor (v1), and a hidden anti-abuse honeypot field. Everything else — the
-  photo editor, signature pad, dependent dropdowns and validation — is unchanged.
+
+  INTEGRATION NOTES FOR DEVELOPERS
+  --------------------------------
+  1. CATALOGUE (University → Course → Intake dependent dropdowns)
+     Set CONFIG.catalogueUrl to an endpoint returning the shape below. If it is
+     null, SAMPLE_CATALOGUE (design data only) is used.
+
+       {
+         "universities": [
+           { "id": "u1", "name": "…",
+             "courses": [
+               { "id": "c1", "name": "MBA",
+                 "document_group": "pg",            // "10th" | "12th" | "ug" | "pg"
+                 "intakes": [ { "id": "i1", "name": "January 2027" } ] }
+             ] }
+         ]
+       }
+
+     Passport photo is collected in Step 2 (Personal) for every course and is
+     also shown / replaceable as the first tile in Step 5 (Documents) – one shared photo. The student crops it
+     to 35×45 mm (7:9) in the built-in editor (rotate, flip, straighten, zoom,
+     brightness). Only the edited JPEG (630×810 px) is uploaded.
+
+     document_group decides which supporting documents are required:
+       10th → Aadhaar front/back                                (+ photo, signature)
+       12th → + SSLC certificate
+       ug   → + 12th certificate        (BA, BBA, BCom, BCA, Diplomas, Lateral UG)
+       pg   → + degree final certificate, marksheet(s)  (MA … MSW, PG Diplomas, Lateral PG)
+
+  2. SUBMISSION
+     Set CONFIG.submitUrl. The form POSTs multipart/form-data:
+       - every visible field by its `name` (snake_case)
+       - phone / alt_phone / whatsapp sent as E.164 (e.g. +919876543210)
+       - files as  documents[<slot>]  (marksheet & loan_income may repeat)
+       - signature as  documents[signature]  (PNG drawn on screen)
+     Expected response: 200/201 JSON { "application_no": "APP-2026-00001" }.
+     If submitUrl is null the form runs in DEMO mode and logs the payload.
+
+  3. Server MUST re-validate everything (required fields, file type/size,
+     Aadhaar checksum, course ↔ document rules). Client checks are UX only.
   ============================================================================
 -->
 <style>
@@ -930,7 +964,7 @@ const CONFIG = {
   acceptAttr: '.pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png'
 };
 
-/* ============== SAMPLE DATA (design only; used if catalogueUrl is null) ============== */
+/* ============== SAMPLE DATA (design only) ============== */
 const C = (id,name,g)=>({id,name,document_group:g});
 const SCHOOL = [C('10th','10th','10th'),C('12h','12th Humanities','12th'),C('12c','12th Commerce','12th'),C('12pcm','12th Science (PCM)','12th'),C('12pcb','12th Science (PCB)','12th')];
 const UG = [C('ba','BA','ug'),C('bba','BBA','ug'),C('bcom','BCom','ug'),C('bca','BCA','ug'),C('lba','Lateral BA','ug'),C('lbba','Lateral BBA','ug'),C('lbcom','Lateral BCom','ug'),C('lbca','Lateral BCA','ug')];
@@ -944,11 +978,7 @@ const SAMPLE_CATALOGUE = { universities: [
   {id:'u-crescent', name:'Crescent Open University (sample)', courses: withIntakes([...DIP,...PGD,UG[0],UG[2],PG[0],PG[1],PG[2]], ['January 2027 (Winter)','July 2027 (Summer)'])}
 ]};
 
-/* ======================= DOCUMENT RULES =======================
-   DOCS + DOC_GROUPS are the SAMPLE-mode fallback; when the live catalogue loads,
-   loadCatalogue() rebuilds the course-document slots from the server's
-   `document_rules` (keyed by canonical course level) so the form asks for exactly
-   what Student Affairs verifies. `let` so they can be rebuilt. */
+/* ======================= DOCUMENT RULES ======================= */
 let DOCS = {
   photo:          {label:'Passport size photo', hint:'Recent photo, plain light background', images:true},
   aadhaar_front:  {label:'Aadhaar card – front'},
@@ -975,6 +1005,8 @@ const STATES = ['Andaman and Nicobar Islands','Andhra Pradesh','Arunachal Prades
 const $ = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
 const esc = s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// "Visible" = not inside a hidden conditional block. The step wrapper's own hidden state is ignored,
+// so fields on other steps still count (needed for review + submission).
 const isVisible = el=>{ for(let n=el; n && n!==document.body; n=n.parentElement){ if(n.classList?.contains('step')) return true; if(n.hidden) return false; } return true; };
 const fmtSize = b=> b<1024*1024 ? Math.max(1,Math.round(b/1024))+' KB' : (b/1048576).toFixed(1)+' MB';
 const opt = (v,t,sel)=>{const o=document.createElement('option');o.value=v;o.textContent=t??v;if(sel)o.selected=true;return o;};
@@ -1220,19 +1252,22 @@ function openEditor(img, settings, file){
   requestAnimationFrame(()=>{ edLayout(); stage.focus(); });
 }
 const edAngle = ()=>(ed.rot*90 + ed.tilt)*Math.PI/180;
+// Scale (image px → preview px) so the rotated image always covers the crop frame, times zoom
 function edScale(){
   const t=edAngle(), c=Math.abs(Math.cos(t)), s=Math.abs(Math.sin(t)), W=ed.img.naturalWidth, H=ed.img.naturalHeight;
   return Math.max((ed.fw*c+ed.fh*s)/W, (ed.fw*s+ed.fh*c)/H) * ed.zoom;
 }
+// Keep the crop frame fully inside the (rotated) image – no empty corners
 function clampPan(){
   const {fw,fh}=ed, t=edAngle(), c=Math.cos(t), s=Math.sin(t), S=edScale(), W=ed.img.naturalWidth, H=ed.img.naturalHeight;
   const px=ed.nx*fw, py=ed.ny*fw;
-  let vx=(-c*px - s*py)/S, vy=(s*px - c*py)/S;
+  let vx=(-c*px - s*py)/S, vy=(s*px - c*py)/S;              // frame centre in image coords
   const ac=Math.abs(c), as=Math.abs(s);
   const lx=Math.max(0,(W-(fw*ac+fh*as)/S)/2), ly=Math.max(0,(H-(fw*as+fh*ac)/S)/2);
   vx=Math.min(lx,Math.max(-lx,vx)); vy=Math.min(ly,Math.max(-ly,vy));
   ed.nx=-(c*vx - s*vy)*S/fw; ed.ny=-(s*vx + c*vy)*S/fw;
 }
+// Draw the image into a canvas whose centre is the crop-frame centre; k = output px per preview px
 function paint(g, cw, ch, k, solidBg){
   g.save();
   if(solidBg){ g.fillStyle='#fff'; g.fillRect(0,0,cw,ch); } else g.clearRect(0,0,cw,ch);
@@ -1258,7 +1293,7 @@ function edLayout(){
 function edDraw(){
   paint(gImg, ed.cw, ed.ch, 1, false);
   cImg.style.filter=`brightness(${ed.bright}%)`;
-  ed.lowRes = ed.fw/edScale() < PHOTO.minSourcePx;
+  ed.lowRes = ed.fw/edScale() < PHOTO.minSourcePx;   // real image pixels across the crop width
   $('#edWarn').hidden=!ed.lowRes;
 }
 function drawOverlay(){
@@ -1268,6 +1303,7 @@ function drawOverlay(){
   g.strokeStyle='rgba(255,255,255,.22)'; g.lineWidth=1; g.beginPath();
   for(let i=1;i<3;i++){ g.moveTo(x+fw*i/3,y); g.lineTo(x+fw*i/3,y+fh); g.moveTo(x,y+fh*i/3); g.lineTo(x+fw,y+fh*i/3); }
   g.stroke();
+  // dark under-stroke + white stroke so guides stay visible on light and dark photos
   const guide=(fn)=>{ [['rgba(0,0,0,.45)',3.5],['#fff',1.6]].forEach(([c,w])=>{ g.strokeStyle=c; g.lineWidth=w; g.beginPath(); fn(); g.stroke(); }); };
   guide(()=>g.rect(x,y,fw,fh));
   g.setLineDash([7,5]);
@@ -1294,6 +1330,7 @@ $$('.tool',dlg).forEach(b=>b.addEventListener('click',()=>{
   if(a==='reset') Object.assign(ed, ED_DEFAULTS);
   update();
 }));
+// Drag to pan, pinch / wheel to zoom, keyboard support
 const ptrs=new Map(); let pinch=null;
 stage.addEventListener('pointerdown',e=>{
   stage.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); stage.classList.add('dragging');
@@ -1322,6 +1359,7 @@ window.addEventListener('resize',()=>{ if(dlg.open) edLayout(); });
 $('#edCancel').addEventListener('click',()=>dlg.close());
 $('#edClose').addEventListener('click',()=>dlg.close());
 dlg.addEventListener('close',()=>{
+  // discard a newly chosen image that was not saved
   if(ed.pendingFile && ed.img && ed.img.src!==photoState.srcUrl) URL.revokeObjectURL(ed.img.src);
   ed.pendingFile=null;
 });
@@ -1330,7 +1368,7 @@ $('#edApply').addEventListener('click',async ()=>{
   const c=document.createElement('canvas'); c.width=PHOTO.outW; c.height=PHOTO.outH;
   const g=c.getContext('2d');
   paint(g, PHOTO.outW, PHOTO.outH, PHOTO.outW/ed.fw, true);
-  if(ed.bright!==100){
+  if(ed.bright!==100){            // same maths as CSS brightness(); works in every browser
     const d=g.getImageData(0,0,c.width,c.height), a=d.data, m=ed.bright/100;
     for(let i=0;i<a.length;i+=4){ a[i]=Math.min(255,a[i]*m); a[i+1]=Math.min(255,a[i+1]*m); a[i+2]=Math.min(255,a[i+2]*m); }
     g.putImageData(d,0,0);
@@ -1358,6 +1396,7 @@ function refreshPhoto(){
   renderDocPhotoTile();
   if(current===TOTAL) buildReview();
 }
+// Photo tile in the Documents step – same photo as Step 2
 function renderDocPhotoTile(){
   const t=$('#docPhotoTile'); if(!t) return;
   const has=!!photoState.output;
@@ -1433,6 +1472,7 @@ canvas.addEventListener('pointerup',end); canvas.addEventListener('pointercancel
 $('#sigClear').addEventListener('click',()=>{ strokes=[]; hasSig=false; $('#sigPh').hidden=false; redraw(); });
 window.addEventListener('resize',()=>{ if(current===TOTAL) sizeCanvas(); });
 function signatureBlob(){
+  // Export on white background at fixed size for consistent storage
   const W=900,H=300,c=document.createElement('canvas'); c.width=W;c.height=H;
   const x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,W,H);
   x.lineWidth=4; x.lineCap='round'; x.lineJoin='round'; x.strokeStyle='#0A1F33';
@@ -1468,12 +1508,15 @@ function validateStep(n, show){
   const step=steps[n-1]; let errors=0, first=null;
   const flag=(fieldEl,msg,focusEl)=>{ if(show) setErr(fieldEl,msg); if(msg){ errors++; if(!first) first=focusEl||fieldEl; } };
 
+  // Standard inputs
   $$('input[type=text],input[type=email],input[type=tel],input[type=date],input[type=number],select,textarea',step).forEach(el=>{
     if(!isVisible(el) || el.readOnly && el.id!=='corr_addr' || el.classList.contains('cc')) return;
     const f=el.closest('.field'); if(!f) return;
     if(f.querySelector('input[type=file]')) return;
     flag(f, checkInput(el), el);
   });
+  // WhatsApp mirror
+  // Radio groups
   $$('[data-required-group]',step).forEach(g=>{
     if(!isVisible(g)) return;
     const ok=$$('input[type=radio]',g).some(r=>r.checked);
@@ -1481,10 +1524,13 @@ function validateStep(n, show){
     const msg= ok?'':`Please choose ${g.dataset.label.toLowerCase()==='student loan'?'Yes or No':g.dataset.label.toLowerCase()}`;
     if(f) flag(f,msg,$('input',g)); else { if(show) $('#loanErr').textContent=msg; if(msg){errors++; if(!first) first=$('input',g);} }
   });
+  // Uploads
   $$('.upload',step).forEach(u=>{ if(!isVisible(u)||u.id==='docPhotoTile') return; const ok=(fileStore[u.dataset.slot]||[]).length>0; flag(u, ok?'':'Please upload this document', $('input[type=file]',u)); });
   if(n===5 && !getCourse()){ errors++; if(show) showAlert('Select your course in Step 1 first.'); }
+  // Passport photo (Step 2, mirrored in Step 5)
   if(n===2) flag(photoField, photoState.output?'':'Please upload your passport size photo', photoInput);
   if(n===5){ const t=$('#docPhotoTile'); if(t) flag(t, photoState.output?'':'Please upload your passport size photo', $('input',t)); }
+  // Declarations
   if(n===TOTAL){
     const d=$('[data-required-checks]',step);
     const all=$$('input[type=checkbox]',d).every(c=>c.checked);
@@ -1501,6 +1547,7 @@ function validateStep(n, show){
 function showAlert(t){ $('#formAlertText').textContent=t; $('#formAlert').hidden=false; }
 function hideAlert(){ $('#formAlert').hidden=true; }
 
+// live re-validation once a field has been flagged
 form.addEventListener('input',e=>{ const f=e.target.closest('.field'); if(f&&f.classList.contains('invalid')&&e.target.type!=='file') setErr(f, e.target.type==='checkbox'||e.target.type==='radio' ? '' : checkInput(e.target)); });
 form.addEventListener('change',e=>{ const f=e.target.closest('.field'); if(f&&f.classList.contains('invalid')&&e.target.type!=='file') setErr(f, (e.target.type==='checkbox'||e.target.type==='radio') ? '' : checkInput(e.target)); });
 ['input','change','pointerup'].forEach(ev=>form.addEventListener(ev,()=>setTimeout(()=>{ if(!$('#formAlert').hidden && !$$('.invalid',steps[current-1]).length && !$('#loanErr').textContent) hideAlert(); })));
@@ -1536,6 +1583,7 @@ function buildReview(){
     sec.innerHTML=`<div class="review-head"><span>${n}. ${esc(step.dataset.title)}</span><button type="button" class="link-btn" data-edit="${n}">Edit</button></div><dl class="review-dl">${rows}</dl>`;
     box.appendChild(sec);
   }
+  // Passport photo – last block of the review, editable in place
   const has=!!photoState.output, ps=document.createElement('div'); ps.className='review-sec';
   ps.innerHTML=`<div class="review-head"><span>Passport size photo</span><span class="rh-actions">
       <label class="link-btn" style="position:relative">Replace<input type="file" class="sr-only" accept="image/jpeg,image/png" data-photo-replace></label>
@@ -1565,6 +1613,7 @@ async function buildPayload(){
     let v=el.value; if(el.name==='aadhaar_number') v=v.replace(/\s/g,'');
     if(v!=='') fd.append(el.name, v);
   });
+  // human-readable names for catalogue ids
   fd.append('university_name', uniSel.selectedOptions[0]?.textContent||'');
   fd.append('course_name', courseSel.selectedOptions[0]?.textContent||'');
   fd.append('intake_name', intakeSel.selectedOptions[0]?.textContent||'');
@@ -1593,6 +1642,7 @@ form.addEventListener('submit',async e=>{
       const json=await r.json();
       ref=(json && json.data) ? json.data.application_no : json.application_no;
     } else {
+      // DEMO MODE: log payload, fake a reference
       const dump={}; for(const [k,v] of fd.entries()){ const val=v instanceof File?`[File ${v.name}, ${fmtSize(v.size)}]`:v; dump[k]= k in dump ? [].concat(dump[k],val) : val; }
       console.info('[DEMO] Application payload', JSON.stringify(dump,null,2));
       await new Promise(r=>setTimeout(r,900));
@@ -1610,11 +1660,14 @@ form.addEventListener('submit',async e=>{
   }
 });
 
-/* ======================= CUSTOM DROPDOWN ======================= */
+/* ======================= CUSTOM DROPDOWN =======================
+   Progressive enhancement of every <select>. The native select stays in the
+   DOM (hidden) as the source of truth: value, required, disabled, options and
+   'change' events all keep working, so dependent-dropdown logic is unchanged. */
 const DD_CHEV='<svg class="dd-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
 const DD_CHECK='<svg class="dd-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 const DD_SEARCH='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
-const DD_SEARCH_MIN=8;
+const DD_SEARCH_MIN=8;                         // show search box when list is longer than this
 const mobileDD=()=>window.matchMedia('(max-width:720px)').matches;
 let ddOpen=null, ddBackdrop=null;
 const valueDesc=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value');
@@ -1654,10 +1707,11 @@ function enhanceSelect(sel){
     btn.classList.toggle('placeholder',!has);
     if(!panel.hidden) build(search.value);
   }
+  // keep the trigger in step when code sets sel.value / selectedIndex directly
   Object.defineProperty(sel,'value',{configurable:true,get(){return valueDesc.get.call(this);},set(v){valueDesc.set.call(this,v);sync();}});
   Object.defineProperty(sel,'selectedIndex',{configurable:true,get(){return indexDesc.get.call(this);},set(v){indexDesc.set.call(this,v);sync();}});
   new MutationObserver(sync).observe(sel,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['disabled']});
-  sel.addEventListener('focus',()=>btn.focus());
+  sel.addEventListener('focus',()=>btn.focus());       // validation focus() lands on the visible control
 
   function build(q=''){
     const needle=q.trim().toLowerCase(), cur=sel.value;
@@ -1741,6 +1795,7 @@ function enhanceSelect(sel){
       case 'Escape': e.preventDefault(); e.stopPropagation(); close(true); return;
       case 'Tab': close(false); return;
     }
+    // type-ahead when there is no search box
     if(e.target===list && e.key.length===1 && !e.ctrlKey && !e.metaKey){
       clearTimeout(typeT); typeBuf+=e.key.toLowerCase(); typeT=setTimeout(()=>typeBuf='',600);
       const i=items.findIndex(li=>li.textContent.trim().toLowerCase().startsWith(typeBuf)); if(i>=0) setActive(i);
@@ -1752,6 +1807,7 @@ document.addEventListener('pointerdown',e=>{ if(ddOpen && !ddOpen.wrap.contains(
 window.addEventListener('resize',()=>{ if(ddOpen && !mobileDD()) ddOpen.close(false); });
 
 /* ======================= MOBILE KEYBOARD HELPERS ======================= */
+// Better on-screen keyboards
 $$('input[data-rule=name]').forEach(i=>{ i.setAttribute('autocapitalize','words'); i.setAttribute('autocorrect','off'); });
 $$('input[type=email]').forEach(i=>{ i.setAttribute('autocapitalize','none'); i.setAttribute('autocorrect','off'); i.spellcheck=false; i.setAttribute('inputmode','email'); });
 $('#passport').setAttribute('autocapitalize','characters'); $('#passport').setAttribute('autocorrect','off');
@@ -1759,6 +1815,7 @@ $('#passport').setAttribute('autocapitalize','characters'); $('#passport').setAt
 $('#district').setAttribute('autocomplete','address-level2');
 $$('input[type=text],input[type=email],input[type=tel],input[type=number]',form).forEach(i=>i.setAttribute('enterkeyhint','next'));
 
+// "Next" on the keyboard moves to the next field; on the last field it continues
 function stepFocusables(){
   return $$('input[type=text],input[type=email],input[type=tel],input[type=date],input[type=number],textarea,.dd-trigger',steps[current-1])
     .filter(el=>isVisible(el) && !el.readOnly && !el.disabled && el.offsetParent!==null);
@@ -1773,6 +1830,7 @@ form.addEventListener('keydown',e=>{
   else { t.blur(); if(current<TOTAL) $('#nextBtn').click(); }
 });
 
+// Slide the sticky action bar away while the keyboard is up (phones only)
 const isTextEntry=el=>el && el.matches && el.matches('input[type=text],input[type=email],input[type=tel],input[type=number],textarea,.dd-search input');
 document.addEventListener('focusin',e=>{ if(mobileDD() && isTextEntry(e.target)) document.body.classList.add('typing'); });
 document.addEventListener('focusout',()=>setTimeout(()=>{ if(!isTextEntry(document.activeElement)) document.body.classList.remove('typing'); },50));
