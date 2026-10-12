@@ -38,8 +38,12 @@ export class StudentsController {
 
   @Get()
   @ResponseMessage('Students fetched')
-  list(@Query() query: ListStudentsDto) {
-    return this.students.listStudents(query);
+  list(
+    @Query() query: ListStudentsDto,
+    @CurrentUser('id') userId: number,
+    @CurrentUser('role_id') roleId: number | null,
+  ) {
+    return this.students.listStudents(query, { userId, roleId });
   }
 
   // --- literal sub-paths (MUST precede /:id) ---

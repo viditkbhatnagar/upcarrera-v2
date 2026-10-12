@@ -137,6 +137,7 @@ const COUNSELLOR_ITEMS: NavItem[] = [
   { to: "/students/students", label: "My Enrollments", icon: GraduationCap },
   { to: "/counsellors/targets", label: "Performance", icon: BarChart3 },
   { to: "/universities/courses", label: "Courses", icon: BookOpen },
+  { to: "/reports", label: "Reports", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

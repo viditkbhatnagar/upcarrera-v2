@@ -13,6 +13,7 @@ const COUNSELLOR_ALLOWED = [
   "/students",
   "/counsellors/targets",
   "/universities/courses",
+  "/reports",
   "/settings",
 ];
 function pathAllowedForCounsellor(pathname: string): boolean {

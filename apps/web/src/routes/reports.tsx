@@ -32,6 +32,8 @@ import {
   X,
 } from "lucide-react";
 import { apiGet } from "@/lib/api";
+import { useAccess } from "@/components/applications/use-access";
+import { CounsellorReports } from "@/components/reports/counsellor-reports";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import {
@@ -740,6 +742,14 @@ type Step = 1 | 2 | 3 | 4;
 type View = "workflow" | "saved" | "history";
 
 function ReportsPage() {
+  // Counsellors get a focused, self-scoped Reports page; everyone else the admin one.
+  const access = useAccess();
+  if (access.isLoading) return null;
+  if (access.data?.role_key === "counsellor") return <CounsellorReports />;
+  return <AdminReports />;
+}
+
+function AdminReports() {
   const [view, setView] = useState<View>("workflow");
   const [step, setStep] = useState<Step>(1);
   const [activeCategory, setActiveCategory] = useState<CategoryKey>("admissions");

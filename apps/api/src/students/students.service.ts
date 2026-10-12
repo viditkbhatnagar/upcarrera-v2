@@ -63,6 +63,9 @@ const ADMISSION_STATUS_DROPOUT = 4;
 /** role_id for students in the users table (legacy convention). */
 const STUDENT_ROLE_ID = 4;
 
+/** role_id for counsellors — scopes the students list to their own admissions. */
+const CONSULTANT_ROLE_ID = 6;
+
 /**
  * students.admission_status (Int code) -> human label.
  *
@@ -179,7 +182,10 @@ export class StudentsService {
   // honoured through teachers_subjects.course_id (a teacher's assigned courses),
   // unioned with any direct enrol.teacher_id match. Ports the legacy
   // get_students_by_course_subject_teacher + university_enrolment filters.
-  async listStudents(query: ListStudentsDto) {
+  async listStudents(
+    query: ListStudentsDto,
+    actor?: { userId: number; roleId: number | null },
+  ) {
     const page = query.page ?? DEFAULT_PAGE;
     const limit = query.limit ?? DEFAULT_LIMIT;
     const skip = (page - 1) * limit;
@@ -207,6 +213,8 @@ export class StudentsService {
 
     const where = {
       deleted_at: null,
+      // A counsellor only sees their OWN admissions (students.consultant_id = me).
+      ...(actor?.roleId === CONSULTANT_ROLE_ID ? { consultant_id: actor.userId } : {}),
       ...(query.admission_status !== undefined
         ? { admission_status: query.admission_status }
         : {}),
