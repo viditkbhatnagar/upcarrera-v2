@@ -125,13 +125,28 @@ const BASE_ITEMS: NavItem[] = [
   },
 ];
 
+// Counsellor portal menu — counsellors get a focused, self-scoped workspace
+// (their leads, their students, their targets) instead of the admin surface. The
+// backend already scopes applications/students/targets to the logged-in counsellor
+// (record-access role_key 'counsellor' = own records), and enforces every route.
+const COUNSELLOR_ITEMS: NavItem[] = [
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/students/applications", label: "My Applications", icon: FileText },
+  { to: "/students/students", label: "My Students", icon: Users },
+  { to: "/counsellors/targets", label: "My Targets", icon: Target },
+  { to: "/settings", label: "Settings", icon: Settings },
+];
+
 /**
  * Role-aware navigation, derived from GET /auth/me/access (role_key — never a
- * hard-coded role id). Accounts gains Fees › Registration fees; Student Affairs
- * gains a Verification queue shortcut. Admin / Super Admin see both. The server
- * still enforces every route; this only hides what a role cannot use.
+ * hard-coded role id). Counsellors get their own scoped menu; Accounts gains
+ * Fees › Registration fees; Student Affairs gains a Verification queue shortcut.
+ * Admin / Super Admin see both. The server still enforces every route; this only
+ * hides what a role cannot use.
  */
 function buildNav(roleKey: string | null | undefined): NavItem[] {
+  if (roleKey === "counsellor") return COUNSELLOR_ITEMS;
+
   const isAccounts = roleKey === "accounts";
   const isSA = roleKey === "student_affairs";
   const isAdmin = roleKey === "admin" || roleKey === "super_admin";

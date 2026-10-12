@@ -1456,14 +1456,22 @@ export class ConsultantsService {
    * counsellor's display id instead of the bare users.id) and is_active (the
    * window contains today — the same rule the counsellor profile uses).
    */
-  async findTargets(query: ListTargetsDto) {
+  async findTargets(
+    query: ListTargetsDto,
+    actor?: { userId: number; roleId: number | null },
+  ) {
     const pg = this.normalizePagination(query.page, query.limit);
+
+    // A counsellor only ever sees their OWN targets (read-only in the UI); the
+    // admin-only added/not_added filters don't apply once scoped to one person.
+    const ownOnly = actor?.roleId === CONSULTANT_ROLE_ID ? actor.userId : null;
 
     const where = {
       deleted_at: null,
+      ...(ownOnly !== null ? { consultant_id: ownOnly } : {}),
       ...(query.type !== undefined ? { type: query.type } : {}),
-      ...(query.state === 'added' ? { consultant_id: { not: null } } : {}),
-      ...(query.state === 'not_added' ? { consultant_id: null } : {}),
+      ...(ownOnly === null && query.state === 'added' ? { consultant_id: { not: null } } : {}),
+      ...(ownOnly === null && query.state === 'not_added' ? { consultant_id: null } : {}),
     };
 
     const allTargets = await this.prisma.consultant_target.findMany({

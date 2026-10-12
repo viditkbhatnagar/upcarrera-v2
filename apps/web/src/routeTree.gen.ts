@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as UniversitiesRouteImport } from './routes/universities'
 import { Route as SupportRouteImport } from './routes/support'
 import { Route as StudentsRouteImport } from './routes/students'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as FeesRouteImport } from './routes/fees'
@@ -78,6 +79,11 @@ const SupportRoute = SupportRouteImport.update({
 const StudentsRoute = StudentsRouteImport.update({
   id: '/students',
   path: '/students',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ReportsRoute = ReportsRouteImport.update({
@@ -367,6 +373,7 @@ export interface FileRoutesByFullPath {
   '/fees': typeof FeesRouteWithChildren
   '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
+  '/settings': typeof SettingsRoute
   '/students': typeof StudentsRouteWithChildren
   '/support': typeof SupportRoute
   '/universities': typeof UniversitiesRouteWithChildren
@@ -420,6 +427,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof DashboardRoute
   '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
+  '/settings': typeof SettingsRoute
   '/support': typeof SupportRoute
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
@@ -474,6 +482,7 @@ export interface FileRoutesById {
   '/fees': typeof FeesRouteWithChildren
   '/login': typeof LoginRoute
   '/reports': typeof ReportsRoute
+  '/settings': typeof SettingsRoute
   '/students': typeof StudentsRouteWithChildren
   '/support': typeof SupportRoute
   '/universities': typeof UniversitiesRouteWithChildren
@@ -533,6 +542,7 @@ export interface FileRouteTypes {
     | '/fees'
     | '/login'
     | '/reports'
+    | '/settings'
     | '/students'
     | '/support'
     | '/universities'
@@ -586,6 +596,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/login'
     | '/reports'
+    | '/settings'
     | '/support'
     | '/administration/audit-logs'
     | '/administration/document-checklist'
@@ -639,6 +650,7 @@ export interface FileRouteTypes {
     | '/fees'
     | '/login'
     | '/reports'
+    | '/settings'
     | '/students'
     | '/support'
     | '/universities'
@@ -697,6 +709,7 @@ export interface RootRouteChildren {
   FeesRoute: typeof FeesRouteWithChildren
   LoginRoute: typeof LoginRoute
   ReportsRoute: typeof ReportsRoute
+  SettingsRoute: typeof SettingsRoute
   StudentsRoute: typeof StudentsRouteWithChildren
   SupportRoute: typeof SupportRoute
   UniversitiesRoute: typeof UniversitiesRouteWithChildren
@@ -723,6 +736,13 @@ declare module '@tanstack/react-router' {
       path: '/students'
       fullPath: '/students'
       preLoaderRoute: typeof StudentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/reports': {
@@ -1262,6 +1282,7 @@ const rootRouteChildren: RootRouteChildren = {
   FeesRoute: FeesRouteWithChildren,
   LoginRoute: LoginRoute,
   ReportsRoute: ReportsRoute,
+  SettingsRoute: SettingsRoute,
   StudentsRoute: StudentsRouteWithChildren,
   SupportRoute: SupportRoute,
   UniversitiesRoute: UniversitiesRouteWithChildren,

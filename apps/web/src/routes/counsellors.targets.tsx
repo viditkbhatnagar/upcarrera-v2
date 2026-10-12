@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useAccess } from "@/components/applications/use-access";
 import { toast } from "sonner";
 import { apiGet } from "@/lib/api";
 import {
@@ -102,6 +103,10 @@ const COUNSELLOR_CSV: CsvColumn<CounsellorLite>[] = [
 ];
 
 function TargetsPage() {
+  // Counsellors get a read-only "My Targets" view: the list is scoped to them
+  // server-side (consultant-targets findAll), and the assign/edit controls hide.
+  const access = useAccess();
+  const isCounsellor = access.data?.role_key === "counsellor";
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("All");
@@ -280,9 +285,11 @@ function TargetsPage() {
             Counsellor Management
           </div>
           <h1 className="mt-1 text-2xl sm:text-3xl font-semibold tracking-tight text-foreground">
-            Targets
+            {isCounsellor ? "My Targets" : "Targets"}
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">Manage and monitor the targets.</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {isCounsellor ? "Your assigned targets and progress." : "Manage and monitor the targets."}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -292,13 +299,15 @@ function TargetsPage() {
             <Download className="h-4 w-4" />
             Export
           </button>
-          <button
-            onClick={() => openAssign()}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-card transition hover:bg-primary-hover"
-          >
-            <Plus className="h-4 w-4" />
-            Assign Target
-          </button>
+          {!isCounsellor && (
+            <button
+              onClick={() => openAssign()}
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-card transition hover:bg-primary-hover"
+            >
+              <Plus className="h-4 w-4" />
+              Assign Target
+            </button>
+          )}
         </div>
       </div>
 
@@ -459,12 +468,14 @@ function TargetsPage() {
                     <td className="px-4 py-3 text-sm text-foreground">{c.manager}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end">
-                        <button
-                          onClick={() => openAssign(c.id)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-muted"
-                        >
-                          <Plus className="h-3.5 w-3.5" /> Assign
-                        </button>
+                        {!isCounsellor && (
+                          <button
+                            onClick={() => openAssign(c.id)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-muted"
+                          >
+                            <Plus className="h-3.5 w-3.5" /> Assign
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -524,6 +535,7 @@ function TargetsPage() {
                       serial={pageStart + i + 1}
                       onView={() => setViewingId(t.targetId)}
                       onEdit={() => setFormTarget(t.raw)}
+                      canEdit={!isCounsellor}
                     />
                   ))}
                 </tbody>
@@ -603,11 +615,13 @@ function TargetTableRow({
   serial,
   onView,
   onEdit,
+  canEdit = true,
 }: {
   row: TargetRow;
   serial: number;
   onView: () => void;
   onEdit: () => void;
+  canEdit?: boolean;
 }) {
   const meta = typeMeta(t.typeCode);
   const Icon = meta.icon;
@@ -681,7 +695,7 @@ function TargetTableRow({
       <td className="px-4 py-3">
         <div className="flex items-center justify-end gap-1">
           <IconBtn icon={Eye} label="View" onClick={onView} />
-          <IconBtn icon={Pencil} label="Edit" onClick={onEdit} />
+          {canEdit && <IconBtn icon={Pencil} label="Edit" onClick={onEdit} />}
         </div>
       </td>
     </tr>

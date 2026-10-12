@@ -27,8 +27,12 @@ export class ConsultantTargetsController {
 
   @Get()
   @ResponseMessage('Consultant targets')
-  findAll(@Query() query: ListTargetsDto) {
-    return this.consultants.findTargets(query);
+  findAll(
+    @Query() query: ListTargetsDto,
+    @CurrentUser('id') userId: number,
+    @CurrentUser('role_id') roleId: number | null,
+  ) {
+    return this.consultants.findTargets(query, { userId, roleId });
   }
 
   @Get(':id')
