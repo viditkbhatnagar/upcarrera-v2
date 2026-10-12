@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
 import {
   Download,
@@ -23,7 +23,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Hash,
-  Camera,
   ChevronDown,
   Mail,
   Phone,
@@ -622,7 +621,12 @@ function UsersPage() {
         </div>
       </div>
 
-      <AddUserDialog open={openAdd} onOpenChange={setOpenAdd} />
+      <AddUserDialog
+        open={openAdd}
+        onOpenChange={setOpenAdd}
+        roles={rolesData ?? []}
+        studentRoleId={studentRoleId}
+      />
       <BulkActionsDialog
         open={openBulk}
         onOpenChange={setOpenBulk}
@@ -866,12 +870,90 @@ function IconBtn({
 function AddUserDialog({
   open,
   onOpenChange,
+  roles,
+  studentRoleId,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
+  roles: ApiRole[];
+  studentRoleId?: number;
 }) {
-  const [status, setStatus] = useState<AccountStatus>("Active");
-  const [designation, setDesignation] = useState(DESIGNATIONS[0]);
+  const queryClient = useQueryClient();
+  const [empId, setEmpId] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [roleId, setRoleId] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [status, setStatus] = useState<"Active" | "Inactive">("Active");
+  const [show, setShow] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Reset the form each time the dialog opens.
+  useEffect(() => {
+    if (!open) return;
+    setEmpId("");
+    setName("");
+    setEmail("");
+    setPhone("");
+    setRoleId("");
+    setPassword("");
+    setConfirm("");
+    setStatus("Active");
+    setShow(false);
+  }, [open]);
+
+  // Staff roles only — never offer the Student role for a CRM login account.
+  const staffRoles = useMemo(
+    () =>
+      roles.filter(
+        (r) => r.title && String(r.title).trim() !== "" && Number(r.id) !== studentRoleId,
+      ),
+    [roles, studentRoleId],
+  );
+
+  const submit = async () => {
+    if (name.trim() === "") {
+      toast.error("Enter the user's name.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) {
+      toast.error("Enter a valid email address.");
+      return;
+    }
+    if (roleId === "") {
+      toast.error("Choose a role.");
+      return;
+    }
+    if (password.length < 8) {
+      toast.error("Password must be at least 8 characters.");
+      return;
+    }
+    if (password !== confirm) {
+      toast.error("Passwords do not match.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await apiPost("/users", {
+        name: name.trim(),
+        email: email.trim(),
+        phone: phone.trim() || undefined,
+        role_id: Number(roleId),
+        register_number: empId.trim() || undefined,
+        status: status === "Active" ? 1 : 0,
+        password,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["users"] });
+      toast.success(`${name.trim()} added. Share the password with them privately — they can change it after signing in.`);
+      onOpenChange(false);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't create the user.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -881,40 +963,22 @@ function AddUserDialog({
         </DialogHeader>
 
         <div className="space-y-5">
-          {/* Photo */}
-          <div className="flex items-center gap-4">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-dashed border-border bg-muted text-muted-foreground">
-              <Camera className="h-5 w-5" />
-            </div>
-            <div>
-              <button className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted">
-                Upload Photo
-              </button>
-              <p className="mt-1 text-xs text-muted-foreground">JPG or PNG, max 2MB.</p>
-            </div>
-          </div>
-
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Employee ID">
-              <Input placeholder="UC-1234" />
+              <Input value={empId} onChange={(e) => setEmpId(e.target.value)} placeholder="UC-1234" />
             </Field>
             <Field label="Name">
-              <Input placeholder="Full name" />
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
             </Field>
-            <Field label="Designation">
-              <Select value={designation} onValueChange={setDesignation}>
+            <Field label="Role">
+              <Select value={roleId} onValueChange={setRoleId}>
                 <SelectTrigger className="h-9 text-sm">
-                  <SelectValue />
+                  <SelectValue placeholder="Select a role" />
                 </SelectTrigger>
                 <SelectContent>
-                  {[
-                    ...DESIGNATIONS,
-                    "System Administrator",
-                    "IT Manager",
-                    "HR Administrator",
-                  ].map((d) => (
-                    <SelectItem key={d} value={d}>
-                      {d}
+                  {staffRoles.map((r) => (
+                    <SelectItem key={String(r.id)} value={String(r.id)}>
+                      {r.title}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -923,14 +987,54 @@ function AddUserDialog({
             <Field label="Mobile Number">
               <div className="relative">
                 <Phone className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input className="pl-9" placeholder="+91 98765 43210" />
+                <Input
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className="pl-9"
+                  placeholder="+91 98765 43210"
+                />
               </div>
             </Field>
             <Field label="Email Address" className="sm:col-span-2">
               <div className="relative">
                 <Mail className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input className="pl-9" type="email" placeholder="user@upcarrera.com" />
+                <Input
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="pl-9"
+                  type="email"
+                  placeholder="user@upcarrera.com"
+                />
               </div>
+            </Field>
+            <Field label="Temporary Password">
+              <div className="relative">
+                <Input
+                  type={show ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="At least 8 characters"
+                  className="pr-10"
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShow((v) => !v)}
+                  aria-label={show ? "Hide password" : "Show password"}
+                  className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </Field>
+            <Field label="Confirm Password">
+              <Input
+                type={show ? "text" : "password"}
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                placeholder="Re-enter password"
+                autoComplete="new-password"
+              />
             </Field>
             <Field label="Account Status" className="sm:col-span-2">
               <div className="flex gap-2">
@@ -958,6 +1062,10 @@ function AddUserDialog({
               </div>
             </Field>
           </div>
+          <p className="text-xs text-muted-foreground">
+            The new user signs in with their email and this password. They can change it anytime from
+            their profile, or via “Forgot password” on the login page.
+          </p>
         </div>
 
         <DialogFooter>
@@ -968,11 +1076,12 @@ function AddUserDialog({
             Cancel
           </button>
           <button
-            onClick={() => onOpenChange(false)}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover"
+            onClick={submit}
+            disabled={saving}
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover disabled:opacity-60"
           >
             <Plus className="h-4 w-4" />
-            Create User
+            {saving ? "Creating…" : "Create User"}
           </button>
         </DialogFooter>
       </DialogContent>

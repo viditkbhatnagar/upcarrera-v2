@@ -109,7 +109,16 @@ export class PlatformService {
     return this.sanitizeUser(user);
   }
 
-  async createUser(dto: CreateUserDto) {
+  async createUser(dto: CreateUserDto, actorRoleId?: number | null) {
+    // M3: a non-Super-Admin cannot create a Super Admin account — a privilege-
+    // escalation path, mirroring the same guard on updateUser.
+    if (
+      actorRoleId !== SUPER_ADMIN_ROLE_ID &&
+      Number((dto as { role_id?: number | string }).role_id) === SUPER_ADMIN_ROLE_ID
+    ) {
+      throw new ForbiddenException('Only a Super Admin can grant the Super Admin role.');
+    }
+
     const now = new Date();
     const password = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
 

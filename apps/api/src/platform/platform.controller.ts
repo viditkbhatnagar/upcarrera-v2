@@ -100,8 +100,8 @@ export class PlatformController {
   @Post('users')
   @RequirePermission('consultants/create')
   @ResponseMessage('User created')
-  createUser(@Body() dto: CreateUserDto) {
-    return this.platform.createUser(dto);
+  createUser(@Body() dto: CreateUserDto, @CurrentUser('roleId') actorRoleId: number) {
+    return this.platform.createUser(dto, actorRoleId);
   }
 
   @Patch('users/:id')
