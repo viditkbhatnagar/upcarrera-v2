@@ -43,8 +43,12 @@ export class ConsultantsController {
 
   @Get()
   @ResponseMessage('Consultants')
-  findAll(@Query() query: ListConsultantsDto) {
-    return this.consultants.findAll(query);
+  findAll(
+    @Query() query: ListConsultantsDto,
+    @CurrentUser('id') userId: number,
+    @CurrentUser('role_id') roleId: number | null,
+  ) {
+    return this.consultants.findAll(query, { userId, roleId });
   }
 
   // --- literal paths BEFORE :id --------------------------------------------

@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
+import { useAccess } from "@/components/applications/use-access";
+import { CounsellorDashboard } from "@/components/dashboard/counsellor-dashboard";
 import {
   Users,
   ClipboardList,
@@ -176,6 +178,14 @@ function StatCard({ s }: { s: Stat }) {
 }
 
 function Dashboard() {
+  // Counsellors get a focused, self-scoped dashboard; everyone else the admin one.
+  const access = useAccess();
+  if (access.isLoading) return null;
+  if (access.data?.role_key === "counsellor") return <CounsellorDashboard />;
+  return <AdminDashboard />;
+}
+
+function AdminDashboard() {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["dashboard", "overview"],
     queryFn: () => apiGet<DashboardOverview>("/dashboard"),

@@ -330,12 +330,20 @@ export class ConsultantsService {
   // ===========================================================================
 
   /** GET /consultants — paginate + legacy search (name/phone/email) + status. */
-  async findAll(query: ListConsultantsDto) {
+  async findAll(
+    query: ListConsultantsDto,
+    actor?: { userId: number; roleId: number | null },
+  ) {
     const pg = this.normalizePagination(query.page, query.limit);
+
+    // A counsellor only ever sees themselves in the consultant roster (no leak of
+    // colleagues' names/teams); admins/managers see everyone.
+    const ownId = actor?.roleId === CONSULTANT_ROLE_ID ? actor.userId : null;
 
     const where = {
       deleted_at: null,
       role_id: CONSULTANT_ROLE_ID,
+      ...(ownId !== null ? { id: ownId } : {}),
       ...(query.search
         ? {
             OR: [
