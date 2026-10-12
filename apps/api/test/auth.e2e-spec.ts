@@ -1,7 +1,9 @@
 import type { INestApplication } from '@nestjs/common';
 import type { Server } from 'http';
 import request from 'supertest';
+import * as bcrypt from 'bcryptjs';
 import { ADMIN_CREDENTIALS, authHeader, bootApp, loginAs } from './app.factory';
+import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Auth (e2e)', () => {
   let app: INestApplication;
@@ -59,6 +61,37 @@ describe('Auth (e2e)', () => {
       expect(res.status).toBe(400);
       expect(res.body.status).toBe(false);
       expect(res.body.data).toBeNull();
+    });
+
+    it('logs in by EMAIL for a staff user that has no username (Add User accounts)', async () => {
+      // Add User creates staff with an email and no username, then emails them a
+      // temporary password. Login must resolve that email, not only a username.
+      const prisma = app.get(PrismaService);
+      const email = `e2e_login_email_${Date.now()}@upcarrera.local`;
+      const password = 'KnownPass_7#';
+      const created = await prisma.users.create({
+        data: {
+          name: 'Email Login E2E',
+          email,
+          username: null,
+          password: await bcrypt.hash(password, 10),
+          role_id: 1,
+          status: 1,
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      });
+      try {
+        const res = await request(http)
+          .post('/api/auth/login')
+          .send({ username: email, password });
+        expect([200, 201]).toContain(res.status);
+        expect(res.body.status).toBe(true);
+        expect(typeof res.body.data?.auth_token).toBe('string');
+        expect(res.body.data.auth_token.length).toBeGreaterThan(0);
+      } finally {
+        await prisma.users.delete({ where: { id: created.id } });
+      }
     });
   });
 

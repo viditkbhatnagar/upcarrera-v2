@@ -30,9 +30,18 @@ export class AuthService {
   ) {}
 
   async login(username: string, password: string, ctx: LoginContext = {}) {
-    const user = await this.prisma.users.findFirst({
+    let user = await this.prisma.users.findFirst({
       where: { username, deleted_at: null },
     });
+    // The login form accepts an email OR a user ID. Username match takes priority
+    // (so no existing login can regress); if it misses, fall back to email — staff
+    // created via Add User sign in with the email we invited them on and have no
+    // separate username. A blank identifier never reaches the email lookup.
+    if (!user && username) {
+      user = await this.prisma.users.findFirst({
+        where: { email: username, deleted_at: null },
+      });
+    }
     if (!user) {
       await this.auditLoginFailed(username, null, null, 'user_not_found', ctx);
       throw new UnauthorizedException('User not found!');
