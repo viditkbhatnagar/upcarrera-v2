@@ -28,13 +28,17 @@ export class CreateConsultantDto {
   @MaxLength(100)
   name!: string;
 
+  // Optional: the Add Counsellor form uses the email as the username. When omitted,
+  // the service defaults the username to the email.
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  username!: string;
+  username?: string;
 
+  // Optional: when omitted (the form no longer collects one), the service generates
+  // a temporary password and emails it to the counsellor.
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  password!: string;
+  password?: string;
 
   // users.code is an Int? in the new schema (legacy stored the dial-code here).
   @IsOptional()

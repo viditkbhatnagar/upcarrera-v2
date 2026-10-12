@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError, apiGet, apiPatch, apiPost, apiUpload } from "@/lib/api";
+import { ApiError, apiGet, apiPost, apiUpload } from "@/lib/api";
 import {
   Download,
   Plus,
@@ -62,13 +62,11 @@ import { downloadCsv, toCsv, type CsvColumn } from "@/components/counsellors/exp
 import {
   EditCounsellorDialog,
   Field,
-  TeamReportsToFields,
   TransferTeamDialog,
-  defaultReportsTo,
   useConsultantsList,
-  useHierarchyOptions,
   type ConsultantRaw,
 } from "@/components/counsellors/counsellor-dialogs";
+import { ImageCropDialog } from "@/components/ui/image-crop-dialog";
 
 export const Route = createFileRoute("/counsellors/counsellors")({
   head: () => ({ meta: [{ title: "Counsellors — upCarrera" }] }),
@@ -1015,10 +1013,8 @@ function AddCounsellorDialog({
 }) {
   const qc = useQueryClient();
   const [form, setForm] = useState<CounsellorForm>(EMPTY_FORM);
-  const { teams, people, isLoading: optionsLoading } = useHierarchyOptions();
-  const teamById = useMemo(() => new Map(teams.map((t) => [String(t.id), t])), [teams]);
-  const hasTeams = teams.length > 0;
   const [photoName, setPhotoName] = useState("");
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const set = <K extends keyof CounsellorForm>(key: K, value: CounsellorForm[K]) =>
@@ -1029,6 +1025,8 @@ function AddCounsellorDialog({
     if (!next) {
       setForm(EMPTY_FORM);
       setPhotoName("");
+      if (cropSrc) URL.revokeObjectURL(cropSrc);
+      setCropSrc(null);
     }
     onOpenChange(next);
   };
@@ -1051,54 +1049,24 @@ function AddCounsellorDialog({
       toast.error(e instanceof ApiError ? e.message : "Couldn’t upload the photo"),
   });
 
-  /** Picking a team proposes its leader (or group manager) as Reports To,
-   *  unless the operator already chose someone else. */
-  const changeTeam = (next: string) => {
-    setForm((prev) => {
-      const previousDefault = defaultReportsTo(teamById.get(prev.team_id));
-      const keepManual =
-        prev.reports_to !== "" && prev.reports_to !== String(previousDefault ?? "");
-      const proposed = defaultReportsTo(teamById.get(next));
-      return {
-        ...prev,
-        team_id: next,
-        reports_to: keepManual ? prev.reports_to : proposed ? String(proposed) : "",
-      };
-    });
-  };
-
-  // Add Counsellor -> POST /consultants, then PATCH /consultants/:id/team. The
-  // service forces role_id = 6, bcrypt-hashes the password, normalises the
-  // phone, and answers 409 on a duplicate phone/email or employee code — all
-  // surfaced rather than swallowed. The two calls are not atomic, so a failed
-  // team assignment is reported as exactly that: the counsellor exists, the
-  // placement did not save.
+  // Add Counsellor -> POST /consultants. The service forces role_id = 6, uses the
+  // email as the username, generates a temporary password and emails it (invite),
+  // normalises the phone, and answers 409 on a duplicate phone/email/employee code.
+  // Team placement is done later via Transfer Team, not in this form.
   const createMut = useMutation({
-    mutationFn: async (input: {
-      body: Record<string, unknown>;
-      placement: { team_id: number; reports_to: number | null } | null;
-    }) => {
-      const created = await apiPost<{ id: number }>("/consultants", input.body);
-      if (!input.placement) return { created, placementError: null as string | null };
-      try {
-        await apiPatch(`/consultants/${created.id}/team`, input.placement);
-        return { created, placementError: null as string | null };
-      } catch (e) {
-        return {
-          created,
-          placementError: e instanceof ApiError ? e.message : "Unknown error",
-        };
-      }
-    },
-    onSuccess: ({ placementError }) => {
+    mutationFn: (body: Record<string, unknown>) =>
+      apiPost<{ id: number; invite_sent?: boolean }>("/consultants", body),
+    onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ["consultants"] });
       qc.invalidateQueries({ queryKey: ["sales-teams"] });
-      if (placementError) {
-        toast.error(
-          `Counsellor created, but the team assignment did not save (${placementError}). Use Transfer Team to place them.`,
+      if (created?.invite_sent) {
+        toast.success(
+          `Counsellor created. An invite email with sign-in details was sent to ${form.email.trim()}.`,
         );
       } else {
-        toast.success("Counsellor created");
+        toast.success(
+          "Counsellor created, but the invite email couldn't be sent. Use Reset password to set and share credentials.",
+        );
       }
       close(false);
     },
@@ -1107,9 +1075,13 @@ function AddCounsellorDialog({
   });
 
   const name = form.name.trim();
-  const username = form.username.trim();
+  const email = form.email.trim();
   const employeeCode = form.employee_code.trim();
   const isPending = createMut.isPending || photoMut.isPending;
+  const emailError =
+    email !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)
+      ? "Enter a valid email address."
+      : null;
   const phoneError = !isAcceptablePhoneInput(form.phone)
     ? "Enter a 10-digit Indian mobile (e.g. 98765 43210) or an international number starting with +."
     : null;
@@ -1117,53 +1089,44 @@ function AddCounsellorDialog({
     employeeCode !== "" && !EMPLOYEE_CODE_PATTERN.test(employeeCode)
       ? "Letters, digits, - _ / only, no spaces."
       : null;
-  // Spec 2.1 — team and reports-to are required, but only once a team exists to
-  // pick; otherwise the first counsellor could never be created.
-  const placementMissing = hasTeams && (form.team_id === "" || form.reports_to === "");
+  // Every field is mandatory now (ops decision), including the photo. Credentials
+  // are handled server-side: the email is the username, a temporary password is
+  // generated and emailed.
   const canSubmit =
     name !== "" &&
-    username !== "" &&
-    form.password.length >= MIN_PASSWORD_LENGTH &&
+    email !== "" &&
+    !emailError &&
+    employeeCode !== "" &&
+    form.phone.trim() !== "" &&
+    form.gender !== "" &&
+    form.dob !== "" &&
+    form.doj !== "" &&
+    form.highest_qualification.trim() !== "" &&
+    form.profile_picture !== "" &&
     !phoneError &&
     !employeeCodeError &&
-    !placementMissing &&
-    !optionsLoading &&
     !isPending;
 
   const submit = () => {
     if (!canSubmit) return;
-    // Send only what CreateConsultantDto accepts; blank optionals are omitted
-    // rather than posted as empty strings.
     createMut.mutate({
-      placement:
-        form.team_id !== ""
-          ? {
-              team_id: Number(form.team_id),
-              reports_to: form.reports_to !== "" ? Number(form.reports_to) : null,
-            }
-          : null,
-      body: {
       name,
-      username,
-      password: form.password,
-      ...(employeeCode ? { employee_code: employeeCode } : {}),
-      ...(form.email.trim() ? { email: form.email.trim() } : {}),
-      ...(form.phone.trim() ? { phone: form.phone.trim() } : {}),
-      ...(form.gender ? { gender: form.gender } : {}),
-      ...(form.dob ? { dob: form.dob } : {}),
-      ...(form.doj ? { doj: form.doj } : {}),
-      ...(form.highest_qualification.trim()
-        ? { highest_qualification: form.highest_qualification.trim() }
-        : {}),
-      ...(form.profile_picture ? { profile_picture: form.profile_picture } : {}),
+      email,
+      employee_code: employeeCode,
+      phone: form.phone.trim(),
+      gender: form.gender,
+      dob: form.dob,
+      doj: form.doj,
+      highest_qualification: form.highest_qualification.trim(),
+      profile_picture: form.profile_picture,
       status: form.status === "Active" ? 1 : 0,
-      },
     });
   };
 
+  // Pick a photo -> open the cropper; the cropped result is what gets uploaded.
   const pickPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    e.target.value = ""; // let the same file be re-picked after an error
+    e.target.value = ""; // let the same file be re-picked after an error/cancel
     if (!file) return;
     if (!file.type.startsWith("image/")) {
       toast.error("Profile photo must be a PNG or JPG image");
@@ -1173,17 +1136,27 @@ function AddCounsellorDialog({
       toast.error("Profile photo must be 2 MB or smaller");
       return;
     }
+    if (cropSrc) URL.revokeObjectURL(cropSrc);
+    setCropSrc(URL.createObjectURL(file));
+  };
+
+  // Cropper confirmed -> upload the cropped image.
+  const onCropped = (file: File) => {
+    if (cropSrc) URL.revokeObjectURL(cropSrc);
+    setCropSrc(null);
     photoMut.mutate(file);
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="text-xl font-semibold">Add Counsellor</DialogTitle>
           <p className="text-sm text-muted-foreground">
-            Create a new admission counsellor profile. The username and password
-            are the counsellor’s login credentials — share them directly.
+            Create a new admission counsellor. They sign in with their email; a
+            temporary password is emailed to them automatically. Assign a team
+            afterwards with Transfer Team.
           </p>
         </DialogHeader>
 
@@ -1229,14 +1202,14 @@ function AddCounsellorDialog({
                 onChange={(e) => set("name", e.target.value)}
               />
             </Field>
-            <Field label="Employee Code" error={employeeCodeError}>
+            <Field label="Employee Code" required error={employeeCodeError}>
               <Input
-                placeholder="e.g. UC-1024 (optional)"
+                placeholder="e.g. UC-1024"
                 value={form.employee_code}
                 onChange={(e) => set("employee_code", e.target.value)}
               />
             </Field>
-            <Field label="Email">
+            <Field label="Email" required error={emailError}>
               <Input
                 type="email"
                 placeholder="name@upcarrera.com"
@@ -1245,32 +1218,14 @@ function AddCounsellorDialog({
               />
             </Field>
 
-            <Field label="Username" required>
-              <Input
-                autoComplete="off"
-                placeholder="Login username"
-                value={form.username}
-                onChange={(e) => set("username", e.target.value)}
-              />
-            </Field>
-            <Field label="Password" required>
-              <Input
-                type="password"
-                autoComplete="new-password"
-                placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
-                value={form.password}
-                onChange={(e) => set("password", e.target.value)}
-              />
-            </Field>
-
-            <Field label="Phone Number" error={phoneError}>
+            <Field label="Phone Number" required error={phoneError}>
               <Input
                 placeholder="98765 43210"
                 value={form.phone}
                 onChange={(e) => set("phone", e.target.value)}
               />
             </Field>
-            <Field label="Gender">
+            <Field label="Gender" required>
               <Select value={form.gender} onValueChange={(v) => set("gender", v)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select gender" />
@@ -1283,14 +1238,14 @@ function AddCounsellorDialog({
               </Select>
             </Field>
 
-            <Field label="Date of Birth">
+            <Field label="Date of Birth" required>
               <Input
                 type="date"
                 value={form.dob}
                 onChange={(e) => set("dob", e.target.value)}
               />
             </Field>
-            <Field label="Joining Date">
+            <Field label="Joining Date" required>
               <Input
                 type="date"
                 value={form.doj}
@@ -1298,7 +1253,7 @@ function AddCounsellorDialog({
               />
             </Field>
 
-            <Field label="Highest Qualification">
+            <Field label="Highest Qualification" required>
               <Input
                 placeholder="e.g. MBA"
                 value={form.highest_qualification}
@@ -1321,30 +1276,9 @@ function AddCounsellorDialog({
             </Field>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 rounded-xl border border-border bg-muted/30 p-4 sm:grid-cols-2">
-            <div className="sm:col-span-2">
-              <div className="text-sm font-semibold text-foreground">Team placement</div>
-              <div className="text-xs text-muted-foreground">
-                {hasTeams
-                  ? "A counsellor belongs to exactly one team and reports to its leader or manager."
-                  : optionsLoading
-                    ? "Loading teams…"
-                    : "No teams exist yet. Create the counsellor now and place them with Transfer Team once a team exists."}
-              </div>
-            </div>
-            <TeamReportsToFields
-              teams={teams}
-              people={people}
-              teamId={form.team_id}
-              reportsTo={form.reports_to}
-              onTeamChange={changeTeam}
-              onReportsToChange={(v) => set("reports_to", v)}
-              disabled={isPending}
-            />
-          </div>
-
           <p className="text-xs text-muted-foreground">
-            Leave Employee Code blank to show the system id (UC-&lt;number&gt;).
+            All fields are required. Assign the counsellor to a team afterwards with
+            Transfer Team.
           </p>
         </div>
 
@@ -1373,5 +1307,17 @@ function AddCounsellorDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    <ImageCropDialog
+      src={cropSrc}
+      aspect={1}
+      title="Crop profile photo"
+      fileName="counsellor-photo.jpg"
+      onCancel={() => {
+        if (cropSrc) URL.revokeObjectURL(cropSrc);
+        setCropSrc(null);
+      }}
+      onCropped={onCropped}
+    />
+    </>
   );
 }

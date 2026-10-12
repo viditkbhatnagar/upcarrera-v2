@@ -2,15 +2,12 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
-  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
-import { EmailService } from '../integrations/email.service';
-import { EmailTemplatesService } from '../integrations/email-templates.service';
+import { UserInviteService } from '../integrations/user-invite.service';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { UserStateService } from '../common/user-state.service';
 import { RecordAccessService } from '../workflow/record-access.service';
@@ -30,15 +27,6 @@ const BCRYPT_ROUNDS = 10;
 /** Only a Super Admin may reset, edit, or create another Super Admin (M3). */
 const SUPER_ADMIN_ROLE_ID = 1;
 
-/**
- * A strong temporary password for emailed invites. base64url of 12 random bytes
- * (16 chars, clipboard/URL-safe) plus a digit+symbol, so it always clears the
- * min-8 policy and any mixed-class rule a stricter policy might add later.
- */
-function generateTempPassword(): string {
-  return crypto.randomBytes(12).toString('base64url') + '7#';
-}
-
 export interface Paginated<T> {
   items: T[];
   total: number;
@@ -57,14 +45,11 @@ export interface Paginated<T> {
  */
 @Injectable()
 export class PlatformService {
-  private readonly logger = new Logger(PlatformService.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly userState: UserStateService,
     private readonly access: RecordAccessService,
-    private readonly email: EmailService,
-    private readonly templates: EmailTemplatesService,
+    private readonly invite: UserInviteService,
   ) {}
 
   /**
@@ -140,7 +125,7 @@ export class PlatformService {
     // The Add User form no longer collects a password: generate a strong temporary
     // one and email it to the user (per ops — the password lives in the email, not
     // on the admin's screen). An admin/API-supplied password still wins.
-    const tempPassword = dto.password ?? generateTempPassword();
+    const tempPassword = dto.password ?? this.invite.generateTempPassword();
     const { password: _suppliedPassword, ...rest } = dto;
     const hashed = await bcrypt.hash(tempPassword, BCRYPT_ROUNDS);
 
@@ -155,42 +140,9 @@ export class PlatformService {
 
     // Email the invite with the temporary password. Never let an email failure undo
     // a successful user creation — report it so the admin can resend / reset instead.
-    const inviteSent = dto.password ? false : await this.sendInviteEmail(created, tempPassword);
+    const inviteSent = dto.password ? false : await this.invite.sendInvite(created, tempPassword);
 
     return { ...this.sanitizeUser(created), invite_sent: inviteSent };
-  }
-
-  /** Best-effort welcome email carrying the temporary password. Returns true on send. */
-  private async sendInviteEmail(
-    user: { name: string | null; email: string | null; role_id: number | null },
-    tempPassword: string,
-  ): Promise<boolean> {
-    if (!user.email || !this.email.isConfigured) return false;
-    try {
-      const roleTitle = user.role_id
-        ? ((await this.prisma.user_role.findFirst({ where: { id: user.role_id } }))?.title ?? 'Staff')
-        : 'Staff';
-      const first = (user.name ?? '').trim().split(/\s+/)[0] || 'there';
-      const rendered = this.templates.render('user-invite', {
-        invited_by: 'Your upCarrera administrator',
-        first_name: first,
-        email: user.email,
-        role: roleTitle,
-        temp_password: tempPassword,
-        login_url: process.env.MAIL_LOGIN_URL ?? 'https://admin.upcarrera.com/login',
-      });
-      await this.email.sendEmail({
-        to: user.email,
-        name: user.name ?? 'there',
-        subject: rendered.subject,
-        html: rendered.html,
-        saveToSentItems: false,
-      });
-      return true;
-    } catch (err) {
-      this.logger.error(`User invite email to ${user.email} failed: ${(err as Error).message}`);
-      return false;
-    }
   }
 
   async updateUser(id: number, dto: UpdateUserDto, actorRoleId?: number | null) {

@@ -5,6 +5,7 @@ import { EmailService } from './email.service';
 import { EmailTemplatesService } from './email-templates.service';
 import { SmsService } from './sms.service';
 import { OtpService } from './otp.service';
+import { UserInviteService } from './user-invite.service';
 
 /**
  * External integration providers (Zoom, Microsoft 365 email, 2factor SMS) plus the
@@ -16,7 +17,7 @@ import { OtpService } from './otp.service';
  */
 @Module({
   controllers: [IntegrationsController],
-  providers: [ZoomService, EmailService, EmailTemplatesService, SmsService, OtpService],
-  exports: [ZoomService, EmailService, EmailTemplatesService, SmsService, OtpService],
+  providers: [ZoomService, EmailService, EmailTemplatesService, SmsService, OtpService, UserInviteService],
+  exports: [ZoomService, EmailService, EmailTemplatesService, SmsService, OtpService, UserInviteService],
 })
 export class IntegrationsModule {}

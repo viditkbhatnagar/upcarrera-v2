@@ -3,6 +3,7 @@ import { ConsultantsController } from './consultants.controller';
 import { ConsultantTargetsController } from './consultant-targets.controller';
 import { ConsultantsService } from './consultants.service';
 import { WorkflowCoreModule } from '../workflow/workflow-core.module';
+import { IntegrationsModule } from '../integrations/integrations.module';
 
 /**
  * Consultants surface (port of CI4 App\Controllers\App\{Consultant,
@@ -11,7 +12,7 @@ import { WorkflowCoreModule } from '../workflow/workflow-core.module';
  * WorkflowCoreModule supplies RecordAccessService for performance-route scoping.
  */
 @Module({
-  imports: [WorkflowCoreModule],
+  imports: [WorkflowCoreModule, IntegrationsModule],
   controllers: [ConsultantsController, ConsultantTargetsController],
   providers: [ConsultantsService],
 })

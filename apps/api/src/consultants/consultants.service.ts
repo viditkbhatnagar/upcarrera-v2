@@ -29,6 +29,7 @@ import {
   AccessUser,
 } from '../workflow/record-access.service';
 import { UserStateService } from '../common/user-state.service';
+import { UserInviteService } from '../integrations/user-invite.service';
 
 import {
   stripUserSecrets,
@@ -273,6 +274,7 @@ export class ConsultantsService {
     private readonly prisma: PrismaService,
     private readonly access: RecordAccessService,
     private readonly userState: UserStateService,
+    private readonly invite: UserInviteService,
   ) {}
 
   /**
@@ -821,13 +823,17 @@ export class ConsultantsService {
     await this.assertEmployeeCodeFree(employeeCode);
 
     const now = new Date();
-    const hashed = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
+    // The Add Counsellor form no longer collects credentials: the email is the
+    // username, and when no password is supplied we generate one and email it.
+    const username = dto.username ?? dto.email ?? null;
+    const tempPassword = dto.password ?? this.invite.generateTempPassword();
+    const hashed = await bcrypt.hash(tempPassword, BCRYPT_ROUNDS);
 
     const consultant = await this.withEmployeeCodeGuard(() =>
       this.prisma.users.create({
       data: {
         name: dto.name,
-        username: dto.username,
+        username,
         password: hashed,
         code: code ?? null,
         phone: phone ?? null,
@@ -860,9 +866,14 @@ export class ConsultantsService {
       actorUserId,
     );
 
-    // NOTE(welcome-email): legacy send_email() of login credentials is skipped —
-    // no EmailService is provided to this module (optional per the brief).
-    return this.stripSecrets(consultant);
+    // Email the invite with the temporary password in the body (unless an API
+    // client supplied an explicit password). A send failure never undoes the
+    // create — invite_sent lets the UI tell the admin to use Reset password.
+    const inviteSent = dto.password
+      ? false
+      : await this.invite.sendInvite(consultant, tempPassword);
+
+    return { ...this.stripSecrets(consultant), invite_sent: inviteSent };
   }
 
   /**
