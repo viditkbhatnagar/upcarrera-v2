@@ -8,7 +8,13 @@ import { useAccess } from "@/components/applications/use-access";
 // Paths a counsellor may open; anything else bounces to their dashboard. The
 // server still enforces permissions on every API — this is UX + defence-in-depth
 // so a counsellor can't land on an admin screen shell by typing a URL.
-const COUNSELLOR_ALLOWED = ["/dashboard", "/students", "/counsellors/targets", "/settings"];
+const COUNSELLOR_ALLOWED = [
+  "/dashboard",
+  "/students",
+  "/counsellors/targets",
+  "/universities/courses",
+  "/settings",
+];
 function pathAllowedForCounsellor(pathname: string): boolean {
   return COUNSELLOR_ALLOWED.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }

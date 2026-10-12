@@ -31,9 +31,9 @@ export function CounsellorDashboard() {
   ];
 
   const links = [
-    { to: "/students/applications", label: "My Applications", icon: FileText, desc: "Work your leads through the pipeline" },
-    { to: "/students/students", label: "My Students", icon: Users, desc: "Students you've enrolled" },
-    { to: "/counsellors/targets", label: "My Targets", icon: Target, desc: "Your targets and progress" },
+    { to: "/students/applications", label: "Applications", icon: FileText, desc: "Work your leads through the pipeline" },
+    { to: "/students/students", label: "My Enrollments", icon: Users, desc: "Students you've enrolled" },
+    { to: "/counsellors/targets", label: "Performance", icon: Target, desc: "Your targets and achievement" },
   ];
 
   return (

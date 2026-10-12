@@ -125,15 +125,18 @@ const BASE_ITEMS: NavItem[] = [
   },
 ];
 
-// Counsellor portal menu — counsellors get a focused, self-scoped workspace
-// (their leads, their students, their targets) instead of the admin surface. The
-// backend already scopes applications/students/targets to the logged-in counsellor
-// (record-access role_key 'counsellor' = own records), and enforces every route.
+// Counsellor portal menu — mirrors the TTII counsellor-login modules, limited to
+// what an admission CRM has and the counsellor role can actually reach: the backend
+// scopes applications/enrolments/performance to the logged-in counsellor
+// (record-access role_key 'counsellor' = own records) and grants them crm:catalog.view
+// for Courses. (TTII's Payments/Reports need extra grants; Training/Resources are
+// LMS modules this CRM doesn't have — see the handover note.)
 const COUNSELLOR_ITEMS: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/students/applications", label: "My Applications", icon: FileText },
-  { to: "/students/students", label: "My Students", icon: Users },
-  { to: "/counsellors/targets", label: "My Targets", icon: Target },
+  { to: "/students/applications", label: "Applications", icon: FileText },
+  { to: "/students/students", label: "My Enrollments", icon: GraduationCap },
+  { to: "/counsellors/targets", label: "Performance", icon: BarChart3 },
+  { to: "/universities/courses", label: "Courses", icon: BookOpen },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

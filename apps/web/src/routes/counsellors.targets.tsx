@@ -285,10 +285,10 @@ function TargetsPage() {
             Counsellor Management
           </div>
           <h1 className="mt-1 text-2xl sm:text-3xl font-semibold tracking-tight text-foreground">
-            {isCounsellor ? "My Targets" : "Targets"}
+            {isCounsellor ? "Performance" : "Targets"}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {isCounsellor ? "Your assigned targets and progress." : "Manage and monitor the targets."}
+            {isCounsellor ? "Your targets and achievement." : "Manage and monitor the targets."}
           </p>
         </div>
         <div className="flex items-center gap-2">
