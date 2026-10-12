@@ -22,10 +22,13 @@ export class CreateUserDto {
   @IsString()
   username?: string;
 
+  // Optional: when omitted (the Add User form no longer collects one), the service
+  // generates a strong temporary password and emails it to the new user.
+  @IsOptional()
   @IsString()
-  @MinLength(1)
+  @MinLength(8)
   @MaxLength(100)
-  password!: string;
+  password?: string;
 
   @IsOptional()
   @IsEmail()

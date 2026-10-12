@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PlatformController } from './platform.controller';
 import { PlatformService } from './platform.service';
 import { WorkflowCoreModule } from '../workflow/workflow-core.module';
+import { IntegrationsModule } from '../integrations/integrations.module';
 
 /**
  * Platform administration module: users admin, roles, permissions,
@@ -11,7 +12,7 @@ import { WorkflowCoreModule } from '../workflow/workflow-core.module';
  * (UserStateService comes from the @Global CommonModule).
  */
 @Module({
-  imports: [WorkflowCoreModule],
+  imports: [WorkflowCoreModule, IntegrationsModule],
   controllers: [PlatformController],
   providers: [PlatformService],
 })

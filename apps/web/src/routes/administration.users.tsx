@@ -884,10 +884,7 @@ function AddUserDialog({
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [roleId, setRoleId] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
   const [status, setStatus] = useState<"Active" | "Inactive">("Active");
-  const [show, setShow] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // Reset the form each time the dialog opens.
@@ -898,10 +895,7 @@ function AddUserDialog({
     setEmail("");
     setPhone("");
     setRoleId("");
-    setPassword("");
-    setConfirm("");
     setStatus("Active");
-    setShow(false);
   }, [open]);
 
   // Staff roles only — never offer the Student role for a CRM login account.
@@ -926,27 +920,24 @@ function AddUserDialog({
       toast.error("Choose a role.");
       return;
     }
-    if (password.length < 8) {
-      toast.error("Password must be at least 8 characters.");
-      return;
-    }
-    if (password !== confirm) {
-      toast.error("Passwords do not match.");
-      return;
-    }
     setSaving(true);
     try {
-      await apiPost("/users", {
+      const created = (await apiPost("/users", {
         name: name.trim(),
         email: email.trim(),
         phone: phone.trim() || undefined,
         role_id: Number(roleId),
         register_number: empId.trim() || undefined,
         status: status === "Active" ? 1 : 0,
-        password,
-      });
+      })) as { invite_sent?: boolean } | undefined;
       await queryClient.invalidateQueries({ queryKey: ["users"] });
-      toast.success(`${name.trim()} added. Share the password with them privately — they can change it after signing in.`);
+      if (created?.invite_sent) {
+        toast.success(`${name.trim()} added. An invite email with sign-in details was sent to ${email.trim()}.`);
+      } else {
+        toast.success(
+          `${name.trim()} added, but the invite email couldn't be sent. Use “Reset password” on their row to set and share credentials.`,
+        );
+      }
       onOpenChange(false);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Couldn't create the user.");
@@ -1007,35 +998,6 @@ function AddUserDialog({
                 />
               </div>
             </Field>
-            <Field label="Temporary Password">
-              <div className="relative">
-                <Input
-                  type={show ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="At least 8 characters"
-                  className="pr-10"
-                  autoComplete="new-password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShow((v) => !v)}
-                  aria-label={show ? "Hide password" : "Show password"}
-                  className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                >
-                  {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-            </Field>
-            <Field label="Confirm Password">
-              <Input
-                type={show ? "text" : "password"}
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                placeholder="Re-enter password"
-                autoComplete="new-password"
-              />
-            </Field>
             <Field label="Account Status" className="sm:col-span-2">
               <div className="flex gap-2">
                 {(["Active", "Inactive"] as const).map((s) => (
@@ -1063,8 +1025,9 @@ function AddUserDialog({
             </Field>
           </div>
           <p className="text-xs text-muted-foreground">
-            The new user signs in with their email and this password. They can change it anytime from
-            their profile, or via “Forgot password” on the login page.
+            An email with sign-in details and a temporary password is sent to the user automatically.
+            They sign in with it and can change it anytime from their profile, or via “Forgot password”
+            on the login page.
           </p>
         </div>
 

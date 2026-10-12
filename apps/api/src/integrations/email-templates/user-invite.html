@@ -38,7 +38,7 @@
 
   <!-- Preheader: shows as preview text in the inbox, hidden in the body -->
   <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:#F3EEF8; opacity:0;">
-    {{invited_by}} added you to {{organization_name}} on Upcarrera. Set your password to get started.
+    {{invited_by}} created your {{organization_name}} account on Upcarrera. Your sign-in details are inside.
     &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
   </div>
 
@@ -81,7 +81,7 @@
                 Welcome to Upcarrera, {{first_name}}
               </h1>
               <p style="margin:0 0 16px 0; font-family:Arial,Helvetica,sans-serif; font-size:16px; line-height:26px; color:#2A2233;">
-                {{invited_by}} has created an account for you at <strong>{{organization_name}}</strong>. Set a password to activate it and sign in for the first time.
+                {{invited_by}} has created an account for you at <strong>{{organization_name}}</strong>. Use the temporary password below to sign in for the first time, then change it from your profile.
               </p>
             </td>
           </tr>
@@ -101,6 +101,10 @@
                         <td style="padding:4px 0; width:110px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80;">Role</td>
                         <td style="padding:4px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#2A2233; font-weight:bold;">{{role}}</td>
                       </tr>
+                      <tr>
+                        <td style="padding:4px 0; width:110px; font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#6E5F80;">Temporary password</td>
+                        <td style="padding:4px 0; font-family:'Courier New',Courier,monospace; font-size:15px; color:#2A2233; font-weight:bold; letter-spacing:0.5px;">{{temp_password}}</td>
+                      </tr>
                     </table>
                   </td>
                 </tr>
@@ -112,17 +116,17 @@
           <tr>
             <td class="px" align="left" style="padding:28px 40px 12px 40px;">
               <!--[if mso]>
-              <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="{{activation_link}}" style="height:52px; v-text-anchor:middle; width:240px;" arcsize="12%" stroke="f" fillcolor="#5B2A86">
+              <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="{{login_url}}" style="height:52px; v-text-anchor:middle; width:200px;" arcsize="12%" stroke="f" fillcolor="#5B2A86">
                 <w:anchorlock/>
-                <center style="color:#FFFFFF; font-family:Arial,sans-serif; font-size:16px; font-weight:bold;">Set my password</center>
+                <center style="color:#FFFFFF; font-family:Arial,sans-serif; font-size:16px; font-weight:bold;">Sign in</center>
               </v:roundrect>
               <![endif]-->
               <!--[if !mso]><!-->
               <table role="presentation" class="btn" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td style="border-radius:6px; background-color:#5B2A86; border-bottom:3px solid #C9A227;">
-                    <a href="{{activation_link}}" target="_blank" style="display:inline-block; padding:15px 34px; font-family:Arial,Helvetica,sans-serif; font-size:16px; font-weight:bold; color:#FFFFFF; text-decoration:none; border-radius:6px; background-color:#5B2A86;">
-                      Set my password
+                    <a href="{{login_url}}" target="_blank" style="display:inline-block; padding:15px 34px; font-family:Arial,Helvetica,sans-serif; font-size:16px; font-weight:bold; color:#FFFFFF; text-decoration:none; border-radius:6px; background-color:#5B2A86;">
+                      Sign in
                     </a>
                   </td>
                 </tr>
@@ -134,11 +138,11 @@
           <tr>
             <td class="px" style="padding:4px 40px 32px 40px;">
               <p style="margin:0 0 14px 0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:22px; color:#6E5F80;">
-                This link expires in {{link_expiry_hours}} hours. If it has expired, ask your administrator to send a new invitation.
+                For your security, please change this password right after you sign in — from your profile, or via &ldquo;Forgot password&rdquo; on the login page.
               </p>
               <p style="margin:0; font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:20px; color:#6E5F80;">
                 Button not working? Paste this link into your browser:<br>
-                <a href="{{activation_link}}" style="color:#5B2A86; word-break:break-all;">{{activation_link}}</a>
+                <a href="{{login_url}}" style="color:#5B2A86; word-break:break-all;">{{login_url}}</a>
               </p>
             </td>
           </tr>
