@@ -30,8 +30,14 @@ export class AuthService {
   ) {}
 
   async login(username: string, password: string, ctx: LoginContext = {}) {
+    // orderBy id asc makes the pick DETERMINISTIC when a value matches more than one
+    // row, and — critically — identical to PasswordResetService.findActiveUser, so a
+    // self-serve reset always updates the SAME row login later checks. Without it a
+    // duplicate account (e.g. Add User run twice for one email) let login verify one
+    // row's hash while the reset wrote another's — "I reset it but still can't log in".
     let user = await this.prisma.users.findFirst({
       where: { username, deleted_at: null },
+      orderBy: { id: 'asc' },
     });
     // The login form accepts an email OR a user ID. Username match takes priority
     // (so no existing login can regress); if it misses, fall back to email — staff
@@ -40,6 +46,7 @@ export class AuthService {
     if (!user && username) {
       user = await this.prisma.users.findFirst({
         where: { email: username, deleted_at: null },
+        orderBy: { id: 'asc' },
       });
     }
     if (!user) {

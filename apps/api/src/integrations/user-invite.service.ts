@@ -22,12 +22,21 @@ export class UserInviteService {
   ) {}
 
   /**
-   * A strong temporary password: base64url of 12 random bytes (16 chars,
-   * clipboard/URL-safe) plus a digit+symbol, so it always clears the min-8 policy
-   * and any mixed-class rule a stricter policy might add later.
+   * A strong temporary password people can actually TYPE from the email. Drawn from
+   * an unambiguous alphabet (no O/0/o, I/l/1) so "sOl" vs "s0l" confusion can't make
+   * a correct password look wrong, plus a digit+symbol so it always clears the min-8
+   * policy and any mixed-class rule. ~14 chars from a 55-char set ≈ 80 bits.
+   * Rejection sampling keeps the draw unbiased.
    */
   generateTempPassword(): string {
-    return crypto.randomBytes(12).toString('base64url') + '7#';
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    const limit = 256 - (256 % alphabet.length); // discard the biased tail
+    let out = '';
+    while (out.length < 14) {
+      const b = crypto.randomBytes(1)[0];
+      if (b < limit) out += alphabet[b % alphabet.length];
+    }
+    return out + '9#';
   }
 
   /**
