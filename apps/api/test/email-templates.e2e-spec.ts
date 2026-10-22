@@ -34,6 +34,10 @@ const ALL_VARS: Record<string, string> = {
   activation_link: 'https://admin.upcarrera.com/activate/xyz',
   role: 'Counsellor',
   invited_by: 'Super Admin',
+  // user-invite switched from an activation link to an emailed temp password +
+  // sign-in URL (commit ef4c841); ALL_VARS must carry both or render() throws.
+  temp_password: 'ExamplePass9#',
+  login_url: 'https://admin.upcarrera.com/login',
   otp_code: '481920',
   otp_expiry_minutes: '10',
   request_time: '5 Oct 2026, 10:15 IST',
