@@ -121,6 +121,21 @@ export class PlatformService {
       throw new ForbiddenException('Only a Super Admin can grant the Super Admin role.');
     }
 
+    // Refuse a duplicate email. Without this, a double-clicked "Add User" (or a retry
+    // after a flaky request) created a SECOND row for the same login — and because
+    // login and a self-serve reset could resolve different rows, the account became
+    // impossible to sign into even after resetting. One email = one live account.
+    const email = (dto as { email?: string }).email?.trim();
+    if (email) {
+      const clash = await this.prisma.users.findFirst({
+        where: { email, deleted_at: null },
+        select: { id: true },
+      });
+      if (clash) {
+        throw new ConflictException('A user with this email already exists.');
+      }
+    }
+
     const now = new Date();
     // The Add User form no longer collects a password: generate a strong temporary
     // one and email it to the user (per ops — the password lives in the email, not
