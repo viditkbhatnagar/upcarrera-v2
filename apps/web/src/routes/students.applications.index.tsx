@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { zodValidator, fallback } from "@tanstack/zod-adapter";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -23,8 +23,19 @@ import {
   Loader2,
   Pause,
   ArrowRight,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { ApiError } from "@/lib/api";
 import {
   listApplications,
@@ -34,7 +45,7 @@ import {
 } from "@/lib/api/applications";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useStartCall, type CallHealth } from "@/components/calls/calls-ui";
-import { apiGet } from "@/lib/api";
+import { apiGet, apiDelete } from "@/lib/api";
 import {
   useCounsellorOptions,
   useCourseOptions,
@@ -133,6 +144,28 @@ function ApplicationsPage() {
   const [leadOpen, setLeadOpen] = useState(false);
   const [editing, setEditing] = useState<ListRowView | null>(null);
   const [exporting, setExporting] = useState(false);
+  // Admin-only delete of a test/junk application (backend soft-deletes + audits).
+  const [deleting, setDeleting] = useState<ListRowView | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const queryClient = useQueryClient();
+  // Only full-access roles (Super Admin / admin) may delete; the server also
+  // enforces crm:applications.admin, so this is a cosmetic gate.
+  const canDelete = access.data?.scope === "all";
+
+  const confirmDelete = async () => {
+    if (!deleting || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      await apiDelete(`/applications/${deleting.rowId}`);
+      toast.success(`Application ${deleting.id} deleted.`);
+      setDeleting(null);
+      await queryClient.invalidateQueries({ queryKey: applicationKeys.list });
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Could not delete the application.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const listParams = useMemo(
     () => ({
@@ -563,6 +596,15 @@ function ApplicationsPage() {
                           <Eye className="h-3.5 w-3.5" />
                         </Link>
                         <IconBtn title="Edit" icon={Pencil} onClick={() => setEditing(a)} />
+                        {canDelete && (
+                          <button
+                            title="Delete"
+                            onClick={() => setDeleting(a)}
+                            className="grid h-8 w-8 place-items-center rounded-lg border border-transparent text-muted-foreground transition hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -625,6 +667,37 @@ function ApplicationsPage() {
         displayId={editing?.id ?? null}
         onClose={() => setEditing(null)}
       />
+
+      <AlertDialog
+        open={!!deleting}
+        onOpenChange={(open) => {
+          if (!open && !isDeleting) setDeleting(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete application {deleting?.id}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes {deleting?.name || "this applicant"}&apos;s application from the
+              CRM. It is a soft delete (an admin can restore it), but it will no longer
+              appear in any list.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmDelete();
+              }}
+              disabled={isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
