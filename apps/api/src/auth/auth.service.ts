@@ -30,6 +30,9 @@ export class AuthService {
   ) {}
 
   async login(username: string, password: string, ctx: LoginContext = {}) {
+    // Identifiers get pasted from invite emails; a stray leading/trailing space
+    // must not turn a correct email into "user not found".
+    username = (username ?? '').trim();
     // orderBy id asc makes the pick DETERMINISTIC when a value matches more than one
     // row, and — critically — identical to PasswordResetService.findActiveUser, so a
     // self-serve reset always updates the SAME row login later checks. Without it a
@@ -55,7 +58,18 @@ export class AuthService {
     }
 
     // Existing PHP password_hash() bcrypt ($2y$) hashes verify unchanged with bcryptjs.
-    const ok = await bcrypt.compare(password, user.password ?? '');
+    // Try the password exactly as given FIRST (so a password that legitimately has
+    // edge whitespace still works and nobody is ever locked out); only if that fails
+    // retry with the whitespace trimmed. Emailed temp passwords are frequently copied
+    // with a trailing space/newline, which was making a correct password look wrong.
+    const stored = user.password ?? '';
+    let ok = await bcrypt.compare(password, stored);
+    if (!ok) {
+      const trimmed = (password ?? '').trim();
+      if (trimmed && trimmed !== password) {
+        ok = await bcrypt.compare(trimmed, stored);
+      }
+    }
     if (!ok) {
       await this.auditLoginFailed(username, user.id, user.role_id, 'bad_password', ctx);
       throw new UnauthorizedException('Invalid password!');
