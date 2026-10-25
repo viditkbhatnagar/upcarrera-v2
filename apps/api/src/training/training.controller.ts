@@ -17,6 +17,14 @@ export class TrainingController {
     return this.training.list(userId);
   }
 
+  /** Admin list: every non-deleted video (incl. inactive), flat. Declared before :id routes. */
+  @Get('admin')
+  @RequirePermission('crm:training.manage')
+  @ResponseMessage('Training videos fetched')
+  listAll() {
+    return this.training.listAll();
+  }
+
   @Post(':id/complete')
   @RequirePermission('crm:training.view')
   @ResponseMessage('Marked as completed')

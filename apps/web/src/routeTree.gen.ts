@@ -59,6 +59,7 @@ import { Route as AdministrationSystemSettingsRouteImport } from './routes/admin
 import { Route as AdministrationRolesRouteImport } from './routes/administration.roles'
 import { Route as AdministrationEligibilityRulesRouteImport } from './routes/administration.eligibility-rules'
 import { Route as AdministrationDocumentChecklistRouteImport } from './routes/administration.document-checklist'
+import { Route as AdministrationContentRouteImport } from './routes/administration.content'
 import { Route as AdministrationAuditLogsRouteImport } from './routes/administration.audit-logs'
 import { Route as StudentsStudentsIndexRouteImport } from './routes/students.students.index'
 import { Route as StudentsApplicationsIndexRouteImport } from './routes/students.applications.index'
@@ -330,6 +331,11 @@ const AdministrationDocumentChecklistRoute =
     path: '/document-checklist',
     getParentRoute: () => AdministrationRoute,
   } as any)
+const AdministrationContentRoute = AdministrationContentRouteImport.update({
+  id: '/content',
+  path: '/content',
+  getParentRoute: () => AdministrationRoute,
+} as any)
 const AdministrationAuditLogsRoute = AdministrationAuditLogsRouteImport.update({
   id: '/audit-logs',
   path: '/audit-logs',
@@ -417,6 +423,7 @@ export interface FileRoutesByFullPath {
   '/training': typeof TrainingRoute
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
+  '/administration/content': typeof AdministrationContentRoute
   '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
   '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
   '/administration/roles': typeof AdministrationRolesRoute
@@ -475,6 +482,7 @@ export interface FileRoutesByTo {
   '/support': typeof SupportRoute
   '/training': typeof TrainingRoute
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
+  '/administration/content': typeof AdministrationContentRoute
   '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
   '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
   '/administration/roles': typeof AdministrationRolesRoute
@@ -538,6 +546,7 @@ export interface FileRoutesById {
   '/training': typeof TrainingRoute
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
+  '/administration/content': typeof AdministrationContentRoute
   '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
   '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
   '/administration/roles': typeof AdministrationRolesRoute
@@ -604,6 +613,7 @@ export interface FileRouteTypes {
     | '/training'
     | '/universities'
     | '/administration/audit-logs'
+    | '/administration/content'
     | '/administration/document-checklist'
     | '/administration/eligibility-rules'
     | '/administration/roles'
@@ -662,6 +672,7 @@ export interface FileRouteTypes {
     | '/support'
     | '/training'
     | '/administration/audit-logs'
+    | '/administration/content'
     | '/administration/document-checklist'
     | '/administration/eligibility-rules'
     | '/administration/roles'
@@ -724,6 +735,7 @@ export interface FileRouteTypes {
     | '/training'
     | '/universities'
     | '/administration/audit-logs'
+    | '/administration/content'
     | '/administration/document-checklist'
     | '/administration/eligibility-rules'
     | '/administration/roles'
@@ -1144,6 +1156,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdministrationDocumentChecklistRouteImport
       parentRoute: typeof AdministrationRoute
     }
+    '/administration/content': {
+      id: '/administration/content'
+      path: '/content'
+      fullPath: '/administration/content'
+      preLoaderRoute: typeof AdministrationContentRouteImport
+      parentRoute: typeof AdministrationRoute
+    }
     '/administration/audit-logs': {
       id: '/administration/audit-logs'
       path: '/audit-logs'
@@ -1233,6 +1252,7 @@ declare module '@tanstack/react-router' {
 
 interface AdministrationRouteChildren {
   AdministrationAuditLogsRoute: typeof AdministrationAuditLogsRoute
+  AdministrationContentRoute: typeof AdministrationContentRoute
   AdministrationDocumentChecklistRoute: typeof AdministrationDocumentChecklistRoute
   AdministrationEligibilityRulesRoute: typeof AdministrationEligibilityRulesRoute
   AdministrationRolesRoute: typeof AdministrationRolesRoute
@@ -1243,6 +1263,7 @@ interface AdministrationRouteChildren {
 
 const AdministrationRouteChildren: AdministrationRouteChildren = {
   AdministrationAuditLogsRoute: AdministrationAuditLogsRoute,
+  AdministrationContentRoute: AdministrationContentRoute,
   AdministrationDocumentChecklistRoute: AdministrationDocumentChecklistRoute,
   AdministrationEligibilityRulesRoute: AdministrationEligibilityRulesRoute,
   AdministrationRolesRoute: AdministrationRolesRoute,

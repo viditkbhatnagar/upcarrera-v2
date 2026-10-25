@@ -23,6 +23,14 @@ export class CounsellorResourcesController {
     return this.resources.list();
   }
 
+  /** Admin list: every non-deleted resource (incl. inactive), flat. */
+  @Get('admin')
+  @RequirePermission('crm:resources.manage')
+  @ResponseMessage('Resources fetched')
+  listAll() {
+    return this.resources.listAll();
+  }
+
   @Post()
   @RequirePermission('crm:resources.manage')
   @ResponseMessage('Resource added')
