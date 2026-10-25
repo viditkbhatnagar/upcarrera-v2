@@ -14,6 +14,8 @@ interface KpiCardProps {
   sub?: string;
   loading?: boolean;
   onClick?: () => void;
+  /** Highlights the card as the active filter. */
+  active?: boolean;
 }
 
 const toneMap = {
@@ -24,7 +26,7 @@ const toneMap = {
   destructive: { bg: "bg-destructive-soft", fg: "text-destructive", bar: "bg-destructive" },
 };
 
-export function KpiCard({ label, value, icon: Icon, tone = "primary", delta, progress, sub, loading, onClick }: KpiCardProps) {
+export function KpiCard({ label, value, icon: Icon, tone = "primary", delta, progress, sub, loading, onClick, active }: KpiCardProps) {
   const t = toneMap[tone];
   const interactive = Boolean(onClick);
   return (
@@ -46,6 +48,7 @@ export function KpiCard({ label, value, icon: Icon, tone = "primary", delta, pro
         "p-5 shadow-[var(--shadow-soft)] border-border/70 transition-all",
         interactive &&
           "cursor-pointer select-none hover:shadow-[var(--shadow-card)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active && "ring-2 ring-primary border-primary/60",
       )}
     >
       <div className="flex items-start justify-between">

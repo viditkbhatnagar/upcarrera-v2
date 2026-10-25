@@ -1,4 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useIsCounsellor } from "@/components/counsellor/use-is-counsellor";
+import { CounsellorStudentDetail } from "@/components/counsellor/screens/student-detail";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, ApiError } from "@/lib/api";
 import {
@@ -41,7 +43,7 @@ export const Route = createFileRoute("/students/students/$id")({
   head: ({ params }) => ({
     meta: [{ title: `${params.id} — Student Profile` }],
   }),
-  component: StudentDetailPage,
+  component: StudentRoute,
 });
 
 /* ------------------------------------------------------------------ *
@@ -504,4 +506,10 @@ function Pill({ icon: Icon, label }: { icon: typeof Mail; label: string }) {
       {label}
     </div>
   );
+}
+
+function StudentRoute() {
+  const isCounsellor = useIsCounsellor();
+  const { id } = Route.useParams();
+  return isCounsellor ? <CounsellorStudentDetail idParam={id} /> : <StudentDetailPage />;
 }

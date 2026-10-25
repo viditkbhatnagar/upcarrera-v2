@@ -1,4 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useIsCounsellor } from "@/components/counsellor/use-is-counsellor";
+import { CounsellorPerformance } from "@/components/counsellor/screens/performance";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAccess } from "@/components/applications/use-access";
@@ -58,7 +60,7 @@ const PAGE_SIZE = 10;
 
 export const Route = createFileRoute("/counsellors/targets")({
   head: () => ({ meta: [{ title: "Targets — upCarrera" }] }),
-  component: TargetsPage,
+  component: TargetsRoute,
 });
 
 type StatusFilter = TargetStatus | "All" | "NoTargets";
@@ -789,4 +791,9 @@ function IconBtn({
       <Icon className="h-4 w-4" />
     </button>
   );
+}
+
+function TargetsRoute() {
+  const isCounsellor = useIsCounsellor();
+  return isCounsellor ? <CounsellorPerformance /> : <TargetsPage />;
 }

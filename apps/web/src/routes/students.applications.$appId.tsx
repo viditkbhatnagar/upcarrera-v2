@@ -1,4 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useIsCounsellor } from "@/components/counsellor/use-is-counsellor";
+import { CounsellorApplicationDetail } from "@/components/counsellor/screens/application-detail";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -56,7 +58,7 @@ import { dash, initials } from "@/components/applications/detail-ui";
 
 export const Route = createFileRoute("/students/applications/$appId")({
   head: () => ({ meta: [{ title: "Application Profile — upCarrera" }] }),
-  component: ApplicationProfilePage,
+  component: ApplicationRoute,
 });
 
 /**
@@ -532,4 +534,10 @@ function StatePanel({
       {action}
     </div>
   );
+}
+
+function ApplicationRoute() {
+  const isCounsellor = useIsCounsellor();
+  const { appId } = Route.useParams();
+  return isCounsellor ? <CounsellorApplicationDetail appId={appId} /> : <ApplicationProfilePage />;
 }
