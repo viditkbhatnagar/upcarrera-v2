@@ -15,6 +15,7 @@ import {
   UpdateUpcarreraCommissionDto,
 } from './dto/commission-plan.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 /**
@@ -36,6 +37,7 @@ export class StudentCommissionController {
   // ---- literal 'commission-plan' sub-paths (kept above ':id' shapes) --------
 
   // PATCH /students/commission-plan/:id/amount-received — most specific first.
+  @RequirePermission('crm:finance.manage')
   @Patch('commission-plan/:id/amount-received')
   @ResponseMessage('Commission amount received updated')
   updateAmountReceived(
@@ -46,6 +48,7 @@ export class StudentCommissionController {
     return this.finance.updateCommissionAmountReceived(id, dto, userId);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Patch('commission-plan/:id')
   @ResponseMessage('Commission plan updated')
   updateCommissionPlan(
@@ -56,6 +59,7 @@ export class StudentCommissionController {
     return this.finance.updateCommissionPlan(id, dto, userId);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Delete('commission-plan/:id')
   @ResponseMessage('Commission plan deleted')
   deleteCommissionPlan(@Param('id', ParseIntPipe) id: number) {
@@ -64,6 +68,7 @@ export class StudentCommissionController {
 
   // ---- student-scoped (':id/...') ------------------------------------------
 
+  @RequirePermission('crm:finance.manage')
   @Post(':id/commission-plan')
   @ResponseMessage('Commission plan created')
   createCommissionPlan(
@@ -74,6 +79,7 @@ export class StudentCommissionController {
     return this.finance.createCommissionPlan(studentId, dto, userId);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Patch(':id/upcarrera-commission')
   @ResponseMessage('Upcarrera commission updated')
   updateUpcarreraCommission(

@@ -19,6 +19,7 @@ import {
   PaymentStatusQueryDto,
 } from './dto/list.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 /**
@@ -33,18 +34,21 @@ export class FeeManagementController {
 
   // ---- installment status listings -----------------------------------------
 
+  @RequirePermission('crm:finance.view')
   @Get('installments')
   @ResponseMessage('Installments fetched')
   installments(@Query() query: FeeManagementListQueryDto) {
     return this.finance.feeManagementStudents(query);
   }
 
+  @RequirePermission('crm:finance.view')
   @Get('course-fee')
   @ResponseMessage('Course fee status fetched')
   courseFee(@Query() query: FeeManagementListQueryDto) {
     return this.finance.feeManagementStudents(query);
   }
 
+  @RequirePermission('crm:finance.view')
   @Get('payment-status')
   @ResponseMessage('Payment status fetched')
   paymentStatus(@Query() query: PaymentStatusQueryDto) {
@@ -53,12 +57,14 @@ export class FeeManagementController {
 
   // ---- per-student installments --------------------------------------------
 
+  @RequirePermission('crm:finance.view')
   @Get('students/:id/installments')
   @ResponseMessage('Student installments fetched')
   studentInstallments(@Param('id', ParseIntPipe) studentId: number) {
     return this.finance.studentInstallments(studentId);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Post('students/:id/installments')
   @ResponseMessage('Installment added')
   createInstallment(
@@ -69,6 +75,7 @@ export class FeeManagementController {
     return this.finance.createInstallment(studentId, dto, userId);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Post('students/:id/special-fee')
   @ResponseMessage('Special fee saved')
   upsertSpecialFee(
@@ -81,6 +88,7 @@ export class FeeManagementController {
 
   // ---- installment row update ----------------------------------------------
 
+  @RequirePermission('crm:finance.manage')
   @Patch('installments/:id')
   @ResponseMessage('Installment updated')
   updateInstallment(

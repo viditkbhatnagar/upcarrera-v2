@@ -28,6 +28,7 @@ import {
   ListCommissionPlansDto,
 } from './dto/list.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 /**
@@ -50,6 +51,7 @@ export class FinanceController {
   // streaming download is left untouched. NOTE: a NotFound thrown BEFORE any
   // bytes are written still renders the normal JSON error envelope.
 
+  @RequirePermission('crm:finance.view')
   @Get('invoices/:id/pdf')
   async invoicePdf(
     @Param('id', ParseIntPipe) id: number,
@@ -63,6 +65,7 @@ export class FinanceController {
     await this.pdf.streamInvoice(id, res);
   }
 
+  @RequirePermission('crm:finance.view')
   @Get('payments/receipt/:id/pdf')
   async paymentReceiptPdf(
     @Param('id', ParseIntPipe) id: number,
@@ -78,6 +81,7 @@ export class FinanceController {
 
   // ---- invoices ------------------------------------------------------------
 
+  @RequirePermission('crm:finance.view')
   @Get('invoices')
   @ResponseMessage('Invoices fetched')
   listInvoices(@Query() query: ListInvoicesDto) {
@@ -85,18 +89,21 @@ export class FinanceController {
   }
 
   // Literal sub-path — MUST stay above 'invoices/:id'.
+  @RequirePermission('crm:finance.view')
   @Get('invoices/students-by-course')
   @ResponseMessage('Students fetched')
   studentsByCourse(@Query('course_id', ParseIntPipe) courseId: number) {
     return this.finance.studentsByCourse(courseId);
   }
 
+  @RequirePermission('crm:finance.view')
   @Get('invoices/:id')
   @ResponseMessage('Invoice fetched')
   getInvoice(@Param('id', ParseIntPipe) id: number) {
     return this.finance.getInvoice(id);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Post('invoices')
   @ResponseMessage('Invoice created')
   createInvoice(@Body() dto: CreateInvoiceDto) {
@@ -110,12 +117,14 @@ export class FinanceController {
    * `@Post('invoices/:id')`, so it stays unambiguous. Behind the global
    * JwtAuthGuard like the rest (a scheduler calls it with a service token).
    */
+  @RequirePermission('crm:finance.manage')
   @Post('invoices/process-due-reminders')
   @ResponseMessage('Invoice due reminders processed')
   processDueReminders() {
     return this.finance.processDueReminders();
   }
 
+  @RequirePermission('crm:finance.manage')
   @Patch('invoices/:id')
   @ResponseMessage('Invoice updated')
   updateInvoice(
@@ -125,6 +134,7 @@ export class FinanceController {
     return this.finance.updateInvoice(id, dto);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Delete('invoices/:id')
   @ResponseMessage('Invoice deleted')
   deleteInvoice(@Param('id', ParseIntPipe) id: number) {
@@ -132,6 +142,7 @@ export class FinanceController {
   }
 
   // Sets due_date and (re)builds the invoice_crone_job reminder/due rows.
+  @RequirePermission('crm:finance.manage')
   @Patch('invoices/:id/due-date')
   @ResponseMessage('Invoice due date updated')
   updateInvoiceDueDate(
@@ -143,6 +154,7 @@ export class FinanceController {
   }
 
   // Lists all payments recorded against a single invoice.
+  @RequirePermission('crm:finance.view')
   @Get('invoices/:id/payments')
   @ResponseMessage('Invoice payments fetched')
   listInvoicePayments(@Param('id', ParseIntPipe) id: number) {
@@ -151,12 +163,14 @@ export class FinanceController {
 
   // ---- payments ------------------------------------------------------------
 
+  @RequirePermission('crm:finance.view')
   @Get('payments')
   @ResponseMessage('Payments fetched')
   listPayments(@Query() query: ListPaymentsDto) {
     return this.finance.listPayments(query);
   }
 
+  @RequirePermission('crm:finance.view')
   @Get('payments/:id')
   @ResponseMessage('Payment fetched')
   getPayment(@Param('id', ParseIntPipe) id: number) {
@@ -165,12 +179,14 @@ export class FinanceController {
 
   // Records a manual payment row (cash/cheque/bank). Does NOT call Razorpay.
   // Also computes referral/university commission amounts from course context.
+  @RequirePermission('crm:finance.manage')
   @Post('payments')
   @ResponseMessage('Payment recorded')
   createPayment(@Body() dto: CreatePaymentDto) {
     return this.finance.createPayment(dto);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Delete('payments/:id')
   @ResponseMessage('Payment deleted')
   deletePayment(@Param('id', ParseIntPipe) id: number) {
@@ -181,6 +197,7 @@ export class FinanceController {
   // These require RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET; without them the
   // provider returns a 503 'Razorpay not configured' (expected locally).
 
+  @RequirePermission('crm:finance.manage')
   @Post('payments/razorpay/order')
   @ResponseMessage('Razorpay order created')
   razorpayOrder(
@@ -190,6 +207,7 @@ export class FinanceController {
     return this.finance.razorpayCreateOrder(dto, userId);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Post('payments/razorpay/verify')
   @ResponseMessage('Razorpay payment verified')
   razorpayVerify(@Body() dto: VerifyRazorpayPaymentDto) {
@@ -198,18 +216,21 @@ export class FinanceController {
 
   // ---- fee types -----------------------------------------------------------
 
+  @RequirePermission('crm:finance.view')
   @Get('fee-types')
   @ResponseMessage('Fee types fetched')
   listFeeTypes(@Query() query: ListFeeTypesDto) {
     return this.finance.listFeeTypes(query);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Post('fee-types')
   @ResponseMessage('Fee type created')
   createFeeType(@Body() dto: CreateFeeTypeDto) {
     return this.finance.createFeeType(dto);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Patch('fee-types/:id')
   @ResponseMessage('Fee type updated')
   updateFeeType(
@@ -219,6 +240,7 @@ export class FinanceController {
     return this.finance.updateFeeType(id, dto);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Delete('fee-types/:id')
   @ResponseMessage('Fee type deleted')
   deleteFeeType(@Param('id', ParseIntPipe) id: number) {
@@ -227,6 +249,7 @@ export class FinanceController {
 
   // ---- commission plans ----------------------------------------------------
 
+  @RequirePermission('crm:finance.view')
   @Get('commission-plans')
   @ResponseMessage('Commission plans fetched')
   listCommissionPlans(@Query() query: ListCommissionPlansDto) {

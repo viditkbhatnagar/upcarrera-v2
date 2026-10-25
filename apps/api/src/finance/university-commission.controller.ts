@@ -3,6 +3,7 @@ import { FinanceService } from './finance.service';
 import { UniversityCommissionListQueryDto } from './dto/list.dto';
 import { CollectUniversityCommissionDto } from './dto/university-commission.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 /**
@@ -14,12 +15,14 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 export class UniversityCommissionController {
   constructor(private readonly finance: FinanceService) {}
 
+  @RequirePermission('crm:finance.view')
   @Get()
   @ResponseMessage('University commission students fetched')
   list(@Query() query: UniversityCommissionListQueryDto) {
     return this.finance.universityCommissionStudents(query);
   }
 
+  @RequirePermission('crm:finance.manage')
   @Post('collect')
   @ResponseMessage('University commission collected')
   collect(
