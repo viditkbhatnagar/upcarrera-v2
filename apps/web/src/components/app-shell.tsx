@@ -4,6 +4,10 @@ import { useRouterState, useNavigate } from "@tanstack/react-router";
 import { AppSidebar } from "./app-sidebar";
 import { AppHeader } from "./app-header";
 import { useAccess } from "@/components/applications/use-access";
+import { CounsellorShell } from "@/components/counsellor/counsellor-shell";
+import { getUser } from "@/lib/session";
+
+const COUNSELLOR_ROLE_ID = 6;
 
 // Paths a counsellor may open; anything else bounces to their dashboard. The
 // server still enforces permissions on every API — this is UX + defence-in-depth
@@ -15,6 +19,10 @@ const COUNSELLOR_ALLOWED = [
   "/universities/courses",
   "/reports",
   "/settings",
+  // Coming-soon placeholders (backends land in later phases).
+  "/payments",
+  "/training",
+  "/resources",
 ];
 function pathAllowedForCounsellor(pathname: string): boolean {
   return COUNSELLOR_ALLOWED.some((p) => pathname === p || pathname.startsWith(`${p}/`));
@@ -27,12 +35,20 @@ export function AppShell({ children }: { children: ReactNode }) {
   const access = useAccess();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
-  const isCounsellor = access.data?.role_key === "counsellor";
+  // While /auth/me/access is in flight, fall back to the cached session role so a
+  // counsellor never sees a flash of the admin shell (role_id 6 = counsellor).
+  const isCounsellor = access.isLoading
+    ? getUser()?.role_id === COUNSELLOR_ROLE_ID
+    : access.data?.role_key === "counsellor";
   const blocked = isCounsellor && !pathAllowedForCounsellor(pathname);
 
   useEffect(() => {
     if (blocked) navigate({ to: "/dashboard" });
   }, [blocked, navigate]);
+
+  if (isCounsellor) {
+    return <CounsellorShell>{blocked ? null : children}</CounsellorShell>;
+  }
 
   return (
     <div className="min-h-screen bg-background">

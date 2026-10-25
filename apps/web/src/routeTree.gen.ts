@@ -10,10 +10,13 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UniversitiesRouteImport } from './routes/universities'
+import { Route as TrainingRouteImport } from './routes/training'
 import { Route as SupportRouteImport } from './routes/support'
 import { Route as StudentsRouteImport } from './routes/students'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ResourcesRouteImport } from './routes/resources'
 import { Route as ReportsRouteImport } from './routes/reports'
+import { Route as PaymentsRouteImport } from './routes/payments'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as FeesRouteImport } from './routes/fees'
 import { Route as EnrollmentRouteImport } from './routes/enrollment'
@@ -71,6 +74,11 @@ const UniversitiesRoute = UniversitiesRouteImport.update({
   path: '/universities',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TrainingRoute = TrainingRouteImport.update({
+  id: '/training',
+  path: '/training',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SupportRoute = SupportRouteImport.update({
   id: '/support',
   path: '/support',
@@ -86,9 +94,19 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ResourcesRoute = ResourcesRouteImport.update({
+  id: '/resources',
+  path: '/resources',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ReportsRoute = ReportsRouteImport.update({
   id: '/reports',
   path: '/reports',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PaymentsRoute = PaymentsRouteImport.update({
+  id: '/payments',
+  path: '/payments',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -372,10 +390,13 @@ export interface FileRoutesByFullPath {
   '/enrollment': typeof EnrollmentRouteWithChildren
   '/fees': typeof FeesRouteWithChildren
   '/login': typeof LoginRoute
+  '/payments': typeof PaymentsRoute
   '/reports': typeof ReportsRoute
+  '/resources': typeof ResourcesRoute
   '/settings': typeof SettingsRoute
   '/students': typeof StudentsRouteWithChildren
   '/support': typeof SupportRoute
+  '/training': typeof TrainingRoute
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
@@ -426,9 +447,12 @@ export interface FileRoutesByTo {
   '/commissions': typeof CommissionsRoute
   '/dashboard': typeof DashboardRoute
   '/login': typeof LoginRoute
+  '/payments': typeof PaymentsRoute
   '/reports': typeof ReportsRoute
+  '/resources': typeof ResourcesRoute
   '/settings': typeof SettingsRoute
   '/support': typeof SupportRoute
+  '/training': typeof TrainingRoute
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
   '/administration/eligibility-rules': typeof AdministrationEligibilityRulesRoute
@@ -481,10 +505,13 @@ export interface FileRoutesById {
   '/enrollment': typeof EnrollmentRouteWithChildren
   '/fees': typeof FeesRouteWithChildren
   '/login': typeof LoginRoute
+  '/payments': typeof PaymentsRoute
   '/reports': typeof ReportsRoute
+  '/resources': typeof ResourcesRoute
   '/settings': typeof SettingsRoute
   '/students': typeof StudentsRouteWithChildren
   '/support': typeof SupportRoute
+  '/training': typeof TrainingRoute
   '/universities': typeof UniversitiesRouteWithChildren
   '/administration/audit-logs': typeof AdministrationAuditLogsRoute
   '/administration/document-checklist': typeof AdministrationDocumentChecklistRoute
@@ -541,10 +568,13 @@ export interface FileRouteTypes {
     | '/enrollment'
     | '/fees'
     | '/login'
+    | '/payments'
     | '/reports'
+    | '/resources'
     | '/settings'
     | '/students'
     | '/support'
+    | '/training'
     | '/universities'
     | '/administration/audit-logs'
     | '/administration/document-checklist'
@@ -595,9 +625,12 @@ export interface FileRouteTypes {
     | '/commissions'
     | '/dashboard'
     | '/login'
+    | '/payments'
     | '/reports'
+    | '/resources'
     | '/settings'
     | '/support'
+    | '/training'
     | '/administration/audit-logs'
     | '/administration/document-checklist'
     | '/administration/eligibility-rules'
@@ -649,10 +682,13 @@ export interface FileRouteTypes {
     | '/enrollment'
     | '/fees'
     | '/login'
+    | '/payments'
     | '/reports'
+    | '/resources'
     | '/settings'
     | '/students'
     | '/support'
+    | '/training'
     | '/universities'
     | '/administration/audit-logs'
     | '/administration/document-checklist'
@@ -708,10 +744,13 @@ export interface RootRouteChildren {
   EnrollmentRoute: typeof EnrollmentRouteWithChildren
   FeesRoute: typeof FeesRouteWithChildren
   LoginRoute: typeof LoginRoute
+  PaymentsRoute: typeof PaymentsRoute
   ReportsRoute: typeof ReportsRoute
+  ResourcesRoute: typeof ResourcesRoute
   SettingsRoute: typeof SettingsRoute
   StudentsRoute: typeof StudentsRouteWithChildren
   SupportRoute: typeof SupportRoute
+  TrainingRoute: typeof TrainingRoute
   UniversitiesRoute: typeof UniversitiesRouteWithChildren
 }
 
@@ -722,6 +761,13 @@ declare module '@tanstack/react-router' {
       path: '/universities'
       fullPath: '/universities'
       preLoaderRoute: typeof UniversitiesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/training': {
+      id: '/training'
+      path: '/training'
+      fullPath: '/training'
+      preLoaderRoute: typeof TrainingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/support': {
@@ -745,11 +791,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/resources': {
+      id: '/resources'
+      path: '/resources'
+      fullPath: '/resources'
+      preLoaderRoute: typeof ResourcesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/reports': {
       id: '/reports'
       path: '/reports'
       fullPath: '/reports'
       preLoaderRoute: typeof ReportsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/payments': {
+      id: '/payments'
+      path: '/payments'
+      fullPath: '/payments'
+      preLoaderRoute: typeof PaymentsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -1281,10 +1341,13 @@ const rootRouteChildren: RootRouteChildren = {
   EnrollmentRoute: EnrollmentRouteWithChildren,
   FeesRoute: FeesRouteWithChildren,
   LoginRoute: LoginRoute,
+  PaymentsRoute: PaymentsRoute,
   ReportsRoute: ReportsRoute,
+  ResourcesRoute: ResourcesRoute,
   SettingsRoute: SettingsRoute,
   StudentsRoute: StudentsRouteWithChildren,
   SupportRoute: SupportRoute,
+  TrainingRoute: TrainingRoute,
   UniversitiesRoute: UniversitiesRouteWithChildren,
 }
 export const routeTree = rootRouteImport
