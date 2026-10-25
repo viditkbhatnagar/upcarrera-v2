@@ -9,8 +9,14 @@ import { PaymentsService } from './payments.service';
 /**
  * Counsellor Payments. Scoped server-side to the caller's own students (see
  * PaymentsService); the slug is granted to the counsellor and admin roles.
+ *
+ * Base path is 'counsellor-payments' (NOT 'payments'): the legacy FinanceController
+ * is @Controller() with @Get('payments'), which maps to the same /api/payments and
+ * wins the route collision — serving its UNSCOPED invoice-payment list to anyone.
+ * A distinct path keeps this scoped endpoint from being shadowed. Matches the
+ * 'counsellor-resources' naming.
  */
-@Controller('payments')
+@Controller('counsellor-payments')
 export class PaymentsController {
   constructor(private readonly payments: PaymentsService) {}
 
