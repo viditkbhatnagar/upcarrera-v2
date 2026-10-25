@@ -1,18 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { CreditCard } from "lucide-react";
-import { ModulePlaceholder } from "@/components/module-placeholder";
+import { CounsellorPayments } from "@/components/counsellor/screens/payments";
 
 export const Route = createFileRoute("/payments")({
-  head: () => ({ meta: [{ title: "Payments — upCarrera" }] }),
-  component: PaymentsPage,
+  head: () => ({
+    meta: [
+      { title: "Payment Tracking — upCarrera" },
+      { name: "description", content: "Track collections, pending fees and overdue payments." },
+    ],
+  }),
+  component: CounsellorPayments,
 });
-
-function PaymentsPage() {
-  return (
-    <ModulePlaceholder
-      icon={CreditCard}
-      title="Payments"
-      description="Track and collect your applicants' registration and course fee payments in one place."
-    />
-  );
-}

@@ -1,18 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { PlayCircle } from "lucide-react";
-import { ModulePlaceholder } from "@/components/module-placeholder";
+import { CounsellorTraining } from "@/components/counsellor/screens/training";
 
 export const Route = createFileRoute("/training")({
-  head: () => ({ meta: [{ title: "Training — upCarrera" }] }),
-  component: TrainingPage,
+  head: () => ({
+    meta: [
+      { title: "Training Center — upCarrera" },
+      { name: "description", content: "Counsellor video training, courses, and certifications." },
+    ],
+  }),
+  component: CounsellorTraining,
 });
-
-function TrainingPage() {
-  return (
-    <ModulePlaceholder
-      icon={PlayCircle}
-      title="Training"
-      description="Training videos and learning material to help you counsel and convert better."
-    />
-  );
-}
