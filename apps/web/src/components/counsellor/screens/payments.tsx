@@ -151,7 +151,7 @@ export function CounsellorPayments() {
   const query = useMemo(() => toQuery(settled), [settled]);
   const { data, isLoading, isError, isFetching } = useQuery({
     queryKey: ["counsellor", "payments", query],
-    queryFn: () => apiGet<PaymentsResponse>("/payments", query),
+    queryFn: () => apiGet<PaymentsResponse>("/counsellor-payments", query),
     placeholderData: keepPreviousData,
     staleTime: 30_000,
   });

@@ -41,7 +41,7 @@ export function CounsellorPaymentDetail({ idParam }: { idParam: string }) {
   const id = /^\d+$/.test(idParam) ? Number(idParam) : null;
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["counsellor", "payment", id],
-    queryFn: () => apiGet<PaymentDetailData>(`/payments/${id}`),
+    queryFn: () => apiGet<PaymentDetailData>(`/counsellor-payments/${id}`),
     enabled: id != null,
   });
 
