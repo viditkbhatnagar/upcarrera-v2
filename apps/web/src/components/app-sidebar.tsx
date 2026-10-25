@@ -199,6 +199,13 @@ function buildNav(roleKey: string | null | undefined): NavItem[] {
     return item;
   });
 
+  // Finance screens are backed by crm:finance.view / crm:finance.manage, held
+  // only by accounts + admin (Super Admin bypasses). Hide them from every other
+  // role so nobody lands on a menu that 403s.
+  if (!isAccounts && !isAdmin) {
+    items = items.filter((i) => i.to !== "/fees" && i.to !== "/commissions");
+  }
+
   if (isSA || isAdmin) {
     const verificationQueue: NavItem = {
       to: "/students/applications",

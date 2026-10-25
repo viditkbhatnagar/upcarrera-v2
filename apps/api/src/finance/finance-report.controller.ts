@@ -7,6 +7,7 @@ import {
   FinanceStudentsQueryDto,
 } from './dto/list.dto';
 import { ResponseMessage } from '../common/decorators/response-message.decorator';
+import { RequirePermission } from '../common/decorators/require-permission.decorator';
 
 /**
  * Finance reporting surface (CI4 App/Finance + App/Fee read screens):
@@ -19,18 +20,21 @@ import { ResponseMessage } from '../common/decorators/response-message.decorator
 export class FinanceReportController {
   constructor(private readonly finance: FinanceService) {}
 
+  @RequirePermission('crm:finance.view')
   @Get('fee-status')
   @ResponseMessage('Fee status fetched')
   feeStatus(@Query() query: FeeStatusQueryDto) {
     return this.finance.feeStatus(query);
   }
 
+  @RequirePermission('crm:finance.view')
   @Get('student-commission')
   @ResponseMessage('Student commission fetched')
   studentCommission(@Query() query: StudentCommissionQueryDto) {
     return this.finance.studentCommission(query);
   }
 
+  @RequirePermission('crm:finance.view')
   @Get('university-commission')
   @ResponseMessage('University commission fetched')
   universityCommission(@Query() query: UniversityCommissionReportQueryDto) {
@@ -38,6 +42,7 @@ export class FinanceReportController {
   }
 
   // Dashboard aggregates (literal paths).
+  @RequirePermission('crm:finance.view')
   @Get('collection-trend')
   @ResponseMessage('Collection trend fetched')
   collectionTrend(@Query('months') months?: string) {
@@ -45,6 +50,7 @@ export class FinanceReportController {
     return this.finance.collectionTrend(Number.isFinite(n) ? n : 12);
   }
 
+  @RequirePermission('crm:finance.view')
   @Get('outstanding-by-university')
   @ResponseMessage('Outstanding by university fetched')
   outstandingByUniversity() {
@@ -52,12 +58,14 @@ export class FinanceReportController {
   }
 
   // Literal list path — declared above 'students/:id'.
+  @RequirePermission('crm:finance.view')
   @Get('students')
   @ResponseMessage('Finance students fetched')
   financeStudents(@Query() query: FinanceStudentsQueryDto) {
     return this.finance.financeStudents(query);
   }
 
+  @RequirePermission('crm:finance.view')
   @Get('students/:id')
   @ResponseMessage('Finance student fetched')
   financeStudent(@Param('id', ParseIntPipe) id: number) {
