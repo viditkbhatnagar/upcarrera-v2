@@ -45,6 +45,15 @@ export class CounsellorResourcesService {
 
   /* ----------------------------- admin ----------------------------- */
 
+  /** Every non-deleted resource, active or not, flat. */
+  async listAll() {
+    const items = await this.prisma.counsellor_resource.findMany({
+      where: LIVE,
+      orderBy: [{ category: 'asc' }, { sort_order: 'asc' }, { id: 'asc' }],
+    });
+    return { items, total: items.length };
+  }
+
   create(dto: CreateCounsellorResourceDto, userId: number) {
     const now = new Date();
     return this.prisma.counsellor_resource.create({

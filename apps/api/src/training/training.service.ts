@@ -61,6 +61,15 @@ export class TrainingService {
 
   /* ----------------------------- admin ----------------------------- */
 
+  /** Every non-deleted video, active or not, flat. */
+  async listAll() {
+    const items = await this.prisma.training_video.findMany({
+      where: LIVE,
+      orderBy: [{ sort_order: 'asc' }, { id: 'asc' }],
+    });
+    return { items, total: items.length };
+  }
+
   create(dto: CreateTrainingVideoDto, userId: number) {
     const now = new Date();
     return this.prisma.training_video.create({

@@ -27,6 +27,7 @@ import {
   PhoneCall,
   RefreshCw,
   ScrollText,
+  Library,
 } from "lucide-react";
 
 import { BrandLogo } from "@/components/brand/brand-logo";
@@ -186,6 +187,11 @@ function buildNav(roleKey: string | null | undefined): NavItem[] {
             to: "/administration/eligibility-rules",
             label: "Eligibility Rules",
             icon: ScrollText,
+          },
+          {
+            to: "/administration/content",
+            label: "Content Management",
+            icon: Library,
           },
         ],
       };
