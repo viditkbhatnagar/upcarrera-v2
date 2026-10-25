@@ -39,6 +39,8 @@ import { Route as UniversitiesFeeStructureRouteImport } from './routes/universit
 import { Route as UniversitiesCoursesRouteImport } from './routes/universities.courses'
 import { Route as StudentsStudentsRouteImport } from './routes/students.students'
 import { Route as StudentsApplicationsRouteImport } from './routes/students.applications'
+import { Route as ResourcesIdRouteImport } from './routes/resources_.$id'
+import { Route as PaymentsIdRouteImport } from './routes/payments_.$id'
 import { Route as FeesSummaryRouteImport } from './routes/fees.summary'
 import { Route as FeesRegistrationVerificationRouteImport } from './routes/fees.registration-verification'
 import { Route as FeesPaymentVerificationRouteImport } from './routes/fees.payment-verification'
@@ -221,6 +223,16 @@ const StudentsApplicationsRoute = StudentsApplicationsRouteImport.update({
   id: '/applications',
   path: '/applications',
   getParentRoute: () => StudentsRoute,
+} as any)
+const ResourcesIdRoute = ResourcesIdRouteImport.update({
+  id: '/resources_/$id',
+  path: '/resources/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PaymentsIdRoute = PaymentsIdRouteImport.update({
+  id: '/payments_/$id',
+  path: '/payments/$id',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const FeesSummaryRoute = FeesSummaryRouteImport.update({
   id: '/summary',
@@ -423,6 +435,8 @@ export interface FileRoutesByFullPath {
   '/fees/payment-verification': typeof FeesPaymentVerificationRoute
   '/fees/registration-verification': typeof FeesRegistrationVerificationRoute
   '/fees/summary': typeof FeesSummaryRoute
+  '/payments/$id': typeof PaymentsIdRoute
+  '/resources/$id': typeof ResourcesIdRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
   '/universities/courses': typeof UniversitiesCoursesRoute
@@ -479,6 +493,8 @@ export interface FileRoutesByTo {
   '/fees/payment-verification': typeof FeesPaymentVerificationRoute
   '/fees/registration-verification': typeof FeesRegistrationVerificationRoute
   '/fees/summary': typeof FeesSummaryRoute
+  '/payments/$id': typeof PaymentsIdRoute
+  '/resources/$id': typeof ResourcesIdRoute
   '/universities/courses': typeof UniversitiesCoursesRoute
   '/universities/fee-structure': typeof UniversitiesFeeStructureRoute
   '/universities/intakes': typeof UniversitiesIntakesRoute
@@ -540,6 +556,8 @@ export interface FileRoutesById {
   '/fees/payment-verification': typeof FeesPaymentVerificationRoute
   '/fees/registration-verification': typeof FeesRegistrationVerificationRoute
   '/fees/summary': typeof FeesSummaryRoute
+  '/payments_/$id': typeof PaymentsIdRoute
+  '/resources_/$id': typeof ResourcesIdRoute
   '/students/applications': typeof StudentsApplicationsRouteWithChildren
   '/students/students': typeof StudentsStudentsRouteWithChildren
   '/universities/courses': typeof UniversitiesCoursesRoute
@@ -604,6 +622,8 @@ export interface FileRouteTypes {
     | '/fees/payment-verification'
     | '/fees/registration-verification'
     | '/fees/summary'
+    | '/payments/$id'
+    | '/resources/$id'
     | '/students/applications'
     | '/students/students'
     | '/universities/courses'
@@ -660,6 +680,8 @@ export interface FileRouteTypes {
     | '/fees/payment-verification'
     | '/fees/registration-verification'
     | '/fees/summary'
+    | '/payments/$id'
+    | '/resources/$id'
     | '/universities/courses'
     | '/universities/fee-structure'
     | '/universities/intakes'
@@ -720,6 +742,8 @@ export interface FileRouteTypes {
     | '/fees/payment-verification'
     | '/fees/registration-verification'
     | '/fees/summary'
+    | '/payments_/$id'
+    | '/resources_/$id'
     | '/students/applications'
     | '/students/students'
     | '/universities/courses'
@@ -764,6 +788,8 @@ export interface RootRouteChildren {
   SupportRoute: typeof SupportRoute
   TrainingRoute: typeof TrainingRoute
   UniversitiesRoute: typeof UniversitiesRouteWithChildren
+  PaymentsIdRoute: typeof PaymentsIdRoute
+  ResourcesIdRoute: typeof ResourcesIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -977,6 +1003,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/students/applications'
       preLoaderRoute: typeof StudentsApplicationsRouteImport
       parentRoute: typeof StudentsRoute
+    }
+    '/resources_/$id': {
+      id: '/resources_/$id'
+      path: '/resources/$id'
+      fullPath: '/resources/$id'
+      preLoaderRoute: typeof ResourcesIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/payments_/$id': {
+      id: '/payments_/$id'
+      path: '/payments/$id'
+      fullPath: '/payments/$id'
+      preLoaderRoute: typeof PaymentsIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/fees/summary': {
       id: '/fees/summary'
@@ -1370,6 +1410,8 @@ const rootRouteChildren: RootRouteChildren = {
   SupportRoute: SupportRoute,
   TrainingRoute: TrainingRoute,
   UniversitiesRoute: UniversitiesRouteWithChildren,
+  PaymentsIdRoute: PaymentsIdRoute,
+  ResourcesIdRoute: ResourcesIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -36,6 +36,9 @@ import { FeeStructuresModule } from './finance/fee-structures/fee-structures.mod
 import { ApplicantModule } from './applicant/applicant.module';
 import { PublicIntakeModule } from './public-intake/public-intake.module';
 import { MasterSettingsModule } from './master-settings/master-settings.module';
+import { PaymentsModule } from './payments/payments.module';
+import { TrainingModule } from './training/training.module';
+import { CounsellorResourcesModule } from './counsellor-resources/counsellor-resources.module';
 
 @Module({
   imports: [
@@ -72,6 +75,9 @@ import { MasterSettingsModule } from './master-settings/master-settings.module';
     ApplicantModule,
     PublicIntakeModule,
     MasterSettingsModule,
+    PaymentsModule,
+    TrainingModule,
+    CounsellorResourcesModule,
   ],
   providers: [
     // Global JWT guard — every route is protected unless marked @Public().

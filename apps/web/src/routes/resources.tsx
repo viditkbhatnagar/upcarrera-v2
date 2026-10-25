@@ -1,18 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { FolderOpen } from "lucide-react";
-import { ModulePlaceholder } from "@/components/module-placeholder";
+import { CounsellorResources } from "@/components/counsellor/screens/resources";
 
 export const Route = createFileRoute("/resources")({
-  head: () => ({ meta: [{ title: "Resources — upCarrera" }] }),
-  component: ResourcesPage,
+  head: () => ({
+    meta: [
+      { title: "Resources — upCarrera" },
+      { name: "description", content: "Browse counsellor resources organized by folder." },
+    ],
+  }),
+  component: CounsellorResources,
 });
-
-function ResourcesPage() {
-  return (
-    <ModulePlaceholder
-      icon={FolderOpen}
-      title="Resources"
-      description="Brochures, fee sheets and course collateral you can share with prospective students."
-    />
-  );
-}

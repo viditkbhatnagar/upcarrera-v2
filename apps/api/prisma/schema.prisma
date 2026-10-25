@@ -1721,3 +1721,66 @@ model fee_structure_instalment {
 
   @@unique([fee_structure_id, seq], map: "uq_fee_structure_instalment_seq")
 }
+
+// ---------------------------------------------------------------------------
+// Migration 005 (database/migrations/005-counsellor-portal-modules.sql).
+// Counsellor portal Phase 3: Training, Resources. Hand-written to match the DDL
+// exactly. No @relation, matching the rest of this file. Never `prisma db push`
+// production.
+// ---------------------------------------------------------------------------
+
+/// A training video shown on the counsellor Training Center. video_url is a
+/// YouTube / Vimeo page link or a direct video file URL; NULL = not uploaded yet.
+model training_video {
+  id               Int       @id @default(autoincrement())
+  title            String    @db.VarChar(200)
+  description      String?   @db.Text
+  category         String    @default("General") @db.VarChar(80)
+  video_url        String?   @db.VarChar(500)
+  thumbnail_url    String?   @db.VarChar(500)
+  duration_seconds Int?
+  sort_order       Int       @default(0)
+  status           Boolean   @default(true)
+  created_by       Int?
+  updated_by       Int?
+  created_at       DateTime? @db.DateTime(0)
+  updated_at       DateTime? @db.DateTime(0)
+  deleted_at       DateTime? @db.DateTime(0)
+
+  @@index([status, sort_order], map: "idx_training_video_status")
+  @@index([category], map: "idx_training_video_category")
+}
+
+/// One row per (video, counsellor) the counsellor marked complete.
+model training_video_completion {
+  id           Int      @id @default(autoincrement())
+  video_id     Int
+  user_id      Int
+  completed_at DateTime @db.DateTime(0)
+
+  @@unique([video_id, user_id], map: "uq_training_completion")
+  @@index([user_id], map: "idx_training_completion_user")
+}
+
+/// A downloadable counsellor resource (poster, PDF, video, deck, eBook). The
+/// Resources screen groups rows into folders by `category`. Distinct from the
+/// legacy `resources` file-browser table.
+/// type: Poster | PDF | Video | Presentation | eBook
+model counsellor_resource {
+  id              Int       @id @default(autoincrement())
+  title           String    @db.VarChar(200)
+  description     String?   @db.Text
+  type            String    @default("PDF") @db.VarChar(24)
+  file_url        String?   @db.VarChar(500)
+  category        String    @default("General") @db.VarChar(80)
+  file_size_bytes Int?
+  sort_order      Int       @default(0)
+  status          Boolean   @default(true)
+  created_by      Int?
+  updated_by      Int?
+  created_at      DateTime? @db.DateTime(0)
+  updated_at      DateTime? @db.DateTime(0)
+  deleted_at      DateTime? @db.DateTime(0)
+
+  @@index([status, category, sort_order], map: "idx_cresource_status_category")
+}
