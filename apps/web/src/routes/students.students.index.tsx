@@ -1,4 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useIsCounsellor } from "@/components/counsellor/use-is-counsellor";
+import { CounsellorEnrollments } from "@/components/counsellor/screens/enrollments";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -48,7 +50,7 @@ import {
 
 export const Route = createFileRoute("/students/students/")({
   head: () => ({ meta: [{ title: "Students — upCarrera" }] }),
-  component: StudentsPage,
+  component: StudentsRoute,
 });
 
 // --- Live API wiring (GET /api/students) ---------------------------------
@@ -756,4 +758,9 @@ function IconBtn({
       <Icon className="h-4 w-4" />
     </button>
   );
+}
+
+function StudentsRoute() {
+  const isCounsellor = useIsCounsellor();
+  return isCounsellor ? <CounsellorEnrollments /> : <StudentsPage />;
 }

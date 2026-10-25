@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { apiGet } from "@/lib/api";
 import { useAccess } from "@/components/applications/use-access";
-import { CounsellorReports } from "@/components/reports/counsellor-reports";
+import { CounsellorReports } from "@/components/counsellor/screens/reports";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import {

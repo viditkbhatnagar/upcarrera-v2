@@ -63,6 +63,7 @@ import { Route as StudentsApplicationsIndexRouteImport } from './routes/students
 import { Route as UniversitiesUniversitiesCodeRouteImport } from './routes/universities.universities_.$code'
 import { Route as UniversitiesFeeStructureNewRouteImport } from './routes/universities.fee-structure_.new'
 import { Route as UniversitiesFeeStructureIdRouteImport } from './routes/universities.fee-structure_.$id'
+import { Route as UniversitiesCoursesIdRouteImport } from './routes/universities.courses_.$id'
 import { Route as StudentsStudentsIdRouteImport } from './routes/students.students.$id'
 import { Route as StudentsApplicationsNewRouteImport } from './routes/students.applications.new'
 import { Route as StudentsApplicationsAppIdRouteImport } from './routes/students.applications.$appId'
@@ -351,6 +352,11 @@ const UniversitiesFeeStructureIdRoute =
     path: '/fee-structure/$id',
     getParentRoute: () => UniversitiesRoute,
   } as any)
+const UniversitiesCoursesIdRoute = UniversitiesCoursesIdRouteImport.update({
+  id: '/courses_/$id',
+  path: '/courses/$id',
+  getParentRoute: () => UniversitiesRoute,
+} as any)
 const StudentsStudentsIdRoute = StudentsStudentsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -434,6 +440,7 @@ export interface FileRoutesByFullPath {
   '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
+  '/universities/courses/$id': typeof UniversitiesCoursesIdRoute
   '/universities/fee-structure/$id': typeof UniversitiesFeeStructureIdRoute
   '/universities/fee-structure/new': typeof UniversitiesFeeStructureNewRoute
   '/universities/universities/$code': typeof UniversitiesUniversitiesCodeRoute
@@ -487,6 +494,7 @@ export interface FileRoutesByTo {
   '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
+  '/universities/courses/$id': typeof UniversitiesCoursesIdRoute
   '/universities/fee-structure/$id': typeof UniversitiesFeeStructureIdRoute
   '/universities/fee-structure/new': typeof UniversitiesFeeStructureNewRoute
   '/universities/universities/$code': typeof UniversitiesUniversitiesCodeRoute
@@ -549,6 +557,7 @@ export interface FileRoutesById {
   '/students/applications/$appId': typeof StudentsApplicationsAppIdRoute
   '/students/applications/new': typeof StudentsApplicationsNewRoute
   '/students/students/$id': typeof StudentsStudentsIdRoute
+  '/universities/courses_/$id': typeof UniversitiesCoursesIdRoute
   '/universities/fee-structure_/$id': typeof UniversitiesFeeStructureIdRoute
   '/universities/fee-structure_/new': typeof UniversitiesFeeStructureNewRoute
   '/universities/universities_/$code': typeof UniversitiesUniversitiesCodeRoute
@@ -612,6 +621,7 @@ export interface FileRouteTypes {
     | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
+    | '/universities/courses/$id'
     | '/universities/fee-structure/$id'
     | '/universities/fee-structure/new'
     | '/universities/universities/$code'
@@ -665,6 +675,7 @@ export interface FileRouteTypes {
     | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
+    | '/universities/courses/$id'
     | '/universities/fee-structure/$id'
     | '/universities/fee-structure/new'
     | '/universities/universities/$code'
@@ -726,6 +737,7 @@ export interface FileRouteTypes {
     | '/students/applications/$appId'
     | '/students/applications/new'
     | '/students/students/$id'
+    | '/universities/courses_/$id'
     | '/universities/fee-structure_/$id'
     | '/universities/fee-structure_/new'
     | '/universities/universities_/$code'
@@ -1134,6 +1146,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof UniversitiesFeeStructureIdRouteImport
       parentRoute: typeof UniversitiesRoute
     }
+    '/universities/courses_/$id': {
+      id: '/universities/courses_/$id'
+      path: '/courses/$id'
+      fullPath: '/universities/courses/$id'
+      preLoaderRoute: typeof UniversitiesCoursesIdRouteImport
+      parentRoute: typeof UniversitiesRoute
+    }
     '/students/students/$id': {
       id: '/students/students/$id'
       path: '/$id'
@@ -1310,6 +1329,7 @@ interface UniversitiesRouteChildren {
   UniversitiesIntakesRoute: typeof UniversitiesIntakesRoute
   UniversitiesUniversitiesRoute: typeof UniversitiesUniversitiesRoute
   UniversitiesIndexRoute: typeof UniversitiesIndexRoute
+  UniversitiesCoursesIdRoute: typeof UniversitiesCoursesIdRoute
   UniversitiesFeeStructureIdRoute: typeof UniversitiesFeeStructureIdRoute
   UniversitiesFeeStructureNewRoute: typeof UniversitiesFeeStructureNewRoute
   UniversitiesUniversitiesCodeRoute: typeof UniversitiesUniversitiesCodeRoute
@@ -1321,6 +1341,7 @@ const UniversitiesRouteChildren: UniversitiesRouteChildren = {
   UniversitiesIntakesRoute: UniversitiesIntakesRoute,
   UniversitiesUniversitiesRoute: UniversitiesUniversitiesRoute,
   UniversitiesIndexRoute: UniversitiesIndexRoute,
+  UniversitiesCoursesIdRoute: UniversitiesCoursesIdRoute,
   UniversitiesFeeStructureIdRoute: UniversitiesFeeStructureIdRoute,
   UniversitiesFeeStructureNewRoute: UniversitiesFeeStructureNewRoute,
   UniversitiesUniversitiesCodeRoute: UniversitiesUniversitiesCodeRoute,

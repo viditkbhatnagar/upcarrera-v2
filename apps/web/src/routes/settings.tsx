@@ -1,4 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useIsCounsellor } from "@/components/counsellor/use-is-counsellor";
+import { CounsellorSettings } from "@/components/counsellor/screens/settings";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, apiPatch, apiPost, ApiError } from "@/lib/api";
@@ -8,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Eye, EyeOff, Save, KeyRound, User } from "lucide-react";
 
 export const Route = createFileRoute("/settings")({
-  component: SettingsPage,
+  component: SettingsRoute,
 });
 
 interface Me {
@@ -230,4 +232,9 @@ function PasswordCard() {
       </div>
     </Card>
   );
+}
+
+function SettingsRoute() {
+  const isCounsellor = useIsCounsellor();
+  return isCounsellor ? <CounsellorSettings /> : <SettingsPage />;
 }
