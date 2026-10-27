@@ -146,4 +146,16 @@ export class CreateApplicationDto {
   @IsString()
   @MaxLength(255)
   source?: string;
+
+  /** Source = Student Reference: the referring student's users.id. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  referred_by?: number;
+
+  /** Source = External Reference: external_referee.id. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  external_referee_id?: number;
 }

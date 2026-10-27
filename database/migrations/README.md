@@ -12,6 +12,7 @@ model.
 | 2 | `002-phase1-admission.sql` | 15 tables (workflow, audit log, payments, magic link, student form, documents, catalog mapping, fee structures); 17 NULLable columns on 6 existing tables; the Phase 1 roles at ids **101-104**; 18 `crm:` permissions and 52 grants |
 | 5 | `005-counsellor-portal-modules.sql` | `training_video`, `training_video_completion`, `counsellor_resource` (3 placeholder rows each, no URLs); 5 `crm:` permissions (`payments.index`, `training.view/manage`, `resources.view/manage`) granted to the counsellor and admin roles. Apply after 002 |
 | 6 | `006-finance-rbac.sql` | 2 `crm:` permissions (`finance.view`, `finance.manage`) guarding every legacy finance endpoint; granted to the accounts and admin roles only. Apply after 002, together with the API deploy |
+| 7 | `007-external-referees.sql` | `external_referee` table; `applications.external_referee_id` (+ key); 7 `lead_source` rows inserted only if the title is missing (incl. `Student Reference`, `External Reference`); 2 `crm:` permissions (`referees.view`, `referees.manage`) granted to the counsellor and admin roles. Apply after 002, together with the API deploy |
 | - | `rollback/*.rollback.sql` | Last-resort, destructive down-scripts. Not migrations: never glob-apply this folder |
 
 Apply them in order (001, then 002). Each file's header documents the details,

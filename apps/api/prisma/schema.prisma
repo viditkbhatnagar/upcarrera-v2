@@ -74,9 +74,12 @@ model applications {
   /// intake.id (v2 master) the student applies for (migration 003, IN04). NULL for
   /// legacy rows, which fall back to session_id -> intake.session_id for display.
   intake_id          Int?
+  /// external_referee.id of the outside referrer (Source = External Reference).
+  external_referee_id Int?
 
   @@index([stage, stage_entered_at], map: "idx_applications_stage")
   @@index([pipeline_user, created_by], map: "idx_applications_owner")
+  @@index([external_referee_id], map: "idx_applications_external_referee")
   @@index([phone_normalized], map: "idx_applications_phone_norm")
   @@index([intake_id], map: "idx_applications_intake")
 }
@@ -505,6 +508,22 @@ model lead_category {
   updated_on DateTime? @db.DateTime(0)
   deleted_at DateTime? @db.DateTime(0)
   deleted_by Int?
+}
+
+/// Outside people who refer leads (Source = External Reference). Migration 007.
+model external_referee {
+  id         Int       @id @default(autoincrement())
+  name       String    @db.VarChar(255)
+  email      String    @db.VarChar(255)
+  phone      String    @db.VarChar(30)
+  state      String    @db.VarChar(100)
+  district   String    @db.VarChar(100)
+  created_by Int?
+  created_at DateTime? @db.DateTime(0)
+  updated_at DateTime? @db.DateTime(0)
+  deleted_at DateTime? @db.DateTime(0)
+
+  @@index([email], map: "idx_external_referee_email")
 }
 
 model lead_source {

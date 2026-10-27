@@ -10,6 +10,7 @@ import { LeadsModule } from './leads/leads.module';
 import { StudentsModule } from './students/students.module';
 import { AcademicsModule } from './academics/academics.module';
 import { TeachersModule } from './teachers/teachers.module';
+import { ExternalRefereesModule } from './external-referees/external-referees.module';
 import { FinanceModule } from './finance/finance.module';
 import { SessionsModule } from './sessions/sessions.module';
 import { PlatformModule } from './platform/platform.module';
@@ -78,6 +79,7 @@ import { CounsellorResourcesModule } from './counsellor-resources/counsellor-res
     PaymentsModule,
     TrainingModule,
     CounsellorResourcesModule,
+    ExternalRefereesModule,
   ],
   providers: [
     // Global JWT guard — every route is protected unless marked @Public().

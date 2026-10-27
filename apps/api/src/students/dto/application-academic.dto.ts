@@ -58,6 +58,18 @@ export class ApplicationAcademicDto {
   @MaxLength(255)
   source?: string | null;
 
+  /** Student Reference: referring student's users.id. null clears it. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  referred_by?: number | null;
+
+  /** External Reference: external_referee.id. null clears it. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  external_referee_id?: number | null;
+
   @IsOptional()
   @IsString()
   @MaxLength(100)
