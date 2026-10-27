@@ -21,14 +21,16 @@ import {
 import {
   type CatalogOption,
   labelOf,
+  useAdmissionCourseOptions,
+  useAdmissionIntakeOptions,
+  useAdmissionUniversityOptions,
   useCounsellorOptions,
-  useCourseOptions,
-  useIntakeOptions,
   useLeadSourceOptions,
   useSpecialisationOptions,
-  useUniversityOptions,
 } from "./catalogs";
 import { INDIAN_MOBILE_ERROR, isValidEmail, normalizeIndianMobile } from "./duplicate-check";
+import { needsReference, STUDENT_REFERENCE_SOURCE } from "./lead-references";
+import { ReferenceField } from "./reference-fields";
 
 /* ---------------- Form model ---------------- */
 
@@ -43,6 +45,10 @@ export interface LeadForm {
   intake: string;
   source: string;
   counsellor: string;
+  /** Student Reference: the referring student's USER id (applications.referred_by). */
+  referred_by: string;
+  /** External Reference: external_referee.id. Mutually exclusive with referred_by. */
+  external_referee_id: string;
 }
 
 export type FieldKey = keyof LeadForm;
@@ -57,6 +63,8 @@ export const EMPTY_FORM: LeadForm = {
   intake: "",
   source: "",
   counsellor: "",
+  referred_by: "",
+  external_referee_id: "",
 };
 
 /** The raw application row as GET /applications/:id returns it. */
@@ -69,6 +77,9 @@ export interface RawApplication {
   course_id: number | null;
   specialisation_id: number | null;
   session_id: number | null;
+  intake_id: number | null;
+  referred_by: number | null;
+  external_referee_id: number | null;
   pipeline_user: number | null;
   created_by: number | null;
   source: string | null;
@@ -87,12 +98,16 @@ export function seedFromRaw(r: RawApplication): LeadForm {
     university: idText(r.university_id),
     course: idText(r.course_id),
     specialisation: idText(r.specialisation_id),
-    intake: idText(r.session_id),
+    // The admission cascade keys intakes by intake.id (applications.intake_id).
+    // Legacy rows with only a session_id seed no intake and stay untouched.
+    intake: idText(r.intake_id),
     source: r.source ?? "",
     // The counsellor the list shows is pipeline_user, else created_by. Seeding
     // with that fallback would make an untouched form "change" pipeline_user,
     // so seed only the real column and let the diff decide.
     counsellor: idText(r.pipeline_user),
+    referred_by: idText(r.referred_by),
+    external_referee_id: idText(r.external_referee_id),
   };
 }
 
@@ -101,9 +116,13 @@ const ACADEMIC_FIELDS: ReadonlyArray<[FieldKey, string, (v: string) => number | 
   ["university", "university_id", Number],
   ["course", "course_id", Number],
   ["specialisation", "specialisation_id", Number],
-  ["intake", "session_id", Number],
+  // intake.id: the server validates the (university, course, intake) offering
+  // and dual-writes session_id.
+  ["intake", "intake_id", Number],
   ["counsellor", "pipeline_user", Number],
   ["source", "source", (v) => v],
+  ["referred_by", "referred_by", Number],
+  ["external_referee_id", "external_referee_id", Number],
 ];
 
 /**
@@ -139,11 +158,11 @@ export function contactBody(form: LeadForm, seed: LeadForm) {
 /* ---------------- Shared fields ---------------- */
 
 export function useLeadCatalogs(form: LeadForm) {
-  const universities = useUniversityOptions();
-  // strict: a course tagged to another university is refused by the server.
-  const courses = useCourseOptions(form.university || null, { strict: true });
+  // Admission cascade: university -> course -> (specialisation) -> open intake.
+  const universities = useAdmissionUniversityOptions();
+  const courses = useAdmissionCourseOptions(form.university || null);
   const specialisations = useSpecialisationOptions(form.course || null);
-  const intakes = useIntakeOptions();
+  const intakes = useAdmissionIntakeOptions(form.university || null, form.course || null);
   const counsellors = useCounsellorOptions();
   const sources = useLeadSourceOptions();
   return { universities, courses, specialisations, intakes, counsellors, sources };
@@ -177,6 +196,7 @@ function CatalogSelect({
   emptyText,
   error,
   hint,
+  disabledHint,
 }: {
   id: string;
   label: string;
@@ -190,6 +210,8 @@ function CatalogSelect({
   emptyText: string;
   error?: string;
   hint?: string | null;
+  /** Set while the parent field is empty: disables the select and replaces the placeholder. */
+  disabledHint?: string | null;
 }) {
   const unavailable = !loading && !failed && options.length === 0;
   return (
@@ -197,17 +219,19 @@ function CatalogSelect({
       <Label htmlFor={id}>
         {label} {required && <span className="text-accent">*</span>}
       </Label>
-      <Select value={value} onValueChange={onChange} disabled={loading || failed || unavailable}>
+      <Select value={value} onValueChange={onChange} disabled={!!disabledHint || loading || failed || unavailable}>
         <SelectTrigger id={id} className={cn(error && "border-red-400 focus:ring-red-300")}>
           <SelectValue
             placeholder={
-              loading
-                ? "Loading…"
-                : failed
-                  ? `Couldn't load ${label.toLowerCase()}`
-                  : unavailable
-                    ? emptyText
-                    : placeholder
+              disabledHint
+                ? disabledHint
+                : loading
+                  ? "Loading…"
+                  : failed
+                    ? `Couldn't load ${label.toLowerCase()}`
+                    : unavailable
+                      ? emptyText
+                      : placeholder
             }
           />
         </SelectTrigger>
@@ -238,6 +262,12 @@ export function LeadFields({ form, errors, update, catalogs, seed }: FieldsProps
   // their parent is unchanged, so a stale one cannot be re-picked.
   const seededCourse = seed && form.university === seed.university ? seed.course : undefined;
   const seededSpec = seed && form.course === seed.course ? seed.specialisation : undefined;
+  // An intake belongs to a (university, course) offering.
+  const seededIntake =
+    seed && form.university === seed.university && form.course === seed.course
+      ? seed.intake
+      : undefined;
+  const referenceError = errors.referred_by ?? errors.external_referee_id;
 
   return (
     <div className="space-y-4">
@@ -312,11 +342,7 @@ export function LeadFields({ form, errors, update, catalogs, seed }: FieldsProps
           placeholder="Select course"
           emptyText="No courses set up"
           error={errors.course}
-          hint={
-            form.university && !courses.scoped && courses.options.length > 0
-              ? "No courses are tagged to this university yet — showing courses not tagged to any university."
-              : null
-          }
+          disabledHint={form.university ? null : "Select university first"}
         />
       </div>
 
@@ -335,6 +361,7 @@ export function LeadFields({ form, errors, update, catalogs, seed }: FieldsProps
           failed={specialisations.isError}
           placeholder="Select specialisation"
           emptyText="None for this course"
+          disabledHint={form.course ? null : "Select course first"}
         />
         <CatalogSelect
           id="lead-intake"
@@ -342,12 +369,13 @@ export function LeadFields({ form, errors, update, catalogs, seed }: FieldsProps
           required={intakes.options.length > 0}
           value={form.intake}
           onChange={(v) => update("intake", v)}
-          options={withSeeded(intakes.options, seed?.intake, `Intake #${seed?.intake}`)}
+          options={withSeeded(intakes.options, seededIntake, `Intake #${seededIntake}`)}
           loading={intakes.isLoading}
           failed={intakes.isError}
           placeholder="Select intake"
           emptyText="No intakes set up"
           error={errors.intake}
+          disabledHint={form.university && form.course ? null : "Select previous fields first"}
         />
       </div>
 
@@ -365,6 +393,17 @@ export function LeadFields({ form, errors, update, catalogs, seed }: FieldsProps
           emptyText="No lead sources set up"
           error={errors.source}
         />
+        {needsReference(form.source) && (
+          <ReferenceField
+            key={form.source}
+            source={form.source}
+            referredBy={form.referred_by}
+            externalRefereeId={form.external_referee_id}
+            onReferredBy={(v) => update("referred_by", v)}
+            onExternalReferee={(v) => update("external_referee_id", v)}
+            error={referenceError}
+          />
+        )}
         <CatalogSelect
           id="lead-counsellor"
           label="Assigned Counsellor"
@@ -407,6 +446,14 @@ export function validateLead(
     if (!form.phone.trim()) e.phone = "Mobile number is required";
     else if (!normalizeIndianMobile(form.phone)) e.phone = INDIAN_MOBILE_ERROR;
   }
+  // A reference is required once the source needs one. On edit, only when the
+  // source or the reference was touched (a legacy row may carry none).
+  if (needsReference(form.source)) {
+    const key: FieldKey =
+      form.source === STUDENT_REFERENCE_SOURCE ? "referred_by" : "external_referee_id";
+    const referenceTouched = seed == null || form.source !== seed.source || touched(key);
+    if (referenceTouched && !form[key]) e[key] = "Choose a reference";
+  }
   if (seed == null) {
     if (!form.university) e.university = "University is required";
     if (!form.course) e.course = "Course is required";
@@ -434,15 +481,24 @@ export function useLeadForm(initial: LeadForm) {
       const next = { ...prev, [field]: value };
       // A course belongs to a university: changing the university clears it.
       if (field === "university" && value !== prev.university) {
-        return { ...next, course: "", specialisation: "" };
+        return { ...next, course: "", specialisation: "", intake: "" };
       }
-      if (field === "course" && value !== prev.course) return { ...next, specialisation: "" };
+      // Specialisation and intake both hang off the course.
+      if (field === "course" && value !== prev.course) {
+        return { ...next, specialisation: "", intake: "" };
+      }
+      // The two reference kinds are mutually exclusive: a new source clears both.
+      if (field === "source" && value !== prev.source) {
+        return { ...next, referred_by: "", external_referee_id: "" };
+      }
       return next;
     });
     setErrors((prev) => {
-      if (!prev[field]) return prev;
+      const cleared: FieldKey[] =
+        field === "source" ? [field, "referred_by", "external_referee_id"] : [field];
+      if (!cleared.some((k) => prev[k])) return prev;
       const next = { ...prev };
-      delete next[field];
+      for (const k of cleared) delete next[k];
       return next;
     });
   };
