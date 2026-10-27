@@ -860,6 +860,7 @@ export class StudentsService {
       pipeline_user: number | null;
       created_by: number | null;
       course_id: number | null;
+      specialisation_id: number | null;
       university_id: number | null;
       session_id: number | null;
       intake_id: number | null;
@@ -911,8 +912,16 @@ export class StudentsService {
       ),
     ];
 
+    const specialisationIds = [
+      ...new Set(
+        rows
+          .map((r) => r.specialisation_id)
+          .filter((s): s is number => s != null),
+      ),
+    ];
+
     // ONE bulk query per related table.
-    const [users, courses, sessions, intakes] = await Promise.all([
+    const [users, courses, sessions, intakes, specialisations] = await Promise.all([
       userIds.length > 0
         ? this.prisma.users.findMany({
             where: { id: { in: userIds } },
@@ -935,6 +944,12 @@ export class StudentsService {
         ? this.prisma.intake.findMany({
             where: { id: { in: intakeIds } },
             select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+      specialisationIds.length > 0
+        ? this.prisma.specialisations.findMany({
+            where: { id: { in: specialisationIds } },
+            select: { id: true, title: true },
           })
         : Promise.resolve([]),
     ]);
@@ -974,6 +989,9 @@ export class StudentsService {
       sessions.map((s) => [s.session_id, s.session_title ?? null]),
     );
     const intakeNameById = new Map(intakes.map((i) => [i.id, i.name ?? null]));
+    const specialisationTitleById = new Map(
+      specialisations.map((s) => [s.id, s.title ?? null]),
+    );
 
     return rows.map((row) => {
       const consultantId = consultantIdFor(row);
@@ -995,6 +1013,10 @@ export class StudentsService {
             : null,
         // Resolved course + university titles (UI no longer shows raw #ids).
         course_title: course?.title ?? null,
+        specialisation_title:
+          row.specialisation_id != null
+            ? (specialisationTitleById.get(row.specialisation_id) ?? null)
+            : null,
         university_id: universityId,
         university_title:
           universityId != null

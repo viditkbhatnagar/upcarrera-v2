@@ -491,7 +491,7 @@ function ApplicationsPage() {
           ) : rows.length === 0 ? (
             <EmptyState onCreate={() => setLeadOpen(true)} />
           ) : (
-            <table className="w-full min-w-[1120px] text-sm">
+            <table className="w-full min-w-[1220px] text-sm">
               <thead className="sticky top-0 z-10 bg-muted/60 backdrop-blur">
                 <tr className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   <th className="px-3 py-3">
@@ -510,6 +510,7 @@ function ApplicationsPage() {
                   <th className="px-3 py-3">University</th>
                   <th className="px-3 py-3">Course</th>
                   <th className="px-3 py-3">Intake</th>
+                  <th className="px-3 py-3">Source</th>
                   <th className="px-3 py-3">Counsellor</th>
                   <th className="px-3 py-3">Stage</th>
                   <th className="px-3 py-3 text-right" title="Days in current stage">Days</th>
@@ -559,8 +560,14 @@ function ApplicationsPage() {
                       </div>
                     </td>
                     <td className="px-3 py-3 text-xs text-foreground">{a.university}</td>
-                    <td className="px-3 py-3 text-xs font-medium text-foreground">{a.course}</td>
+                    <td className="px-3 py-3 text-xs font-medium text-foreground">
+                      <div>{a.course}</div>
+                      {a.specialisation !== EMPTY && (
+                        <div className="text-[11px] font-normal text-muted-foreground">{a.specialisation}</div>
+                      )}
+                    </td>
                     <td className="px-3 py-3 text-xs text-muted-foreground">{a.intake}</td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">{a.source}</td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-2">
                         <span className="grid h-7 w-7 place-items-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
