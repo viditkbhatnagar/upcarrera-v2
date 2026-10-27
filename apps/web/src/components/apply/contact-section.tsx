@@ -14,6 +14,7 @@ type State = {
   address: string;
   state: string;
   district: string;
+  country_id: string;
   pin_code: string;
 };
 
@@ -25,6 +26,7 @@ export function ContactSection({ app, lookups, busy, setBusy, reload, goNext }: 
     address: c.address ?? "",
     state: c.state ?? "",
     district: c.district ?? "",
+    country_id: c.country_id ? String(c.country_id) : "",
     pin_code: c.pin_code ?? "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -38,12 +40,16 @@ export function ContactSection({ app, lookups, busy, setBusy, reload, goNext }: 
       address: v.address.trim(),
       state: v.state.trim(),
       district: v.district.trim(),
+      country_id: v.country_id ? Number(v.country_id) : undefined,
       pin_code: v.pin_code,
     });
 
   async function save(complete: boolean) {
     if (complete) {
-      const parsed = contactSchema.safeParse(v);
+      const parsed = contactSchema.safeParse({
+        ...v,
+        country_id: v.country_id ? Number(v.country_id) : undefined,
+      });
       if (!parsed.success) {
         setErrors(zodFieldErrors(parsed.error));
         toast.error("Please fix the highlighted fields.");
@@ -69,6 +75,8 @@ export function ContactSection({ app, lookups, busy, setBusy, reload, goNext }: 
     label: name,
   }));
 
+  const countryOptions = lookups.countries.map((c) => ({ value: String(c.id), label: c.name }));
+
   return (
     <SectionCard title="Contact details" description="How can we reach you?">
       <div className="grid gap-4 sm:grid-cols-2">
@@ -92,6 +100,9 @@ export function ContactSection({ app, lookups, busy, setBusy, reload, goNext }: 
         </FieldRow>
         <FieldRow label="Address" htmlFor="addr" required error={errors.address} className="sm:col-span-2">
           <textarea id="addr" rows={2} className={inputCls} value={v.address} onChange={(e) => set("address")(e.target.value)} />
+        </FieldRow>
+        <FieldRow label="Country" error={errors.country_id}>
+          <NativeSelect value={v.country_id} onChange={set("country_id")} options={countryOptions} placeholder="Select…" />
         </FieldRow>
         <FieldRow label="State" error={errors.state}>
           <NativeSelect value={v.state} onChange={set("state")} options={stateOptions} placeholder="Select…" />

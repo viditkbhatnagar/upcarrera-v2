@@ -38,6 +38,7 @@ export const contactSchema = z.object({
   address: z.string().trim().min(1, "Enter your address").max(500),
   state: optionalText(100),
   district: optionalText(100),
+  country_id: z.number().int().positive().optional(),
   pin_code: z.string().regex(/^[1-9]\d{5}$/, "Enter a 6-digit PIN code").optional().or(z.literal("")),
 });
 export type ContactForm = z.infer<typeof contactSchema>;
@@ -71,6 +72,8 @@ export const employmentSchema = z.object({
   total_experience_months: z.number().int().min(0).max(900).optional(),
   current_employer: optionalText(160),
   current_designation: optionalText(120),
+  industry: optionalText(120),
+  current_location: optionalText(160),
 });
 export type EmploymentForm = z.infer<typeof employmentSchema>;
 

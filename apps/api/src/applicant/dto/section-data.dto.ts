@@ -63,7 +63,7 @@ export class PersonalDataDto {
 }
 
 /**
- * Contact section. second_phone/whatsapp_no/address/state/district ->
+ * Contact section. second_phone/whatsapp_no/address/state/district/country_id ->
  * `applications`; pin_code -> `application_form`.
  *
  * SECURITY MEDIUM 4: `email` is READ-ONLY here, exactly like the mobile number —
@@ -87,6 +87,9 @@ export class ContactDataDto {
 
   @IsOptional() @IsString() @MaxLength(100)
   district?: string;
+
+  @IsOptional() @IsInt() @Min(1)
+  country_id?: number;
 
   @IsOptional() @Matches(/^[1-9]\d{5}$/, { message: 'pin_code must be a 6-digit Indian PIN code' })
   pin_code?: string;
@@ -163,6 +166,12 @@ export class EmploymentDataDto {
 
   @IsOptional() @IsString() @MaxLength(120)
   current_designation?: string;
+
+  @IsOptional() @IsString() @MaxLength(120)
+  industry?: string;
+
+  @IsOptional() @IsString() @MaxLength(160)
+  current_location?: string;
 
   @IsOptional()
   @IsArray()

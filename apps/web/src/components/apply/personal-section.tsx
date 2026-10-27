@@ -20,6 +20,17 @@ type State = {
   abc_id: string;
 };
 
+/** Whole years between an ISO date (YYYY-MM-DD) and today; null if empty/invalid/future. */
+function ageFromDob(dob: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dob);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const now = new Date();
+  let age = now.getFullYear() - y;
+  if (now.getMonth() + 1 < mo || (now.getMonth() + 1 === mo && now.getDate() < d)) age -= 1;
+  return age >= 0 && age < 150 ? age : null;
+}
+
 export function PersonalSection({ app, lookups, busy, setBusy, reload, goNext }: SectionProps) {
   const p = app.sections.personal;
   const [v, setV] = useState<State>({
@@ -81,6 +92,7 @@ export function PersonalSection({ app, lookups, busy, setBusy, reload, goNext }:
     }
   }
 
+  const age = ageFromDob(v.dob);
   const countryOptions = lookups.countries.map((c) => ({ value: String(c.id), label: c.name }));
 
   return (
@@ -97,6 +109,9 @@ export function PersonalSection({ app, lookups, busy, setBusy, reload, goNext }:
         </FieldRow>
         <FieldRow label="Date of birth" htmlFor="dob" required error={errors.dob}>
           <input id="dob" type="date" className={inputCls} value={v.dob} onChange={(e) => set("dob")(e.target.value)} />
+        </FieldRow>
+        <FieldRow label="Age" hint="Calculated from your date of birth.">
+          <input className={inputCls} value={age != null ? `${age} years` : ""} placeholder="—" readOnly disabled />
         </FieldRow>
         <FieldRow label="Gender" required error={errors.gender}>
           <NativeSelect value={v.gender} onChange={set("gender")} options={GENDER_OPTIONS} placeholder="Select…" />

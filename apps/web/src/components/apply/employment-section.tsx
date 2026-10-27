@@ -12,6 +12,8 @@ type State = {
   total_experience_months: string;
   current_employer: string;
   current_designation: string;
+  industry: string;
+  current_location: string;
 };
 
 export function EmploymentSection({ app, lookups, busy, setBusy, reload, goNext }: SectionProps) {
@@ -21,6 +23,8 @@ export function EmploymentSection({ app, lookups, busy, setBusy, reload, goNext 
     total_experience_months: emp?.total_experience_months != null ? String(emp.total_experience_months) : "",
     current_employer: emp?.current_employer ?? "",
     current_designation: emp?.current_designation ?? "",
+    industry: emp?.industry ?? "",
+    current_location: emp?.current_location ?? "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const set = (k: keyof State) => (val: string) => setV((s) => ({ ...s, [k]: val }));
@@ -31,6 +35,8 @@ export function EmploymentSection({ app, lookups, busy, setBusy, reload, goNext 
       total_experience_months: v.total_experience_months ? Number(v.total_experience_months) : undefined,
       current_employer: v.current_employer.trim(),
       current_designation: v.current_designation.trim(),
+      industry: v.industry.trim(),
+      current_location: v.current_location.trim(),
     });
 
   async function save(complete: boolean) {
@@ -40,6 +46,8 @@ export function EmploymentSection({ app, lookups, busy, setBusy, reload, goNext 
         total_experience_months: v.total_experience_months ? Number(v.total_experience_months) : undefined,
         current_employer: v.current_employer || undefined,
         current_designation: v.current_designation || undefined,
+        industry: v.industry || undefined,
+        current_location: v.current_location || undefined,
       });
       if (!parsed.success) {
         setErrors(zodFieldErrors(parsed.error));
@@ -75,6 +83,12 @@ export function EmploymentSection({ app, lookups, busy, setBusy, reload, goNext 
         </FieldRow>
         <FieldRow label="Current designation" error={errors.current_designation} className="sm:col-span-2">
           <input className={inputCls} value={v.current_designation} onChange={(e) => set("current_designation")(e.target.value)} />
+        </FieldRow>
+        <FieldRow label="Industry" error={errors.industry}>
+          <input className={inputCls} value={v.industry} onChange={(e) => set("industry")(e.target.value)} />
+        </FieldRow>
+        <FieldRow label="Current location" error={errors.current_location}>
+          <input className={inputCls} value={v.current_location} onChange={(e) => set("current_location")(e.target.value)} />
         </FieldRow>
       </div>
       <SectionFooter busy={busy} onSaveDraft={() => save(false)} onContinue={() => save(true)} />

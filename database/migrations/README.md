@@ -13,6 +13,7 @@ model.
 | 5 | `005-counsellor-portal-modules.sql` | `training_video`, `training_video_completion`, `counsellor_resource` (3 placeholder rows each, no URLs); 5 `crm:` permissions (`payments.index`, `training.view/manage`, `resources.view/manage`) granted to the counsellor and admin roles. Apply after 002 |
 | 6 | `006-finance-rbac.sql` | 2 `crm:` permissions (`finance.view`, `finance.manage`) guarding every legacy finance endpoint; granted to the accounts and admin roles only. Apply after 002, together with the API deploy |
 | 7 | `007-external-referees.sql` | `external_referee` table; `applications.external_referee_id` (+ key); 7 `lead_source` rows inserted only if the title is missing (incl. `Student Reference`, `External Reference`); 2 `crm:` permissions (`referees.view`, `referees.manage`) granted to the counsellor and admin roles. Apply after 002, together with the API deploy |
+| 8 | `008-apply-employment-fields.sql` | `application_form.industry` varchar(120) and `application_form.current_location` varchar(160), both NULLable, guarded INSTANT adds (Employment step of the apply form). Apply via phpMyAdmin, additive only, after 002, together with the API deploy |
 | - | `rollback/*.rollback.sql` | Last-resort, destructive down-scripts. Not migrations: never glob-apply this folder |
 
 Apply them in order (001, then 002). Each file's header documents the details,

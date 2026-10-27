@@ -29,6 +29,7 @@ export interface ContactSection {
   address: string | null;
   state: string | null;
   district: string | null;
+  country_id: number | null;
   pin_code: string | null;
 }
 
@@ -61,6 +62,8 @@ export interface EmploymentSection {
   total_experience_months: number | null;
   current_employer: string | null;
   current_designation: string | null;
+  industry: string | null;
+  current_location: string | null;
   employment_history: EmploymentHistoryItem[];
 }
 

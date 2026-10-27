@@ -164,6 +164,7 @@ export class ApplicationFormService {
           address: application.address,
           state: application.state,
           district: application.district,
+          country_id: application.country_id || null,
           pin_code: form?.pin_code ?? null,
         },
         education: {
@@ -186,6 +187,8 @@ export class ApplicationFormService {
               total_experience_months: form?.total_experience_months ?? null,
               current_employer: form?.current_employer ?? null,
               current_designation: form?.current_designation ?? null,
+              industry: form?.industry ?? null,
+              current_location: form?.current_location ?? null,
               employment_history: this.parseHistory(form?.employment_history ?? null),
             }
           : null,
@@ -718,6 +721,10 @@ export class ApplicationFormService {
     setApp('address', 'address', application.address);
     setApp('state', 'state', application.state);
     setApp('district', 'district', application.district);
+    if ('country_id' in rawData) {
+      appUpdate.country_id = dto.country_id ?? null;
+      diffs.push({ field: 'country_id', old_value: this.str(application.country_id), new_value: this.str(dto.country_id) });
+    }
     if ('pin_code' in rawData) {
       formUpdate.pin_code = dto.pin_code ?? null;
       diffs.push({ field: 'pin_code', old_value: this.str(form.pin_code), new_value: this.str(dto.pin_code) });
@@ -743,6 +750,12 @@ export class ApplicationFormService {
     }
     if ('current_designation' in rawData) {
       formUpdate.current_designation = dto.current_designation ?? null;
+    }
+    if ('industry' in rawData) {
+      formUpdate.industry = dto.industry ?? null;
+    }
+    if ('current_location' in rawData) {
+      formUpdate.current_location = dto.current_location ?? null;
     }
     if ('employment_history' in rawData) {
       formUpdate.employment_history = dto.employment_history
