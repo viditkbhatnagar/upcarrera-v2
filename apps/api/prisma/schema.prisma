@@ -1533,6 +1533,8 @@ model application_form {
   total_experience_months     Int?      @db.SmallInt
   current_employer            String?   @db.VarChar(160)
   current_designation         String?   @db.VarChar(120)
+  industry                    String?   @db.VarChar(120)
+  current_location            String?   @db.VarChar(160)
   /// JSON array text, parsed by the API.
   employment_history          String?   @db.LongText
   program_change_request      String?   @db.VarChar(500)
