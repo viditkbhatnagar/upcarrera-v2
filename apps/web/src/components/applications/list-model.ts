@@ -27,6 +27,9 @@ export interface ListRowView {
   whatsapp: boolean;
   university: string;
   course: string;
+  /** Specialisation title, EMPTY when none. */
+  specialisation: string;
+  source: string;
   intake: string;
   counsellor: string;
   counsellorInitials: string;
@@ -74,6 +77,8 @@ export function mapRow(r: ApplicationListRow): ListRowView {
     whatsapp: r.whatsapp_no != null && String(r.whatsapp_no).trim() !== "",
     university: asText(r.university_title),
     course: asText(r.course_title),
+    specialisation: asText(r.specialisation_title),
+    source: asText(r.source),
     // IN04: prefer the v2 intake name; fall back to the legacy session title.
     intake: asText(r.intake_name ?? r.session_title),
     counsellor,
@@ -93,6 +98,8 @@ export const CSV_COLUMNS: CsvColumn<ListRowView>[] = [
   { header: "Mobile", value: (a) => a.phone },
   { header: "University", value: (a) => a.university },
   { header: "Course", value: (a) => a.course },
+  { header: "Specialisation", value: (a) => a.specialisation },
+  { header: "Source", value: (a) => a.source },
   { header: "Intake", value: (a) => a.intake },
   { header: "Counsellor", value: (a) => a.counsellor },
   { header: "Stage", value: (a) => a.stageLabel },

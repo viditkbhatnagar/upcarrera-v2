@@ -187,6 +187,8 @@ export interface ApplicationListRow {
   university_id: number | null;
   university_title: string | null;
   course_title: string | null;
+  specialisation_title: string | null;
+  source: string | null;
   session_title: string | null;
   // IN04: intake.name (from intake_id), falling back to session_title for legacy rows.
   intake_id: number | null;
