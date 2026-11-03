@@ -1,28 +1,20 @@
 import { Link } from "@tanstack/react-router";
 import { User, LogOut, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { UserAvatar } from "@/components/ui/user-avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getUser } from "@/lib/session";
 import { logout } from "@/lib/auth";
-import { useAvatarUrl } from "@/hooks/use-avatar-url";
 import { GlobalSearch } from "./global-search";
 import { ThemeToggle } from "./theme-toggle";
+import { NotificationsMenu } from "@/components/notifications-menu";
 
 const ROLE_LABEL = "Admission Counsellor";
-
-function initialsOf(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.trim().slice(0, 2).toUpperCase() || "U";
-}
 
 export function CounsellorTopbar() {
   const user = getUser();
   const displayName = user?.name ?? user?.username ?? "Counsellor";
   const firstName = displayName.trim().split(/\s+/)[0];
-  const initials = initialsOf(displayName);
-  const avatarUrl = useAvatarUrl(user?.profile_picture);
   const monthYear = new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric" });
 
   const handleLogout = () => {
@@ -45,15 +37,11 @@ export function CounsellorTopbar() {
         <div className="ml-auto flex items-center gap-2 lg:gap-3">
           <GlobalSearch />
           <ThemeToggle />
+          <NotificationsMenu />
           <Popover>
             <PopoverTrigger asChild>
               <button type="button" className="flex items-center gap-2 cursor-pointer" aria-label="Account menu">
-                <Avatar className="h-9 w-9">
-                  {avatarUrl && <AvatarImage src={avatarUrl} alt={displayName} />}
-                  <AvatarFallback className="bg-primary-soft text-primary-soft-foreground font-semibold">
-                    {initials}
-                  </AvatarFallback>
-                </Avatar>
+                <UserAvatar picture={user?.profile_picture} name={displayName} className="h-9 w-9" fallbackClassName="bg-primary-soft text-primary-soft-foreground" />
                 <div className="hidden sm:flex flex-col items-start leading-none text-left">
                   <span className="text-sm font-semibold text-foreground">{displayName}</span>
                   <span className="text-[11px] text-muted-foreground mt-0.5">{ROLE_LABEL}</span>
@@ -62,12 +50,7 @@ export function CounsellorTopbar() {
             </PopoverTrigger>
             <PopoverContent align="end" className="w-72 p-0">
               <div className="flex items-center gap-3 px-4 py-4 border-b">
-                <Avatar className="h-10 w-10">
-                  {avatarUrl && <AvatarImage src={avatarUrl} alt={displayName} />}
-                  <AvatarFallback className="bg-primary-soft text-primary-soft-foreground font-semibold text-sm">
-                    {initials}
-                  </AvatarFallback>
-                </Avatar>
+                <UserAvatar picture={user?.profile_picture} name={displayName} className="h-10 w-10" fallbackClassName="bg-primary-soft text-primary-soft-foreground" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold truncate">{displayName}</p>
                   <p className="text-[11px] text-muted-foreground truncate">{ROLE_LABEL}</p>

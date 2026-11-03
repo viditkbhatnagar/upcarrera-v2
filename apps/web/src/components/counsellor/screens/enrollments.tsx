@@ -18,14 +18,13 @@ import { apiGet } from "@/lib/api";
 import { listApplications } from "@/lib/api/applications";
 import { downloadCsv, toCsv, type CsvColumn } from "@/components/applications/export-csv";
 import { cn } from "@/lib/utils";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useAvatarUrl } from "@/hooks/use-avatar-url";
+import { UserAvatar } from "@/components/ui/user-avatar";
 import { dayRange, type DateRange } from "@/lib/date-range";
 import { KpiCard } from "@/components/counsellor/dashboard/kpi-card";
 import { DateRangePicker } from "@/components/counsellor/shared/date-range-picker";
@@ -127,14 +126,13 @@ const CSV_COLUMNS: CsvColumn<EnrollmentRow>[] = [
 ];
 
 function RowAvatar({ row }: { row: EnrollmentRow }) {
-  const url = useAvatarUrl(row.picture);
   return (
-    <Avatar className="h-7 w-7">
-      {url && <AvatarImage src={url} alt={row.name} className="object-cover" />}
-      <AvatarFallback className="bg-primary-soft text-primary-soft-foreground text-[10px] font-semibold">
-        {initialsOf(row.name)}
-      </AvatarFallback>
-    </Avatar>
+    <UserAvatar
+      picture={row.picture}
+      name={row.name}
+      className="h-7 w-7"
+      fallbackClassName="bg-primary-soft text-primary-soft-foreground text-[10px]"
+    />
   );
 }
 

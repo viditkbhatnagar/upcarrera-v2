@@ -1,4 +1,4 @@
-import { Search, Bell, ChevronDown, CalendarClock, PanelLeft, LogOut, Menu } from "lucide-react";
+import { Search, ChevronDown, CalendarClock, PanelLeft, LogOut, Menu } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -9,7 +9,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { getUser } from "@/lib/session";
 import { logout } from "@/lib/auth";
-import { useAvatarUrl } from "@/hooks/use-avatar-url";
+import { NotificationsMenu } from "@/components/notifications-menu";
+import { UserAvatar } from "@/components/ui/user-avatar";
 
 interface AppHeaderProps {
   collapsed: boolean;
@@ -17,17 +18,9 @@ interface AppHeaderProps {
   onMobileMenu: () => void;
 }
 
-function initials(name: string | null, username: string | null): string {
-  const base = (name ?? username ?? "U").trim();
-  const parts = base.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return base.slice(0, 2).toUpperCase();
-}
-
 export function AppHeader({ collapsed, onToggle, onMobileMenu }: AppHeaderProps) {
   const user = getUser();
   const displayName = user?.name ?? user?.username ?? "Account";
-  const avatarUrl = useAvatarUrl(user?.profile_picture);
 
   const handleLogout = () => {
     // Full reload on sign-out, not a client-side navigate. The root layout picks
@@ -81,29 +74,19 @@ export function AppHeader({ collapsed, onToggle, onMobileMenu }: AppHeaderProps)
           </span>
         </button>
 
-        <button className="relative grid h-10 w-10 place-items-center rounded-xl border border-border bg-surface text-foreground transition hover:bg-muted">
-          <Bell className="h-[18px] w-[18px]" />
-          <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-bold text-accent-foreground">
-            9
-          </span>
-        </button>
+        <NotificationsMenu />
 
         <div className="mx-1 hidden sm:block h-8 w-px bg-border" />
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button className="flex items-center gap-3 rounded-xl border border-transparent px-1.5 py-1 transition hover:bg-muted hover:border-border">
-              {avatarUrl ? (
-                <img
-                  src={avatarUrl}
-                  alt={displayName}
-                  className="h-9 w-9 shrink-0 rounded-full object-cover"
-                />
-              ) : (
-                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-sm font-semibold">
-                  {initials(user?.name ?? null, user?.username ?? null)}
-                </div>
-              )}
+              <UserAvatar
+                picture={user?.profile_picture}
+                name={displayName}
+                className="h-9 w-9"
+                fallbackClassName="bg-primary text-primary-foreground text-sm"
+              />
               <div className="hidden md:block text-left leading-tight">
                 <div className="text-sm font-semibold text-foreground">{displayName}</div>
                 <div className="text-[11px] text-muted-foreground">
