@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/lib/api";
+import { getUser } from "@/lib/session";
 import { useAccess } from "@/components/applications/use-access";
 import { CounsellorDashboard } from "@/components/dashboard/counsellor-dashboard";
 import {
@@ -186,6 +187,8 @@ function Dashboard() {
 }
 
 function AdminDashboard() {
+  const user = getUser();
+  const firstName = (user?.name?.trim() || user?.username?.trim() || "there").split(/\s+/)[0];
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["dashboard", "overview"],
     queryFn: () => apiGet<DashboardOverview>("/dashboard"),
@@ -284,7 +287,7 @@ function AdminDashboard() {
         <div>
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Overview</div>
           <h1 className="mt-1 text-2xl sm:text-3xl font-semibold tracking-tight text-foreground">
-            Welcome back, Priya 👋
+            Welcome back, {firstName} 👋
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Here's a snapshot of admissions, fees and student success today.

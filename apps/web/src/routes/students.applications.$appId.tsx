@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { UserAvatar } from "@/components/ui/user-avatar";
 import { useIsCounsellor } from "@/components/counsellor/use-is-counsellor";
 import { CounsellorApplicationDetail } from "@/components/counsellor/screens/application-detail";
 import { useState } from "react";
@@ -402,17 +403,13 @@ function ApplicationHeader({ app }: { app: ApplicationDetail }) {
   return (
     <header className="rounded-2xl border border-border bg-surface p-6 shadow-card">
       <div className="flex flex-wrap items-start gap-4">
-        {app.profile_picture ? (
-          <img
-            src={app.profile_picture}
-            alt={dash(name)}
-            className="h-16 w-16 shrink-0 rounded-2xl object-cover"
-          />
-        ) : (
-          <div className="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-primary/10 text-lg font-bold text-primary">
-            {initials(name, `A${app.application_id}`)}
-          </div>
-        )}
+        <UserAvatar
+          picture={app.profile_picture}
+          name={name}
+          fallback={`A${app.application_id}`}
+          className="h-16 w-16 rounded-2xl"
+          fallbackClassName="rounded-2xl text-lg font-bold"
+        />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight text-foreground">{dash(name)}</h1>
