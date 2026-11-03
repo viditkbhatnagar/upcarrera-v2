@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { UserAvatar } from "@/components/ui/user-avatar";
 import { useIsCounsellor } from "@/components/counsellor/use-is-counsellor";
 import { CounsellorEnrollments } from "@/components/counsellor/screens/enrollments";
 import { useEffect, useMemo, useState } from "react";
@@ -480,7 +481,7 @@ function StudentsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <Avatar name={s.name} src={s.profilePicture} />
+                        <UserAvatar picture={s.profilePicture} name={s.name} className="h-9 w-9" fallbackClassName="text-xs font-bold" />
                         <div className="min-w-0">
                           <div className="truncate text-sm font-semibold text-foreground">{s.name}</div>
                           <div className="truncate text-xs text-muted-foreground">{s.email}</div>
@@ -611,25 +612,6 @@ function StudentsPage() {
 }
 
 /* ---------------- Helpers ---------------- */
-
-function Avatar({ name, src }: { name: string; src: string | null }) {
-  const [broken, setBroken] = useState(false);
-  if (src && !broken) {
-    return (
-      <img
-        src={src}
-        alt={name}
-        onError={() => setBroken(true)}
-        className="h-9 w-9 shrink-0 rounded-full object-cover"
-      />
-    );
-  }
-  return (
-    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-      {initials(name)}
-    </div>
-  );
-}
 
 function KpiCard({
   icon: Icon,
