@@ -68,6 +68,8 @@ import {
   exportFilename,
 } from "@/components/applications/list-model";
 import { FilterInput, FilterSelect, IconBtn, BulkBtn, EmptyState } from "@/components/applications/list-bits";
+import { useIsCounsellor } from "@/components/counsellor/use-is-counsellor";
+import { CounsellorApplications } from "@/components/counsellor/screens/applications";
 import { downloadCsv, EXPORT_ROW_CAP, toCsv } from "@/components/applications/export-csv";
 
 const strish = fallback(
@@ -92,8 +94,41 @@ const searchSchema = z.object({
 export const Route = createFileRoute("/students/applications/")({
   validateSearch: zodValidator(searchSchema),
   head: () => ({ meta: [{ title: "Applications — upCarrera" }] }),
-  component: ApplicationsPage,
+  component: ApplicationsRoute,
 });
+
+/** Counsellors get Naji's "My Applications" layout; everyone else keeps the admin list. */
+function ApplicationsRoute() {
+  return useIsCounsellor() ? <CounsellorApplicationsRoute /> : <ApplicationsPage />;
+}
+
+function CounsellorApplicationsRoute() {
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const [draft, setDraft] = useState(search.search ?? "");
+  useEffect(() => {
+    setDraft(search.search ?? "");
+  }, [search.search]);
+  const debounced = useDebouncedValue(draft);
+  useEffect(() => {
+    if (debounced !== (search.search ?? "")) {
+      navigate({ search: (prev) => ({ ...prev, search: debounced || undefined, page: undefined }) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced]);
+  return (
+    <CounsellorApplications
+      search={search}
+      draft={draft}
+      onDraft={setDraft}
+      onFilter={(partial) =>
+        navigate({
+          search: (prev) => ({ ...prev, ...partial, ...("page" in partial ? {} : { page: undefined }) }),
+        })
+      }
+    />
+  );
+}
 
 function ApplicationsPage() {
   const search = Route.useSearch();
