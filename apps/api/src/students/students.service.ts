@@ -1262,9 +1262,18 @@ export class StudentsService {
 
     const filtered = await this.applicationListWhere(query, user);
     const stage = this.applicationStageFilter(query.stage);
+    // A counsellor's default list leaves out converted (enrolled) students: they
+    // live under My Enrollments. Only the ROWS/total are narrowed - `filtered`
+    // (what the pipeline counts use) is untouched, so the Converted card keeps its
+    // count, an explicit stage=converted still returns them, and admin / non-
+    // counsellor roles are unaffected.
+    const scope = await this.access.scopeFor(user);
+    const hideConverted = !stage && scope.roleKey === 'counsellor';
     const where: Prisma.applicationsWhereInput = stage
       ? { AND: [filtered, stage] }
-      : filtered;
+      : hideConverted
+        ? { AND: [filtered, { OR: [{ is_converted: null }, { is_converted: { not: 1 } }] }] }
+        : filtered;
 
     const [rows, total, stageCounts] = await Promise.all([
       this.prisma.applications.findMany({
@@ -2648,6 +2657,29 @@ export class StudentsService {
     );
 
     return this.prisma.$transaction(async (tx) => {
+      // A converted application already has a student (users) row holding a copy
+      // of name/email, which My Enrollments reads. Keep it in step so the two
+      // screens never show different identities. Skips values the LMS columns
+      // cannot hold (name <= 100, email <= 50) rather than failing the edit.
+      if (before.is_converted === 1 && before.custom_application_id) {
+        const userData: { name?: string; email?: string } = {};
+        if (dto.name !== undefined && dto.name.trim() && dto.name.length <= 100) {
+          userData.name = dto.name.trim();
+        }
+        if (dto.email !== undefined && dto.email.trim() && dto.email.length <= 50) {
+          userData.email = dto.email.trim();
+        }
+        if (Object.keys(userData).length > 0) {
+          const linked = await tx.students.findMany({
+            where: { application_id: before.custom_application_id, deleted_at: null },
+            select: { student_id: true },
+          });
+          const ids = linked.map((l) => l.student_id);
+          if (ids.length > 0) {
+            await tx.users.updateMany({ where: { id: { in: ids } }, data: userData });
+          }
+        }
+      }
       const updated = await tx.applications.update({
         where: { application_id: applicationId },
         data: {
