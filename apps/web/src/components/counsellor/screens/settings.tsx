@@ -65,9 +65,9 @@ export function CounsellorSettings() {
 
       <Tabs defaultValue="profile" className="w-full">
         <TabsList className="bg-muted/50 p-1">
-          <TabsTrigger value="profile" className="gap-1.5"><User className="h-4 w-4" /> Profile</TabsTrigger>
-          <TabsTrigger value="security" className="gap-1.5"><Shield className="h-4 w-4" /> Security</TabsTrigger>
-          <TabsTrigger value="system" className="gap-1.5"><Briefcase className="h-4 w-4" /> System Info</TabsTrigger>
+          <TabsTrigger value="profile" className="gap-1.5"><User className="h-4 w-4" /> <span className="hidden sm:inline">Profile</span></TabsTrigger>
+          <TabsTrigger value="security" className="gap-1.5"><Shield className="h-4 w-4" /> <span className="hidden sm:inline">Security</span></TabsTrigger>
+          <TabsTrigger value="system" className="gap-1.5"><Briefcase className="h-4 w-4" /> <span className="hidden sm:inline">System Info</span></TabsTrigger>
         </TabsList>
 
         <TabsContent value="profile" className="mt-6 space-y-6">
