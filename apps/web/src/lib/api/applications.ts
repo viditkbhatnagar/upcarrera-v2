@@ -223,6 +223,9 @@ export interface ApplicationListParams {
   team_id?: number | string;
   group_id?: number | string;
   stage?: Stage;
+  /** Comma-separated stages (OR). */
+  stages?: string;
+  source?: string;
   on_hold?: "true";
   followup_due?: "true";
   date_from?: string;

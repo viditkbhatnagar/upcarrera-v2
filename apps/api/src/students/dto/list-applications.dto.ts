@@ -102,6 +102,17 @@ export class ListApplicationsDto {
   @IsBooleanString()
   followup_due?: string;
 
+  /** Comma-separated stages (OR); lets one UI tab cover several stages. */
+  @IsOptional()
+  @IsString()
+  stages?: string;
+
+  /** Exact match on applications.source (a lead-source title). */
+  @IsOptional()
+  @IsString()
+  source?: string;
+
+  /** created_at range, ISO dates; `date_to` is inclusive of the whole day. */
   @IsOptional()
   @IsDateString()
   date_from?: string;
