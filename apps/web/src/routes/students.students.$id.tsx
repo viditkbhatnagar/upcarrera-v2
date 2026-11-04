@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { UserAvatar } from "@/components/ui/user-avatar";
 import { useIsCounsellor } from "@/components/counsellor/use-is-counsellor";
 import { CounsellorStudentDetail } from "@/components/counsellor/screens/student-detail";
 import { useQuery } from "@tanstack/react-query";
@@ -184,17 +185,13 @@ function StudentDetailContent({ student }: { student: ApiStudentDetail }) {
       {/* Header card */}
       <div className="rounded-2xl border border-border bg-surface p-6 shadow-card">
         <div className="flex flex-wrap items-start gap-4">
-          {student.profile_picture ? (
-            <img
-              src={student.profile_picture}
-              alt={displayName}
-              className="h-16 w-16 shrink-0 rounded-2xl object-cover"
-            />
-          ) : (
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-lg font-bold text-primary">
-              {initials(student.name, `S${student.student_id}`)}
-            </div>
-          )}
+          <UserAvatar
+            picture={student.profile_picture}
+            name={student.name}
+            fallback={`S${student.student_id}`}
+            className="h-16 w-16 rounded-2xl"
+            fallbackClassName="rounded-2xl text-lg font-bold"
+          />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl font-semibold tracking-tight text-foreground">

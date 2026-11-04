@@ -13,6 +13,8 @@ import { cn } from "@/lib/utils";
 import { PIPELINE_TAB_ROWS, useApplicationsByStage } from "./use-dashboard-data";
 
 const TABS: readonly { value: Stage; label: string }[] = [
+  { value: "lead_added", label: "New Leads" },
+  { value: "counsellor_review", label: "Under Review" },
   { value: "fee_pending", label: "Payment Pending" },
   { value: "form_pending", label: "Form Pending" },
   { value: "sa_verification", label: "Approval Waiting" },
@@ -25,7 +27,13 @@ interface RecentTablesProps {
 }
 
 export function RecentTables({ counts }: RecentTablesProps) {
-  const [active, setActive] = useState<Stage>(TABS[0].value);
+  // Until the user picks a tab, show the first stage that actually has rows -
+  // the old fixed default (Payment Pending) is empty for most counsellors, which
+  // made the whole snapshot look like it had no data.
+  const [picked, setPicked] = useState<Stage | null>(null);
+  const firstFilled = TABS.find((t) => (counts?.[t.value] ?? 0) > 0)?.value;
+  const active: Stage = picked ?? firstFilled ?? TABS[0].value;
+  const setActive = setPicked;
 
   return (
     <Card className="p-6 shadow-[var(--shadow-soft)] border-border/70">
