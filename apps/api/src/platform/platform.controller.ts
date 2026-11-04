@@ -66,12 +66,14 @@ export class PlatformController {
     @Query('limit') limit?: string,
     @Query('role_id') roleId?: string,
     @Query('exclude_role_id') excludeRoleId?: string,
+    @Query('search') search?: string,
   ) {
     return this.platform.findUsers(
       toNumber(page),
       toNumber(limit),
       toNumber(roleId),
       toNumber(excludeRoleId),
+      typeof search === 'string' ? search : undefined,
     );
   }
 

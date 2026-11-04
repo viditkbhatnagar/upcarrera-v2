@@ -82,8 +82,10 @@ export class PlatformService {
     limit?: number,
     roleId?: number,
     excludeRoleId?: number,
+    search?: string,
   ): Promise<Paginated<unknown>> {
     const { skip, take, page: p, limit: l } = this.normalisePaging(page, limit);
+    const term = search?.trim();
     const where = {
       deleted_at: null,
       // roleId (exact role) and excludeRoleId (everything but a role, e.g. staff
@@ -93,6 +95,17 @@ export class PlatformService {
         : excludeRoleId !== undefined
           ? { role_id: { not: excludeRoleId } }
           : {}),
+      // Server-side search across ALL pages (MySQL collation is case-insensitive).
+      ...(term
+        ? {
+            OR: [
+              { name: { contains: term } },
+              { email: { contains: term } },
+              { username: { contains: term } },
+              { employee_code: { contains: term } },
+            ],
+          }
+        : {}),
     };
 
     const [rows, total] = await Promise.all([

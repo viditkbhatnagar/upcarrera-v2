@@ -29,6 +29,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import {
@@ -170,6 +171,13 @@ function UsersPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const PAGE_SIZE = 10;
 
+  // Search is resolved server-side across ALL pages; debounce so one request
+  // fires per pause, and jump back to page 1 whenever the settled term changes.
+  const debouncedSearch = useDebouncedValue(search.trim());
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch]);
+
   // Roles lookup (id -> title) for resolving each user's designation. Cached
   // separately so it isn't refetched on every page change.
   const { data: rolesData } = useQuery({
@@ -203,9 +211,18 @@ function UsersPage() {
   // / status / date filters refine the fetched page client-side. Gated on the
   // roles list so students are excluded from the very first fetch.
   const { data, isLoading, isError, error, isFetching } = useQuery({
-    queryKey: ["users", "list", { page, limit: PAGE_SIZE, excludeRoleId: studentRoleId }],
+    queryKey: [
+      "users",
+      "list",
+      { page, limit: PAGE_SIZE, excludeRoleId: studentRoleId, search: debouncedSearch },
+    ],
     queryFn: () =>
-      apiGet<UsersListResponse>("/users", { page, limit: PAGE_SIZE, ...staffQuery }),
+      apiGet<UsersListResponse>("/users", {
+        page,
+        limit: PAGE_SIZE,
+        ...staffQuery,
+        ...(debouncedSearch ? { search: debouncedSearch } : {}),
+      }),
     enabled: rolesLoaded,
   });
 
@@ -231,19 +248,13 @@ function UsersPage() {
   const filtered = useMemo(() => {
     return allRows.filter((u) => {
       if (statusFilter !== "All" && u.status !== statusFilter) return false;
-      if (
-        search &&
-        !u.name.toLowerCase().includes(search.toLowerCase()) &&
-        !u.email.toLowerCase().includes(search.toLowerCase())
-      )
-        return false;
       if (empId && !u.empId.toLowerCase().includes(empId.toLowerCase())) return false;
       if (designation !== "All" && u.designation !== designation) return false;
       if (from && u.createdAt < from) return false;
       if (to && u.createdAt > to) return false;
       return true;
     });
-  }, [allRows, statusFilter, search, empId, designation, from, to]);
+  }, [allRows, statusFilter, empId, designation, from, to]);
 
   // Server drives pagination; pageRows is the (client-refined) fetched page.
   const totalPages = Math.max(1, Math.ceil(apiTotal / PAGE_SIZE));
