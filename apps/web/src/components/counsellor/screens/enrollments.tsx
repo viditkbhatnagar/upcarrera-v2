@@ -48,6 +48,10 @@ interface ApiStudentRow {
   university_title: string | null;
   specialisation_title: string | null;
   session_title: string | null;
+  /** Verified payments on the originating application (null = none recorded). */
+  fee_paid: number | null;
+  fee_expected: number | null;
+  fee_status: "paid" | "partial" | null;
 }
 
 interface StudentsResponse {
@@ -71,6 +75,8 @@ interface EnrollmentRow {
   /** ISO date. */
   enrolled: string;
   status: string;
+  feePaid: number | null;
+  feeStatus: "paid" | "partial" | null;
 }
 
 type KpiTone = "primary" | "success" | "warning" | "info" | "destructive";
@@ -123,7 +129,11 @@ const CSV_COLUMNS: CsvColumn<EnrollmentRow>[] = [
   { header: "Application Date", value: (r) => r.applied },
   { header: "Enrolled On", value: (r) => r.enrolled },
   { header: "Status", value: (r) => r.status },
+  { header: "Fee Paid", value: (r) => (r.feePaid == null ? "" : String(r.feePaid)) },
+  { header: "Fee Status", value: (r) => r.feeStatus ?? "" },
 ];
+
+const fmtMoney = (n: number) => `\u20B9${n.toLocaleString("en-IN")}`;
 
 function RowAvatar({ row }: { row: EnrollmentRow }) {
   return (
@@ -181,6 +191,8 @@ export function CounsellorEnrollments() {
       applied: (s.application_id && appDate.get(s.application_id)) || "",
       enrolled: isoDay(s.enrollment_date ?? s.created_at),
       status: s.admission_status_label?.trim() || "Unknown",
+      feePaid: s.fee_paid,
+      feeStatus: s.fee_status,
     }));
   }, [students.data, converted.data]);
 
@@ -228,6 +240,7 @@ export function CounsellorEnrollments() {
     intake: (s) => s.intake,
     applied: (s) => s.applied,
     enrolled: (s) => s.enrolled,
+    fee: (s) => s.feePaid ?? -1,
   });
 
   const total = base.length;
@@ -342,25 +355,26 @@ export function CounsellorEnrollments() {
                     <SortHead k="intake" s={sort} className="px-2">Intake</SortHead>
                     <SortHead k="applied" s={sort} className="px-2">Application Date</SortHead>
                     <SortHead k="enrolled" s={sort} className="px-2">Enrolled</SortHead>
+                    <SortHead k="fee" s={sort} className="px-2">Fee Paid</SortHead>
                     <TableHead className="text-right px-2">View</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {students.isError && (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-12 text-destructive">
+                      <TableCell colSpan={10} className="text-center py-12 text-destructive">
                         Couldn't load your enrollments. Please refresh.
                       </TableCell>
                     </TableRow>
                   )}
                   {loading && (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">Loading…</TableCell>
+                      <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">Loading…</TableCell>
                     </TableRow>
                   )}
                   {!loading && !students.isError && filtered.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-12 text-muted-foreground">
+                      <TableCell colSpan={10} className="text-center py-12 text-muted-foreground">
                         No students match your filters.
                       </TableCell>
                     </TableRow>
@@ -389,6 +403,28 @@ export function CounsellorEnrollments() {
                       <TableCell className="px-2 text-xs text-muted-foreground whitespace-nowrap">{s.intake}</TableCell>
                       <TableCell className="px-2 text-[11px] text-muted-foreground whitespace-nowrap">{fmtDate(s.applied)}</TableCell>
                       <TableCell className="px-2 text-[11px] text-muted-foreground whitespace-nowrap">{fmtDate(s.enrolled)}</TableCell>
+                      <TableCell className="px-2 whitespace-nowrap">
+                        {s.feePaid == null ? (
+                          <span className="text-sm text-muted-foreground">{EMPTY}</span>
+                        ) : (
+                          <div className="flex flex-col items-start gap-0.5">
+                            <span className="text-sm font-medium leading-tight">{fmtMoney(s.feePaid)}</span>
+                            {s.feeStatus && (
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  "py-0 text-[10px]",
+                                  s.feeStatus === "paid"
+                                    ? "border-success/40 bg-success/10 text-success"
+                                    : "border-warning/40 bg-warning/10 text-warning",
+                                )}
+                              >
+                                {s.feeStatus === "paid" ? "Paid" : "Partial"}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+                      </TableCell>
                       <TableCell className="text-right px-1">
                         <Button size="icon" variant="ghost" className={cn("h-7 w-7")} asChild>
                           <Link to="/students/students/$id" params={{ id: s.id }} aria-label={`View ${s.name}`}>

@@ -15,6 +15,7 @@ import { CreateStudentDto } from './dto/create-student.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
 import { ListStudentsDto } from './dto/list-students.dto';
 import {
+  APPLICATION_STAGES,
   ApplicationStage,
   ListApplicationsDto,
 } from './dto/list-applications.dto';
@@ -239,9 +240,67 @@ export class StudentsService {
       this.admissionStatusCounts(where),
     ]);
 
-    const items = await this.decorateStudents(rows);
+    const decorated = await this.decorateStudents(rows);
+    const items = await this.withFeePaid(decorated);
 
     return { items, total, page, limit, counts };
+  }
+
+  /**
+   * Adds the verified fee-paid roll-up to student rows. Source: application_payment
+   * (the Accounts-verified payments of the student's originating application,
+   * linked through students.application_id = applications.custom_application_id).
+   *   fee_paid     = SUM(amount) of verified, non-deleted payments (null = none)
+   *   fee_expected = SUM(amount_expected) over those rows (null if none recorded)
+   *   fee_status   = 'paid' when paid >= expected, 'partial' when below,
+   *                  null when there is no payment or no expected amount to compare.
+   * One bulk query per table (no N+1).
+   */
+  private async withFeePaid<T extends { application_id: string | null }>(rows: T[]) {
+    const customIds = [
+      ...new Set(rows.map((r) => r.application_id).filter((v): v is string => !!v)),
+    ];
+    const apps = customIds.length
+      ? await this.prisma.applications.findMany({
+          where: { custom_application_id: { in: customIds } },
+          select: { application_id: true, custom_application_id: true },
+        })
+      : [];
+    const payments = apps.length
+      ? await this.prisma.application_payment.findMany({
+          where: {
+            application_id: { in: apps.map((a) => a.application_id) },
+            status: 'verified',
+            deleted_at: null,
+          },
+          select: { application_id: true, amount: true, amount_expected: true },
+        })
+      : [];
+
+    const totals = new Map<number, { paid: number; expected: number; hasExpected: boolean }>();
+    for (const p of payments) {
+      const t = totals.get(p.application_id) ?? { paid: 0, expected: 0, hasExpected: false };
+      t.paid += Number(p.amount);
+      if (p.amount_expected != null) {
+        t.expected += Number(p.amount_expected);
+        t.hasExpected = true;
+      }
+      totals.set(p.application_id, t);
+    }
+    const idByCustom = new Map(apps.map((a) => [a.custom_application_id, a.application_id]));
+
+    return rows.map((r) => {
+      const appId = r.application_id ? idByCustom.get(r.application_id) : undefined;
+      const t = appId != null ? totals.get(appId) : undefined;
+      if (!t) return { ...r, fee_paid: null, fee_expected: null, fee_status: null };
+      const fee_status = t.hasExpected ? (t.paid >= t.expected ? 'paid' : 'partial') : null;
+      return {
+        ...r,
+        fee_paid: t.paid,
+        fee_expected: t.hasExpected ? t.expected : null,
+        fee_status,
+      };
+    });
   }
 
   /**
@@ -1132,7 +1191,18 @@ export class StudentsService {
    */
   private applicationStageFilter(
     stage: ApplicationStage | undefined,
+    stages?: string,
   ): Prisma.applicationsWhereInput | undefined {
+    // `stages` = comma-separated list (UI groups several stages under one tab).
+    const list = (stages ?? '')
+      .split(',')
+      .map((v) => v.trim())
+      .filter((v): v is ApplicationStage =>
+        (APPLICATION_STAGES as readonly string[]).includes(v),
+      );
+    if (list.length > 0) {
+      return { OR: list.map((s) => effectiveStageWhere(s as Stage)) };
+    }
     if (!stage) return undefined;
     // NULL-safe effective-stage predicate, shared with the counts and the engine.
     return effectiveStageWhere(stage as Stage);
@@ -1244,8 +1314,14 @@ export class StudentsService {
     if (query.followup_due === 'true') {
       and.push({ hold_at: { not: null }, hold_followup_date: { lte: new Date() } });
     }
+    if (query.source) and.push({ source: query.source });
     if (query.date_from) and.push({ created_at: { gte: new Date(query.date_from) } });
-    if (query.date_to) and.push({ created_at: { lte: new Date(query.date_to) } });
+    if (query.date_to) {
+      // Inclusive of the whole day when a bare date (YYYY-MM-DD) is given.
+      const to = new Date(query.date_to);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(query.date_to)) to.setUTCHours(23, 59, 59, 999);
+      and.push({ created_at: { lte: to } });
+    }
 
     // Record access (QA AP04): rows are ANDed with the caller's scope. Admin /
     // Super Admin -> {} (no restriction); unknown roles -> matches nothing.
