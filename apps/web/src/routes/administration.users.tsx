@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPatch, apiPost, ApiError } from "@/lib/api";
 import {
   Download,
   Plus,
@@ -47,6 +47,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { DESIGNATIONS } from "@/lib/counsellors-data";
 
 export const Route = createFileRoute("/administration/users")({
@@ -63,6 +73,7 @@ interface SystemUser {
   email: string;
   phone: string;
   designation: string;
+  roleId: string;
   status: AccountStatus;
   lastLogin: string; // ISO
   createdAt: string; // YYYY-MM-DD
@@ -125,6 +136,7 @@ function mapToRow(r: ApiUserRow, roleTitles: Map<string, string>): SystemUser {
     email: r.email && String(r.email).trim() !== "" ? String(r.email) : EMPTY,
     phone: r.phone != null ? String(r.phone) : EMPTY,
     designation,
+    roleId: r.role_id != null ? String(r.role_id) : "",
     status: toAccountStatus(r.status),
     // No "last login" column in the DB — updated_at is the closest signal.
     lastLogin: r.updated_at ?? r.created_at ?? "",
@@ -168,6 +180,8 @@ function UsersPage() {
   const [openAdd, setOpenAdd] = useState(false);
   const [openBulk, setOpenBulk] = useState(false);
   const [resetTarget, setResetTarget] = useState<SystemUser | null>(null);
+  const [editTarget, setEditTarget] = useState<{ user: SystemUser; readOnly: boolean } | null>(null);
+  const [statusTarget, setStatusTarget] = useState<SystemUser | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const PAGE_SIZE = 10;
 
@@ -576,8 +590,16 @@ function UsersPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
-                        <IconBtn icon={Eye} label="View" />
-                        <IconBtn icon={Pencil} label="Edit" />
+                        <IconBtn
+                          icon={Eye}
+                          label="View"
+                          onClick={() => setEditTarget({ user: u, readOnly: true })}
+                        />
+                        <IconBtn
+                          icon={Pencil}
+                          label="Edit"
+                          onClick={() => setEditTarget({ user: u, readOnly: false })}
+                        />
                         <IconBtn
                           icon={KeyRound}
                           label="Reset password"
@@ -587,6 +609,7 @@ function UsersPage() {
                           icon={Power}
                           label={u.status === "Active" ? "Deactivate" : "Activate"}
                           tone={u.status === "Active" ? "danger" : "success"}
+                          onClick={() => setStatusTarget(u)}
                         />
                       </div>
                     </td>
@@ -644,7 +667,200 @@ function UsersPage() {
         count={selected.size}
       />
       <ResetPasswordDialog user={resetTarget} onClose={() => setResetTarget(null)} />
+      <EditUserDialog
+        target={editTarget}
+        roles={rolesData ?? []}
+        onClose={() => setEditTarget(null)}
+      />
+      <ToggleStatusDialog user={statusTarget} onClose={() => setStatusTarget(null)} />
     </div>
+  );
+}
+
+/* ---------------- Edit / View User Dialog ---------------- */
+
+function EditUserDialog({
+  target,
+  roles,
+  onClose,
+}: {
+  target: { user: SystemUser; readOnly: boolean } | null;
+  roles: ApiRole[];
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const user = target?.user ?? null;
+  const readOnly = target?.readOnly ?? false;
+  const [name, setName] = useState("");
+  const [roleId, setRoleId] = useState("");
+  const [status, setStatus] = useState<"Active" | "Inactive">("Active");
+  const [saving, setSaving] = useState(false);
+
+  // Prefill from the row whenever the dialog opens for a user.
+  useEffect(() => {
+    if (!user) return;
+    setName(user.name === EMPTY ? "" : user.name);
+    setRoleId(user.roleId);
+    setStatus(user.status === "Active" ? "Active" : "Inactive");
+  }, [user]);
+
+  const selectableRoles = useMemo(
+    () => roles.filter((r) => r.title && String(r.title).trim() !== ""),
+    [roles],
+  );
+
+  const submit = async () => {
+    if (!user) return;
+    if (name.trim() === "") {
+      toast.error("Enter the user's name.");
+      return;
+    }
+    // Send only the fields that actually changed.
+    const body: { name?: string; role_id?: number; status?: number } = {};
+    if (name.trim() !== (user.name === EMPTY ? "" : user.name)) body.name = name.trim();
+    if (roleId !== "" && roleId !== user.roleId) body.role_id = Number(roleId);
+    if (status !== (user.status === "Active" ? "Active" : "Inactive")) {
+      body.status = status === "Active" ? 1 : 0;
+    }
+    if (Object.keys(body).length === 0) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    try {
+      await apiPatch(`/users/${user.empId}`, body);
+      await queryClient.invalidateQueries({ queryKey: ["users"] });
+      toast.success(`${name.trim()} updated.`);
+      onClose();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't update the user.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!user} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{readOnly ? "User details" : "Edit User"}</DialogTitle>
+        </DialogHeader>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label="Name" className="sm:col-span-2">
+            <Input value={name} onChange={(e) => setName(e.target.value)} disabled={readOnly} />
+          </Field>
+          <Field label="Email Address" className="sm:col-span-2">
+            <Input value={user?.email ?? ""} disabled />
+          </Field>
+          <Field label="Role">
+            <Select value={roleId} onValueChange={setRoleId} disabled={readOnly}>
+              <SelectTrigger className="h-9 text-sm">
+                <SelectValue placeholder="Select a role" />
+              </SelectTrigger>
+              <SelectContent>
+                {selectableRoles.map((r) => (
+                  <SelectItem key={String(r.id)} value={String(r.id)}>
+                    {r.title}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Account Status">
+            <Select
+              value={status}
+              onValueChange={(v) => setStatus(v as "Active" | "Inactive")}
+              disabled={readOnly}
+            >
+              <SelectTrigger className="h-9 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Active">Active</SelectItem>
+                <SelectItem value="Inactive">Inactive</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+        <DialogFooter>
+          <button
+            onClick={onClose}
+            className="inline-flex items-center rounded-lg border border-border bg-surface px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+          >
+            {readOnly ? "Close" : "Cancel"}
+          </button>
+          {!readOnly && (
+            <button
+              onClick={submit}
+              disabled={saving}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary-hover disabled:opacity-60"
+            >
+              {saving ? "Saving…" : "Save Changes"}
+            </button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ---------------- Activate / Deactivate confirm ---------------- */
+
+function ToggleStatusDialog({
+  user,
+  onClose,
+}: {
+  user: SystemUser | null;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const activating = user?.status !== "Active";
+
+  const confirm = async () => {
+    if (!user) return;
+    setSaving(true);
+    try {
+      await apiPatch(`/users/${user.empId}`, { status: activating ? 1 : 0 });
+      await queryClient.invalidateQueries({ queryKey: ["users"] });
+      toast.success(`${user.name} ${activating ? "activated" : "deactivated"}.`);
+      onClose();
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError
+          ? err.message
+          : `Couldn't ${activating ? "activate" : "deactivate"} the user.`,
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AlertDialog open={!!user} onOpenChange={(v) => !v && !saving && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{activating ? "Activate user?" : "Deactivate user?"}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {activating
+              ? `${user?.name} will be able to sign in again.`
+              : `${user?.name} will no longer be able to sign in until reactivated.`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={saving}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={saving}
+            onClick={(e) => {
+              e.preventDefault();
+              void confirm();
+            }}
+          >
+            {saving ? "Saving…" : activating ? "Activate" : "Deactivate"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
