@@ -4,11 +4,15 @@ import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 /**
  * Query params for GET /students — pagination + optional filters.
  *
- * `admission_status` filters the students table directly. The remaining filters
- * (`course_id`, `subject_id`, `teacher_id`) narrow to enrolled students via the
- * `enrol` table, and `referred_by` filters students.referred_by. Ports the legacy
- * App/Students::get_students_by_course_subject_teacher / university_enrolment
- * filters. All are coerced to numbers and optional.
+ * `admission_status` filters the students table directly. `course_id`,
+ * `university_id`, `session_id` (intake) and `consultant_id` (counsellor) filter
+ * the students table directly too — matching the columns the Students list shows,
+ * so "All Courses / Universities / Intakes / Counsellors" narrow exactly those
+ * rows (QA ST05). `team_id` / `group_id` resolve to the counsellors of that
+ * team/group and match students.consultant_id. `subject_id` / `teacher_id` still
+ * narrow to enrolled students via the `enrol` table (legacy LMS filter), and
+ * `referred_by` filters students.referred_by. All are coerced to numbers and
+ * optional.
  */
 export class ListStudentsDto {
   @IsOptional()
@@ -29,13 +33,47 @@ export class ListStudentsDto {
   @IsInt()
   admission_status?: number;
 
-  // Enrolment filters: resolve student user ids via the `enrol` table, then match
-  // students.student_id. teacher_id can also be sourced via teachers_subjects.course_id.
+  // Direct students-table filter: the student's admission course (students.course_id),
+  // matching the Course column the list shows.
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   course_id?: number;
 
+  // Direct students-table filter: the student's university. Resolved to the course's
+  // university (students.course_id -> course.university_id), falling back to the
+  // student user's university (users.university_id) — the same rule the list displays.
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  university_id?: number;
+
+  // Direct students-table filter: the intake (students.session_id -> sessions).
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  session_id?: number;
+
+  // Direct students-table filter: the counsellor (students.consultant_id).
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  consultant_id?: number;
+
+  // Counsellor-hierarchy filters: resolve to the counsellors of the team/group,
+  // then match students.consultant_id.
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  team_id?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  group_id?: number;
+
+  // Enrolment filters: resolve student user ids via the `enrol` table, then match
+  // students.student_id. teacher_id can also be sourced via teachers_subjects.course_id.
   @IsOptional()
   @Type(() => Number)
   @IsInt()

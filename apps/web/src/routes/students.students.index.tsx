@@ -48,6 +48,16 @@ import {
   STATUS_STYLES,
   type StudentStatus,
 } from "@/lib/students-data";
+import {
+  useUniversityOptions,
+  useCourseOptions,
+  useIntakeOptions,
+  useCounsellorOptions,
+  useTeamOptions,
+  useGroupOptions,
+} from "@/components/applications/catalogs";
+import { FilterSelect as CatalogSelect } from "@/components/applications/list-bits";
+import { useAccess, canFilterByOwner } from "@/components/applications/use-access";
 
 export const Route = createFileRoute("/students/students/")({
   head: () => ({ meta: [{ title: "Students — upCarrera" }] }),
@@ -187,8 +197,32 @@ function StudentsPage() {
   const [search, setSearch] = useState("");
   const [stuId, setStuId] = useState("");
   const [phone, setPhone] = useState("");
+  // Catalog filters (Sharon's request ST05): mirror the Applications list so the
+  // Students tab narrows by the same university / course / intake / counsellor /
+  // team / group. Each holds the entity id as a string ("" = All); they are sent
+  // as ids and answered server-side, so they reach every student, not just the page.
+  const [universityId, setUniversityId] = useState("");
+  const [courseId, setCourseId] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [consultantId, setConsultantId] = useState("");
+  const [teamId, setTeamId] = useState("");
+  const [groupId, setGroupId] = useState("");
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
+
+  // Owner filters (counsellor / team / group) only help roles that can own more
+  // than one counsellor's rows; a single-owner counsellor never needs them. (This
+  // admin list isn't shown to counsellors — they get CounsellorEnrollments — but
+  // the gate keeps the two lists consistent.)
+  const access = useAccess();
+  const showOwnerFilters = canFilterByOwner(access.data);
+
+  const universities = useUniversityOptions();
+  const courses = useCourseOptions(universityId || null);
+  const intakes = useIntakeOptions();
+  const counsellors = useCounsellorOptions();
+  const teams = useTeamOptions();
+  const groups = useGroupOptions();
 
   // The text filters are answered by the server so they reach every student, not
   // just the twelve rows on screen — searching page 1 for a student on page 2 used
@@ -207,13 +241,30 @@ function StudentsPage() {
   const serverFilters = {
     admission_status: statusFilter === "All" ? undefined : STATUS_TO_CODE[statusFilter],
     ...(debouncedSearch ? { search: debouncedSearch } : {}),
+    ...(universityId ? { university_id: universityId } : {}),
+    ...(courseId ? { course_id: courseId } : {}),
+    ...(sessionId ? { session_id: sessionId } : {}),
+    ...(consultantId ? { consultant_id: consultantId } : {}),
+    ...(teamId ? { team_id: teamId } : {}),
+    ...(groupId ? { group_id: groupId } : {}),
   };
 
   const { data, isLoading, isError, error, isFetching } = useQuery({
     queryKey: [
       "students",
       "list",
-      { page, limit: PAGE_SIZE, statusFilter, search: debouncedSearch },
+      {
+        page,
+        limit: PAGE_SIZE,
+        statusFilter,
+        search: debouncedSearch,
+        universityId,
+        courseId,
+        sessionId,
+        consultantId,
+        teamId,
+        groupId,
+      },
     ],
     queryFn: () =>
       apiGet<StudentsListResponse>("/students", {
@@ -296,6 +347,12 @@ function StudentsPage() {
     setSearch("");
     setStuId("");
     setPhone("");
+    setUniversityId("");
+    setCourseId("");
+    setSessionId("");
+    setConsultantId("");
+    setTeamId("");
+    setGroupId("");
     setPage(1);
   };
 
@@ -372,6 +429,7 @@ function StudentsPage() {
         </div>
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
           <FilterInput icon={Search} placeholder="Name or email" value={search} onChange={setSearch} />
+          {/* Sharon asked to keep the dedicated Student ID filter on this tab. */}
           <FilterInput icon={Hash} placeholder="Student ID" value={stuId} onChange={setStuId} />
           <FilterInput icon={Phone} placeholder="Mobile number" value={phone} onChange={setPhone} />
           <FilterSelect
@@ -383,11 +441,76 @@ function StudentsPage() {
             options={["All", ...STATUS_ORDER]}
             placeholder="Status"
           />
+          <CatalogSelect
+            value={universityId}
+            onChange={(v) => {
+              setUniversityId(v);
+              setCourseId("");
+              setPage(1);
+            }}
+            options={universities.options}
+            placeholder="Universities"
+            loading={universities.isLoading}
+          />
+          <CatalogSelect
+            value={courseId}
+            onChange={(v) => {
+              setCourseId(v);
+              setPage(1);
+            }}
+            options={courses.options}
+            placeholder="Courses"
+            loading={courses.isLoading}
+          />
+          <CatalogSelect
+            value={sessionId}
+            onChange={(v) => {
+              setSessionId(v);
+              setPage(1);
+            }}
+            options={intakes.options}
+            placeholder="Intakes"
+            loading={intakes.isLoading}
+          />
+          {showOwnerFilters && (
+            <>
+              <CatalogSelect
+                value={consultantId}
+                onChange={(v) => {
+                  setConsultantId(v);
+                  setPage(1);
+                }}
+                options={counsellors.all}
+                placeholder="Counsellors"
+                loading={counsellors.isLoading}
+              />
+              <CatalogSelect
+                value={teamId}
+                onChange={(v) => {
+                  setTeamId(v);
+                  setPage(1);
+                }}
+                options={teams.options}
+                placeholder="Teams"
+                loading={teams.isLoading}
+              />
+              <CatalogSelect
+                value={groupId}
+                onChange={(v) => {
+                  setGroupId(v);
+                  setPage(1);
+                }}
+                options={groups.options}
+                placeholder="Groups"
+                loading={groups.isLoading}
+              />
+            </>
+          )}
         </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <CalendarDays className="h-3.5 w-3.5" />
-            Status, name, ID and phone all filter server-side across every student
+            Every filter applies server-side across all students, not just this page
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button

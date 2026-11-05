@@ -201,8 +201,18 @@ export class StudentsService {
         ? enrolmentIds.filter((id) => searchIds.includes(id))
         : (enrolmentIds ?? searchIds);
 
+    // Counsellor-hierarchy filters: consultant_id (one counsellor), team_id and
+    // group_id (resolve to the counsellors of that team/group) all narrow
+    // students.consultant_id. When more than one is given they INTERSECT, so a
+    // counsellor outside the chosen team/group never leaks in. `undefined` = no such
+    // filter; an empty array = a filter that matched no counsellor -> empty page.
+    const consultantIdFilter = await this.resolveStudentConsultantIds(query);
+
     // A filter was requested but matched nothing -> empty page.
-    if (studentIdFilter !== undefined && studentIdFilter.length === 0) {
+    if (
+      (studentIdFilter !== undefined && studentIdFilter.length === 0) ||
+      (consultantIdFilter !== undefined && consultantIdFilter.length === 0)
+    ) {
       return {
         items: [],
         total: 0,
@@ -212,7 +222,18 @@ export class StudentsService {
       };
     }
 
-    const where = {
+    // The direct students-table filters that map 1:1 to a list column. University
+    // has no column of its own, so it resolves to a course/student-user predicate
+    // (studentUniversityFilter) ANDed in with the rest.
+    const and: Prisma.studentsWhereInput[] = [];
+    if (studentIdFilter !== undefined) and.push({ student_id: { in: studentIdFilter } });
+    if (consultantIdFilter !== undefined) and.push({ consultant_id: { in: consultantIdFilter } });
+    if (query.course_id !== undefined) and.push({ course_id: query.course_id });
+    if (query.session_id !== undefined) and.push({ session_id: query.session_id });
+    const universityWhere = await this.studentUniversityFilter(query.university_id);
+    if (universityWhere) and.push(universityWhere);
+
+    const where: Prisma.studentsWhereInput = {
       deleted_at: null,
       // A counsellor only sees their OWN admissions (students.consultant_id = me).
       ...(actor?.roleId === CONSULTANT_ROLE_ID ? { consultant_id: actor.userId } : {}),
@@ -222,9 +243,7 @@ export class StudentsService {
       ...(query.referred_by !== undefined
         ? { referred_by: query.referred_by }
         : {}),
-      ...(studentIdFilter !== undefined
-        ? { student_id: { in: studentIdFilter } }
-        : {}),
+      ...(and.length ? { AND: and } : {}),
     };
 
     const [rows, total, counts] = await Promise.all([
@@ -475,12 +494,7 @@ export class StudentsService {
     return { total: 0, by_status: byStatus };
   }
 
-  private async admissionStatusCounts(where: {
-    deleted_at: null;
-    admission_status?: number;
-    referred_by?: number;
-    student_id?: { in: number[] };
-  }) {
+  private async admissionStatusCounts(where: Prisma.studentsWhereInput) {
     const groups = await this.prisma.students.groupBy({
       by: ['admission_status'],
       where,
@@ -563,19 +577,17 @@ export class StudentsService {
   private async resolveEnrolmentStudentIds(
     query: ListStudentsDto,
   ): Promise<number[] | undefined> {
-    const { course_id, subject_id, teacher_id } = query;
-    if (
-      course_id === undefined &&
-      subject_id === undefined &&
-      teacher_id === undefined
-    ) {
+    // course_id is a DIRECT students.course_id filter (see listStudents) and is no
+    // longer resolved through the `enrol` table — the Students list filters by the
+    // admission course it shows, not by LMS enrolment. subject_id / teacher_id keep
+    // the legacy enrol-based resolution.
+    const { subject_id, teacher_id } = query;
+    if (subject_id === undefined && teacher_id === undefined) {
       return undefined;
     }
 
     // teacher_id may also be expressed as "courses this teacher is assigned to"
-    // via teachers_subjects. Union those course ids with an explicit course_id
-    // filter (when both are present, the explicit course_id still applies via the
-    // enrol where-clause below, so the union only broadens the teacher match).
+    // via teachers_subjects, folded into the enrol match below.
     let teacherCourseIds: number[] | undefined;
     if (teacher_id !== undefined) {
       const links = await this.prisma.teachers_subjects.findMany({
@@ -596,7 +608,6 @@ export class StudentsService {
         deleted_at: null,
         ...(subject_id !== undefined ? { subject_id } : {}),
         ...(teacher_id !== undefined ? { teacher_id } : {}),
-        ...(course_id !== undefined ? { course_id } : {}),
       },
       select: { user_id: true },
     });
@@ -623,6 +634,73 @@ export class StudentsService {
     }
 
     return [...ids];
+  }
+
+  /**
+   * Resolve the counsellor filters (consultant_id / team_id / group_id) to the set
+   * of counsellor user ids (= students.consultant_id) the list should match.
+   *
+   * Returns `undefined` when none was supplied (so consultant_id is left
+   * unconstrained), or a possibly-empty id list otherwise. When more than one is
+   * supplied the sets INTERSECT — picking a team AND a group only keeps counsellors
+   * in both — mirroring how the other student_id filters compose.
+   */
+  private async resolveStudentConsultantIds(
+    query: ListStudentsDto,
+  ): Promise<number[] | undefined> {
+    const sets: number[][] = [];
+    if (query.consultant_id !== undefined) sets.push([query.consultant_id]);
+    if (query.team_id !== undefined) sets.push(await this.teamMemberIds(query.team_id));
+    if (query.group_id !== undefined) sets.push(await this.groupMemberIds(query.group_id));
+    if (sets.length === 0) return undefined;
+
+    // Intersect every requested set.
+    return sets.reduce((acc, s) => {
+      const keep = new Set(s);
+      return acc.filter((id) => keep.has(id));
+    });
+  }
+
+  /**
+   * Where-clause for the university the Students list DISPLAYS (see
+   * decorateStudents): the student's course university
+   * (students.course_id -> course.university_id), falling back to the student
+   * user's own university (users.university_id) when the course has none or no
+   * course is chosen. Mirrors applicationUniversityFilter so both lists agree.
+   */
+  private async studentUniversityFilter(
+    universityId: number | undefined,
+  ): Promise<Prisma.studentsWhereInput | undefined> {
+    if (universityId == null) return undefined;
+
+    const [coursesOfUniversity, coursesWithAUniversity, usersOfUniversity] =
+      await Promise.all([
+        this.prisma.course.findMany({
+          where: { university_id: universityId },
+          select: { id: true },
+        }),
+        this.prisma.course.findMany({
+          where: { university_id: { not: null } },
+          select: { id: true },
+        }),
+        this.prisma.users.findMany({
+          where: { university_id: universityId, deleted_at: null },
+          select: { id: true },
+        }),
+      ]);
+
+    return {
+      OR: [
+        { course_id: { in: coursesOfUniversity.map((c) => c.id) } },
+        {
+          student_id: { in: usersOfUniversity.map((u) => u.id) },
+          OR: [
+            { course_id: null },
+            { course_id: { notIn: coursesWithAUniversity.map((c) => c.id) } },
+          ],
+        },
+      ],
+    };
   }
 
   // GET /students/:id (bare row). Internal 404-guard for the ~15 callers that
