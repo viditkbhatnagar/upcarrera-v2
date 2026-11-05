@@ -5,10 +5,10 @@ import { toast } from "sonner";
 import { ChevronLeft, ChevronRight, Eye, FileText, Loader2, Pencil, Plus, Search, UserPlus } from "lucide-react";
 import { ApiError, apiGet } from "@/lib/api";
 import { applicationKeys, listApplications, type Stage } from "@/lib/api/applications";
-import { STAGES, STAGE_META } from "@/components/applications/stage-model";
 import {
   useCourseOptions,
   useIntakeOptions,
+  useLeadSourceOptions,
   useUniversityOptions,
 } from "@/components/applications/catalogs";
 import { AddLeadDialog } from "@/components/applications/lead-dialog";
@@ -31,6 +31,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { StageBadge } from "../shared/stage-badge";
+import { DateRangePicker } from "../shared/date-range-picker";
+import { type DateRange } from "@/lib/date-range";
+import { TAB_ALL, TABS, tabCount, tabStages } from "./applications-tabs";
 
 /** The URL-backed filters the shared /students/applications route owns. */
 export interface CounsellorApplicationsSearch {
@@ -38,7 +41,14 @@ export interface CounsellorApplicationsSearch {
   university_id?: string;
   course_id?: string;
   session_id?: string;
+  source?: string;
+  /** ISO dates (YYYY-MM-DD) on applications.created_at. */
+  date_from?: string;
+  date_to?: string;
+  /** Legacy single backend stage (kept so old links still filter). */
   stage?: Stage;
+  /** Sharon's tab label ("All" when absent). */
+  tab?: string;
   page?: number;
 }
 
@@ -65,11 +75,13 @@ export function CounsellorApplications({ search, draft, onDraft, onFilter }: Pro
   const [exporting, setExporting] = useState(false);
 
   const page = search.page ?? 1;
-  const stage = search.stage;
+  const tab = search.tab && TABS.some((t) => t.label === search.tab) ? search.tab : TAB_ALL;
+  const stages = search.stage && tab === TAB_ALL ? [search.stage] : tabStages(tab);
 
   const universities = useUniversityOptions();
   const courses = useCourseOptions(search.university_id ?? null);
   const intakes = useIntakeOptions();
+  const sources = useLeadSourceOptions();
 
   const listParams = useMemo(
     () => ({
@@ -79,9 +91,14 @@ export function CounsellorApplications({ search, draft, onDraft, onFilter }: Pro
       ...(search.university_id ? { university_id: search.university_id } : {}),
       ...(search.course_id ? { course_id: search.course_id } : {}),
       ...(search.session_id ? { session_id: search.session_id } : {}),
-      ...(stage ? { stage } : {}),
+      ...(search.source ? { source: search.source } : {}),
+      ...(search.date_from ? { date_from: search.date_from } : {}),
+      ...(search.date_to ? { date_to: search.date_to } : {}),
+      // Single-stage tabs use `stage`; grouped tabs send the comma-separated list.
+      ...(stages?.length === 1 ? { stage: stages[0] } : {}),
+      ...(stages && stages.length > 1 ? { stages: stages.join(",") } : {}),
     }),
-    [search, page, stage],
+    [search, page, stages],
   );
 
   const { data, isLoading, isError, error } = useQuery({
@@ -96,6 +113,12 @@ export function CounsellorApplications({ search, draft, onDraft, onFilter }: Pro
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
   const allCount = counts ? Object.values(counts).reduce((a, b) => a + b, 0) : undefined;
+  const dates: DateRange = {
+    from: search.date_from ? new Date(`${search.date_from}T00:00:00`) : undefined,
+    to: search.date_to ? new Date(`${search.date_to}T00:00:00`) : undefined,
+  };
+  const isoLocal = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const from = total === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
   const to = Math.min(currentPage * PAGE_SIZE, total);
 
@@ -146,17 +169,17 @@ export function CounsellorApplications({ search, draft, onDraft, onFilter }: Pro
 
       {/* Stage tabs */}
       <div className="flex flex-wrap items-center gap-2">
-        {STAGES.map((s) => (
+        {TABS.map((t) => (
           <PillButton
-            key={s}
-            active={stage === s}
-            count={counts?.[s]}
-            onClick={() => onFilter({ stage: stage === s ? undefined : s })}
+            key={t.label}
+            active={tab === t.label}
+            count={tabCount(t.label, counts)}
+            onClick={() => onFilter({ tab: tab === t.label ? undefined : t.label, stage: undefined })}
           >
-            {STAGE_META[s].label}
+            {t.label}
           </PillButton>
         ))}
-        <PillButton active={!stage} count={allCount} onClick={() => onFilter({ stage: undefined })}>
+        <PillButton active={tab === TAB_ALL && !search.stage} count={allCount} onClick={() => onFilter({ tab: undefined, stage: undefined })}>
           All
         </PillButton>
       </div>
@@ -196,6 +219,24 @@ export function CounsellorApplications({ search, draft, onDraft, onFilter }: Pro
             value={search.session_id}
             options={intakes.options}
             onChange={(v) => onFilter({ session_id: v })}
+          />
+          <FilterDropdown
+            className="md:w-40"
+            placeholder="Source"
+            allLabel="All Sources"
+            value={search.source}
+            options={sources.options}
+            onChange={(v) => onFilter({ source: v })}
+          />
+          <DateRangePicker
+            label="Date"
+            value={dates}
+            onChange={(r) =>
+              onFilter({
+                date_from: r.from ? isoLocal(r.from) : undefined,
+                date_to: r.from ? isoLocal(r.to ?? r.from) : undefined,
+              })
+            }
           />
         </div>
       </Card>
