@@ -285,11 +285,10 @@ export class ApplicationFormService {
   ) {
     const sec = this.assertSection(section);
     const { application, form } = await this.load(applicationId);
-    // LOW 8: match allowed_actions — a staff field correction is the 'correct'
-    // action, allowed ONLY at counsellor_review (owning counsellor; Admin overrides
-    // ownership). This 403s a correction attempted at any other stage, instead of
-    // the previous visibility-only check that let an owner edit at e.g. fee_pending
-    // or sa_verification.
+    // Match allowed_actions — a staff field correction is the 'correct' action.
+    // The owning counsellor may correct during counsellor_review; Admins /
+    // Super Admins may correct at any non-terminal, non-held stage (so staff can
+    // fix a record after it leaves review). assertAction 403s anything else.
     const scope = await this.access.assertAction(user, application, 'correct');
     this.assertRowVersion(form, body.row_version);
     return this.applySection(application, form, sec, body.data, {
