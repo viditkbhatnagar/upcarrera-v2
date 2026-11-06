@@ -1,5 +1,10 @@
 // Summary tab: the applicant snapshot, programme, owner, stage telemetry and the
-// hold block. Pure presentation of the GET /applications/:id payload.
+// hold block. Mostly presentation of the GET /applications/:id payload, plus an
+// Edit affordance on the Applicant and Programme cards (Sharon: "all cards
+// editable"). Editing is gated by `canCorrect` — the same server-derived flag the
+// Application Form tab uses — so an admin can edit at any non-terminal stage while
+// a terminal (enrolled/rejected) application stays read-only for everyone.
+import { useState } from "react";
 import {
   Mail,
   Phone,
@@ -11,17 +16,51 @@ import {
   Pause,
   Clock,
   MapPin,
+  Pencil,
 } from "lucide-react";
 import type { ApplicationDetail } from "@/lib/api/applications";
+import { Button } from "@/components/ui/button";
 import { STAGE_META } from "./stage-model";
 import { SectionCard, InfoRow, dash, formatDate, formatDateTime } from "./detail-ui";
+import { EditApplicationDialog } from "./edit-application-dialog";
 
-export function SummaryTab({ app }: { app: ApplicationDetail }) {
+interface SummaryTabProps {
+  app: ApplicationDetail;
+  /** Server-derived: admin at any non-terminal stage, or the owning counsellor at review. */
+  canCorrect: boolean;
+  /** Refetch the detail after an edit (the dialog invalidates ["applications"]). */
+  onSaved: () => void;
+}
+
+export function SummaryTab({ app, canCorrect, onSaved }: SummaryTabProps) {
   const meta = STAGE_META[app.effective_stage];
+  const [editOpen, setEditOpen] = useState(false);
+  const displayId = app.custom_application_id ?? app.enrollment_id ?? `APP-${app.application_id}`;
+
+  // Both the Applicant and Programme cards open the SAME full Edit-Application
+  // dialog (contact + the university/course/specialisation/intake/counsellor
+  // cascade), so a display value can never be written back over real data.
+  const editAction = canCorrect ? (
+    <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+      <Pencil className="h-4 w-4" /> Edit
+    </Button>
+  ) : undefined;
+
+  const closeEdit = () => {
+    setEditOpen(false);
+    onSaved();
+  };
+
   return (
-    <div className="grid gap-5 lg:grid-cols-3">
-      <div className="space-y-5 lg:col-span-2">
-        <SectionCard title="Applicant" icon={<UserIcon className="h-4 w-4" />}>
+    <>
+      <EditApplicationDialog
+        applicationId={editOpen ? app.application_id : null}
+        displayId={displayId}
+        onClose={closeEdit}
+      />
+      <div className="grid gap-5 lg:grid-cols-3">
+        <div className="space-y-5 lg:col-span-2">
+        <SectionCard title="Applicant" icon={<UserIcon className="h-4 w-4" />} action={editAction}>
           <dl className="grid grid-cols-1 gap-x-8 gap-y-1 sm:grid-cols-2">
             <InfoRow label="Full name">{dash(app.applicant_name ?? app.name)}</InfoRow>
             <InfoRow label="Date of birth">{formatDate(app.dob)}</InfoRow>
@@ -63,7 +102,7 @@ export function SummaryTab({ app }: { app: ApplicationDetail }) {
           )}
         </SectionCard>
 
-        <SectionCard title="Programme" icon={<BookOpen className="h-4 w-4" />}>
+        <SectionCard title="Programme" icon={<BookOpen className="h-4 w-4" />} action={editAction}>
           <dl className="grid grid-cols-1 gap-x-8 gap-y-1 sm:grid-cols-2">
             <InfoRow label="University">
               <span className="inline-flex items-center gap-1.5">
@@ -121,5 +160,6 @@ export function SummaryTab({ app }: { app: ApplicationDetail }) {
         )}
       </div>
     </div>
+    </>
   );
 }

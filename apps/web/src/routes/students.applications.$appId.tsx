@@ -296,7 +296,11 @@ function ApplicationProfilePage() {
 
             <TabsContent value="summary" className="mt-5 space-y-5">
               <MagicLinkCard appId={app.application_id} stage={app.effective_stage} />
-              <SummaryTab app={app} />
+              <SummaryTab
+                app={app}
+                canCorrect={app.allowed_actions.includes("correct")}
+                onSaved={invalidateAll}
+              />
             </TabsContent>
             <TabsContent value="form" className="mt-5">
               <ApplicationFormTab
