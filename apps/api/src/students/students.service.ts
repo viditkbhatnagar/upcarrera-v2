@@ -2757,6 +2757,27 @@ export class StudentsService {
    * stage actions. Returns the caller's scope so the handler can audit with the
    * fresh role. `adminOnly` restricts the route to Admin / Super Admin outright.
    */
+  /**
+   * C5 — a converted (enrolled) or rejected application is TERMINAL. Editing its
+   * source fields (contact/bio, academic programme, qualifications) would desync
+   * the student record already created at conversion: Naji found an admin editing a
+   * converted application could overwrite its course ("Course #131") and wipe its
+   * intake. These three edits are therefore blocked for EVERYONE — admins included,
+   * which is why assertEditableStage's admin bypass is NOT reached for them. The
+   * adminOnly actions (course-fee, soft-delete) keep their own rules and are not
+   * gated here. The Edit dialog hides on terminal too, so this is defence in depth.
+   */
+  private assertNotTerminal(application: applications): void {
+    const eff = effectiveStage(application);
+    if (eff === 'converted' || eff === 'rejected') {
+      throw new ForbiddenException(
+        `This application is ${
+          eff === 'converted' ? 'enrolled' : 'rejected'
+        } and can no longer be edited.`,
+      );
+    }
+  }
+
   private async assertEditableStage(
     application: applications,
     user: AccessUser,
@@ -2786,6 +2807,7 @@ export class StudentsService {
     user: AccessUser,
   ) {
     const before = await this.getApplication(applicationId);
+    this.assertNotTerminal(before); // C5: no editing a converted/rejected app, admins included
     const scope = await this.assertEditableStage(before, user);
     const actorUserId = Number(user.userId ?? user.id);
 
@@ -2911,6 +2933,7 @@ export class StudentsService {
     user: AccessUser,
   ) {
     const existing = await this.getApplication(applicationId);
+    this.assertNotTerminal(existing); // C5: no editing a converted/rejected app, admins included
     const scope = await this.assertEditableStage(existing, user);
     const actorUserId = Number(user.userId ?? user.id);
 
@@ -3015,6 +3038,7 @@ export class StudentsService {
     user: AccessUser,
   ) {
     const existing = await this.getApplication(applicationId);
+    this.assertNotTerminal(existing); // C5: no editing a converted/rejected app, admins included
     await this.assertEditableStage(existing, user);
     const actorUserId = Number(user.userId ?? user.id);
     const now = new Date();
