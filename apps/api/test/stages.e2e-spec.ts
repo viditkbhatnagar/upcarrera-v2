@@ -145,6 +145,26 @@ describe('stages.allowedActions (unit)', () => {
     expect(actions).toContain('verify');
     expect(actions).toContain('mismatch');
   });
+
+  it('an admin may correct at any non-terminal stage, not only counsellor_review', () => {
+    for (const stage of ['form_pending', 'fee_pending', 'fee_verification', 'sa_verification'] as const) {
+      const row = { stage, is_converted: null, is_archived: false, status: null, hold_at: null };
+      expect(allowedActions(row, ctx({ roleKey: 'admin', isAdmin: true }))).toContain('correct');
+    }
+  });
+
+  it('a non-admin, non-owner never gets correct outside counsellor_review', () => {
+    const row = { stage: 'fee_pending', is_converted: null, is_archived: false, status: null, hold_at: null };
+    expect(allowedActions(row, ctx({ roleKey: 'accounts' }))).not.toContain('correct');
+    expect(allowedActions(row, ctx({ roleKey: 'team_leader', isTeamViewer: true }))).not.toContain('correct');
+  });
+
+  it('an admin gets no correct on a terminal or held application', () => {
+    const converted = { stage: null, is_converted: 1, is_archived: false, status: null, hold_at: null };
+    expect(allowedActions(converted, ctx({ isAdmin: true }))).not.toContain('correct');
+    const held = { stage: 'fee_pending', is_converted: null, is_archived: false, status: null, hold_at: new Date() };
+    expect(allowedActions(held, ctx({ isAdmin: true }))).not.toContain('correct');
+  });
 });
 
 describe('stages mappers (unit)', () => {

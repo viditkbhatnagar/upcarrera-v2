@@ -236,10 +236,13 @@ export function allowedActions(row: StageRow & { hold_at: Date | null }, ctx: Ac
     if (canActForOwner(t.owner, ctx)) actions.push(t.action);
   }
 
-  // Corrections to applicant fields during counsellor review (CRITIQUE #5 /
-  // stage-ownership): the OWNING counsellor or an Admin only. A Team Leader /
-  // Manager who can merely VIEW a team member's row must not edit it.
-  if (stage === 'counsellor_review' && canActForOwner('counsellor', ctx)) {
+  // Corrections to applicant fields. During counsellor review the OWNING
+  // counsellor (or an Admin) may correct. Admins / Super Admins may ALSO correct
+  // at any later non-terminal stage, so staff can fix a record after it leaves
+  // review — terminal (converted/rejected) and on-hold rows already returned
+  // above, so reaching here means a live, non-held stage. A Team Leader / Manager
+  // who can merely VIEW a team member's row still cannot edit it.
+  if (ctx.isAdmin || (stage === 'counsellor_review' && canActForOwner('counsellor', ctx))) {
     actions.push('correct');
   }
 

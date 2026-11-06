@@ -1,9 +1,12 @@
 // Application Form tab (WS6): the structured sections the applicant submitted,
 // read from GET /applications/:id/form. When the server allows `correct` (the
-// owning counsellor during counsellor review) the Personal and Contact sections
-// become inline-editable and save through PATCH /applications/:id/form/:section —
-// only changed, non-empty fields are sent, guarded by the form's row_version.
-// A lead with no form yet (no link sent / not submitted) shows a graceful state.
+// owning counsellor during counsellor review, or an Admin at any non-terminal
+// stage) the Personal and Contact sections become inline-editable and save
+// through PATCH /applications/:id/form/:section — only changed, non-empty fields
+// are sent, guarded by the form's row_version. The Programme card gets an Edit
+// button (same gate) that opens the full Edit-Application dialog (university ->
+// course -> intake -> counsellor cascade). A lead with no form yet (no link sent
+// / not submitted) shows a graceful state.
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -35,6 +38,7 @@ import {
   type ContactSection,
 } from "@/lib/api/application-form";
 import { type ApplicationDetail } from "@/lib/api/applications";
+import { EditApplicationDialog } from "./edit-application-dialog";
 import { SectionCard, InfoRow, dash, EmptyPanel, formatDate } from "./detail-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -139,26 +143,62 @@ export function ApplicationFormTab({ app, canCorrect, onSaved }: ApplicationForm
     );
   }
 
-  return <FormBody appId={appId} form={form} canCorrect={canCorrect} onSaved={onSaved} />;
+  const displayId = app.custom_application_id ?? app.enrollment_id ?? `APP-${appId}`;
+
+  return (
+    <FormBody
+      appId={appId}
+      displayId={displayId}
+      form={form}
+      canCorrect={canCorrect}
+      onSaved={onSaved}
+    />
+  );
 }
 
 function FormBody({
   appId,
+  displayId,
   form,
   canCorrect,
   onSaved,
 }: {
   appId: number;
+  displayId: string;
   form: ApplicationFormView;
   canCorrect: boolean;
   onSaved: () => void;
 }) {
   const { program, counsellor, sections, eligibility } = form;
+  const qc = useQueryClient();
+  // The Programme fields (university/course/specialisation/intake/counsellor) need
+  // the catalog cascade + eligibility recheck, which the Edit-Application dialog
+  // already does — so the card's Edit opens that dialog rather than re-implementing
+  // it inline. It saves through PATCH /applications/:id(/academic) (crm:applications.edit).
+  const [programmeEditOpen, setProgrammeEditOpen] = useState(false);
+
+  const refreshAfterProgrammeEdit = () => {
+    setProgrammeEditOpen(false);
+    // The dialog invalidates ["applications"] (list/detail); the form view is keyed
+    // ["application","form",id], so refresh it explicitly, then the shared onSaved.
+    void qc.invalidateQueries({ queryKey: applicationFormKeys.form(appId) });
+    onSaved();
+  };
 
   return (
     <div className="space-y-5">
       {/* Program + eligibility context */}
-      <SectionCard title="Programme" icon={<BadgeCheck className="h-4 w-4" />}>
+      <SectionCard
+        title="Programme"
+        icon={<BadgeCheck className="h-4 w-4" />}
+        action={
+          canCorrect ? (
+            <Button variant="outline" size="sm" onClick={() => setProgrammeEditOpen(true)}>
+              <Pencil className="h-4 w-4" /> Edit
+            </Button>
+          ) : undefined
+        }
+      >
         <dl className="grid grid-cols-1 gap-x-8 gap-y-1 sm:grid-cols-2">
           <InfoRow label="University">{dash(program.university)}</InfoRow>
           <InfoRow label="Course">{dash(program.course)}</InfoRow>
@@ -172,6 +212,12 @@ function FormBody({
           </div>
         )}
       </SectionCard>
+
+      <EditApplicationDialog
+        applicationId={programmeEditOpen ? appId : null}
+        displayId={displayId}
+        onClose={refreshAfterProgrammeEdit}
+      />
 
       <EditableSection
         appId={appId}
