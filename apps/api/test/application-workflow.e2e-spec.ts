@@ -262,6 +262,10 @@ describe('Application workflow (e2e)', () => {
       where: { student_id: approve.body.data.student_user_id },
     });
     expect(studentRow?.student_no).toBe(approve.body.data.student_no);
+    // C6: a conversion with no application enrolment date stamps the conversion date,
+    // so the new student is never left with a NULL enrolment_date (which hid recent
+    // conversions from the "enrolled this month" count).
+    expect(studentRow?.enrollment_date).not.toBeNull();
 
     // The timeline captured the moves.
     const timeline = await request(http)

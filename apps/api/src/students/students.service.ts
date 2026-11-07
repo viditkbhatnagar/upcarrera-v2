@@ -1854,7 +1854,11 @@ export class StudentsService {
         consultant_id: consultantId,
         specialisation_id: application.specialisation_id ?? null,
         course_id: application.course_id ?? null,
-        enrollment_date: application.enrollment_date ?? null,
+        // C6: stamp the conversion date when the lead carries no enrolment date, so a
+        // newly converted student is never created with a NULL enrolment_date — that
+        // dropped recent conversions out of the "enrolled this month" count. A real
+        // application enrolment date is preserved as-is.
+        enrollment_date: application.enrollment_date ?? now,
         referred_by: application.referred_by ?? application.created_by ?? null,
         adm_pipeline: admPipeline,
         pipeline_user: pipelineUser,
