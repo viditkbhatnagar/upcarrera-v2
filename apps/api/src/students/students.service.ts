@@ -3,12 +3,15 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   NotImplementedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import type { Prisma, applications } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { EmailService } from '../integrations/email.service';
+import { EmailTemplatesService } from '../integrations/email-templates.service';
 import { candidateDocFileWhereOr } from '../common/candidate-doc';
 import { StudentProfileService } from './student-profile.service';
 import { CreateStudentDto } from './dto/create-student.dto';
@@ -165,13 +168,47 @@ const BCRYPT_ROUNDS = 10;
  */
 @Injectable()
 export class StudentsService {
+  private readonly logger = new Logger(StudentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly profile: StudentProfileService,
     private readonly audit: AuditService,
     private readonly stageEngine: StageEngineService,
     private readonly access: RecordAccessService,
+    private readonly email: EmailService,
+    private readonly templates: EmailTemplatesService,
   ) {}
+
+  /**
+   * Best-effort "your email address was updated" notice, sent when a counsellor or
+   * admin changes the email on an application/student (Sharon's request). Delivered
+   * to the NEW address (a confirmation) and, when there was a different previous
+   * address, to the OLD one too (a security heads-up). Fire-and-forget: a mail
+   * failure must never fail or roll back the edit, which has already committed.
+   */
+  private async notifyEmailChanged(
+    application: applications,
+    newEmail: string,
+    oldEmail: string,
+  ): Promise<void> {
+    const name = application.name?.trim() || 'there';
+    const recipients = oldEmail && oldEmail.toLowerCase() !== newEmail.toLowerCase()
+      ? [newEmail, oldEmail]
+      : [newEmail];
+    for (const to of recipients) {
+      try {
+        const rendered = this.templates.render('email-updated', { name, new_email: newEmail });
+        await this.email.sendEmail({ to, name, subject: rendered.subject, html: rendered.html });
+      } catch (err) {
+        this.logger.warn(
+          `email-updated notice to ${to} failed for application ${application.application_id}: ${
+            (err as Error).message
+          }`,
+        );
+      }
+    }
+  }
 
   // GET /students — paginate + optional filters.
   //   ?admission_status        — students.admission_status
@@ -2825,7 +2862,14 @@ export class StudentsService {
     user: AccessUser,
   ) {
     const before = await this.getApplication(applicationId);
-    this.assertNotTerminal(before); // C5: no editing a converted/rejected app, admins included
+    // C5 locks a terminal application's PROGRAMME/academic fields — the edit that
+    // desyncs the enrolled record (the corruption Naji saw). Those live in
+    // updateApplicationAcademic / updateApplicationQualifications, which keep their
+    // assertNotTerminal guard. This method only touches contact/bio fields
+    // (name/email/phone/address), which carry no such risk and whose changes the
+    // converted-sync below propagates to the student record — so an admin may correct
+    // an enrolled student's contact details (Sharon: change a student's email on
+    // request). Non-admins remain bound by the stage gate in assertEditableStage.
     const scope = await this.assertEditableStage(before, user);
     const actorUserId = Number(user.userId ?? user.id);
 
@@ -2850,7 +2894,7 @@ export class StudentsService {
       ['dob', 'enrollment_date'],
     );
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // A converted application already has a student (users) row holding a copy
       // of name/email, which My Enrollments reads. Keep it in step so the two
       // screens never show different identities. Skips values the LMS columns
@@ -2903,6 +2947,19 @@ export class StudentsService {
       );
       return updated;
     });
+
+    // Confirm an actual email change to the student (best-effort; the edit above is
+    // already committed, so a mail failure must never surface here). Sharon's ask:
+    // "when we add a new mail id then a mail should go stating your mail id has updated."
+    if (dto.email !== undefined) {
+      const newEmail = dto.email.trim();
+      const oldEmail = before.email?.trim() ?? '';
+      if (newEmail && newEmail.toLowerCase() !== oldEmail.toLowerCase()) {
+        await this.notifyEmailChanged(before, newEmail, oldEmail);
+      }
+    }
+
+    return result;
   }
 
   /**

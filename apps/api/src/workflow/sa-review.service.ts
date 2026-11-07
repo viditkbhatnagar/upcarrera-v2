@@ -189,7 +189,16 @@ export class SaReviewService {
       return conversion;
     });
 
+    // The approved ("you're enrolled") template needs the full program + counsellor
+    // variables (first_name, course, university, specialisation, intake,
+    // counsellor_*) — exactly like the rejected mail. Passing only { student_no }
+    // left those placeholders unfilled, so render() threw and the enrolment email
+    // was NEVER delivered (the throw is caught + logged). Supply the same baseVars
+    // the reject path does, plus approved_at, so the student actually gets the mail.
+    const baseVars = await this.programRef.emailVars(application);
     await this.sendEmail('application-approved', application, {
+      ...baseVars,
+      approved_at: istDateTime(new Date()),
       student_no: result.student_no,
     });
 
