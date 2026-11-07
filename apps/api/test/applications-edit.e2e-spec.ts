@@ -232,4 +232,56 @@ describe('Applications edit (e2e)', () => {
     expect(res.status).toBe(400);
     expect((await row()).email).toBe(`row@${DOMAIN}`);
   });
+
+  // C5 — editing a TERMINAL application (converted/enrolled or rejected) would
+  // desync the student record created at conversion. It is blocked for EVERYONE,
+  // and `token` here is the ADMIN token, so this proves the admin bypass is closed.
+  describe('terminal applications are read-only, admins included (C5)', () => {
+    const mkTerminal = async (flags: { is_converted?: number; is_archived?: boolean }) =>
+      (
+        await prisma.applications.create({
+          data: {
+            name: `${TAG} Terminal`,
+            email: `terminal@${DOMAIN}`,
+            phone: '7012345699',
+            university_id: uniA,
+            course_id: courseA,
+            specialisation_id: specA,
+            admission_status: true,
+            created_at: new Date(),
+            ...flags,
+          },
+        })
+      ).application_id;
+
+    it.each([
+      ['converted/enrolled', { is_converted: 1 }],
+      ['rejected', { is_archived: true }],
+    ])('refuses PATCH /:id/academic on a %s application with 403', async (_label, flags) => {
+      const id = await mkTerminal(flags);
+      const res = await request(http)
+        .patch(`/api/applications/${id}/academic`)
+        .set(authHeader(token))
+        .send({ course_id: courseB, university_id: uniB, specialisation_id: null });
+      expect(res.status).toBe(403);
+      // the programme is untouched — the corruption Naji saw cannot happen
+      const r = await prisma.applications.findUniqueOrThrow({ where: { application_id: id } });
+      expect(r).toMatchObject({ university_id: uniA, course_id: courseA });
+    });
+
+    it.each([
+      ['converted/enrolled', { is_converted: 1 }],
+      ['rejected', { is_archived: true }],
+    ])('refuses PATCH /:id (contact) on a %s application with 403', async (_label, flags) => {
+      const id = await mkTerminal(flags);
+      const res = await request(http)
+        .patch(`/api/applications/${id}`)
+        .set(authHeader(token))
+        .send({ name: `${TAG} Changed` });
+      expect(res.status).toBe(403);
+      expect((await prisma.applications.findUniqueOrThrow({ where: { application_id: id } })).name).toBe(
+        `${TAG} Terminal`,
+      );
+    });
+  });
 });

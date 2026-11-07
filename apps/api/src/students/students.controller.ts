@@ -112,16 +112,18 @@ export class StudentsController {
   // response keeps every original `students` column and `id`, so the additive
   // fields don't break existing consumers.
   //
-  // ACCEPTED FOLLOW-UP (not fixed in this document-integrity pass): GET /students/:id,
-  // GET /students/:id/timeline and GET /students/:id/qualifications are permission-
-  // gated but carry NO per-record access scope — unlike /students/:id/documents, which
-  // was scoped because it exposes stored file paths. These expose metadata (labels,
-  // names, dates) but NO file paths, so they are the same record-access class yet
-  // outside this fix's document-path scope. Worth a later dedicated pass to scope them
-  // through RecordAccessService like the document routes.
+  // RECORD SCOPE (C1/E1): every /:id route below runs assertStudentAccess(id, user)
+  // before delegating, so a counsellor can no longer read or mutate another owner's
+  // student by guessing a PK. It mirrors the /:id/documents scoping (link to the
+  // owning application, else the student-owner rule). This is the dedicated pass the
+  // old "ACCEPTED FOLLOW-UP" note called for.
   @Get(':id')
   @ResponseMessage('Student fetched')
-  get(@Param('id', ParseIntPipe) id: number) {
+  async get(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.getStudentDetail(id);
   }
 
@@ -133,87 +135,119 @@ export class StudentsController {
 
   @Patch(':id')
   @ResponseMessage('Student updated')
-  update(
+  async update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateStudentDto,
+    @CurrentUser() user: AccessUser,
     @CurrentUser('id') userId: number,
   ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.updateStudent(id, dto, userId);
   }
 
   @Delete(':id')
   @ResponseMessage('Student deleted')
-  remove(@Param('id', ParseIntPipe) id: number) {
+  async remove(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.deleteStudent(id);
   }
 
   @Patch(':id/dropout')
   @ResponseMessage('Student marked as dropout')
-  dropout(@Param('id', ParseIntPipe) id: number) {
+  async dropout(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.dropoutStudent(id);
   }
 
   @Patch(':id/credentials')
   @ResponseMessage('Credentials updated')
-  credentials(
+  async credentials(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateCredentialsDto,
+    @CurrentUser() user: AccessUser,
   ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.updateCredentials(id, dto);
   }
 
   @Get(':id/enrolled-courses')
   @ResponseMessage('Enrolled courses fetched')
-  enrolledCourses(@Param('id', ParseIntPipe) id: number) {
+  async enrolledCourses(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.getEnrolledCourses(id);
   }
 
   @Post(':id/enrolments')
   @ResponseMessage('Enrolment created')
-  createEnrolment(
+  async createEnrolment(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: CreateEnrolmentDto,
+    @CurrentUser() user: AccessUser,
     @CurrentUser('id') userId: number,
   ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.createEnrolment(id, dto, userId);
   }
 
   @Post(':id/finance')
   @ResponseMessage('Finance details added')
-  createFinance(
+  async createFinance(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpsertFinanceDto,
+    @CurrentUser() user: AccessUser,
   ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.createFinance(id, dto);
   }
 
   @Patch(':id/finance')
   @ResponseMessage('Finance details updated')
-  updateFinance(
+  async updateFinance(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpsertFinanceDto,
+    @CurrentUser() user: AccessUser,
   ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.updateFinance(id, dto);
   }
 
   @Get(':id/academic-grades')
   @ResponseMessage('Academic grades fetched')
-  getAcademicGrades(@Param('id', ParseIntPipe) id: number) {
+  async getAcademicGrades(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.getAcademicGrades(id);
   }
 
   @Patch(':id/academic-grades')
   @ResponseMessage('Academic grades updated')
-  updateAcademicGrades(
+  async updateAcademicGrades(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: AcademicGradesDto,
+    @CurrentUser() user: AccessUser,
   ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.updateAcademicGrades(id, dto);
   }
 
   @Get(':id/courses')
   @ResponseMessage('Student courses fetched')
-  courses(@Param('id', ParseIntPipe) id: number) {
+  async courses(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.getStudentCourses(id);
   }
 
@@ -237,31 +271,43 @@ export class StudentsController {
   // (application, conversion, payments, invoices, documents, enrolments).
   @Get(':id/timeline')
   @ResponseMessage('Student timeline fetched')
-  timeline(@Param('id', ParseIntPipe) id: number) {
+  async timeline(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.getStudentTimeline(id);
   }
 
   @Get(':id/qualifications')
   @ResponseMessage('Student qualifications fetched')
-  qualifications(@Param('id', ParseIntPipe) id: number) {
+  async qualifications(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AccessUser,
+  ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.getStudentQualifications(id);
   }
 
   @Patch(':id/qualifications')
   @ResponseMessage('Student qualifications updated')
-  updateQualifications(
+  async updateQualifications(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateQualificationsDto,
+    @CurrentUser() user: AccessUser,
   ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.updateStudentQualifications(id, dto);
   }
 
   @Delete(':id/qualifications/:qual')
   @ResponseMessage('Student qualification cleared')
-  clearQualification(
+  async clearQualification(
     @Param('id', ParseIntPipe) id: number,
     @Param('qual') qual: string,
+    @CurrentUser() user: AccessUser,
   ) {
+    await this.students.assertStudentAccess(id, user);
     return this.students.clearStudentQualification(id, qual);
   }
 }

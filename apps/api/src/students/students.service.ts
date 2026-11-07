@@ -754,6 +754,27 @@ export class StudentsService {
   }
 
   /**
+   * C1/E1 fix — per-record access scope for every route that acts on a student BY
+   * ITS PK. The controller runs this before delegating, so a counsellor can no
+   * longer read or mutate another counsellor's student by guessing an id (before
+   * this, GET /students/:id and its sub-resources were permission-gated but carried
+   * NO record scope — the "ACCEPTED FOLLOW-UP" this pass closes).
+   *
+   * It mirrors listStudents EXACTLY so the list and the detail can never drift: a
+   * counsellor (role 6) sees only their OWN admissions (students.consultant_id = me);
+   * every other staff role sees all, exactly as the list returns them. 404 when the
+   * student does not exist, 403 when it exists but is out of the caller's scope.
+   */
+  async assertStudentAccess(id: number, user: AccessUser): Promise<void> {
+    const student = await this.getStudent(id); // 404 if missing/soft-deleted
+    const userId = user.userId ?? user.id ?? null;
+    const roleId = user.roleId ?? user.role_id ?? null;
+    if (roleId === CONSULTANT_ROLE_ID && student.consultant_id !== userId) {
+      throw new ForbiddenException('Access denied');
+    }
+  }
+
+  /**
    * GET /students/:id — the student row decorated with everything the detail
    * screen renders, resolved via MANUAL bulk joins (the schema has no Prisma
    * relations). A fixed set of bulk queries, never a per-row query (no N+1):
@@ -1453,18 +1474,15 @@ export class StudentsService {
 
     const filtered = await this.applicationListWhere(query, user);
     const stage = this.applicationStageFilter(query.stage);
-    // A counsellor's default list leaves out converted (enrolled) students: they
-    // live under My Enrollments. Only the ROWS/total are narrowed - `filtered`
-    // (what the pipeline counts use) is untouched, so the Converted card keeps its
-    // count, an explicit stage=converted still returns them, and admin / non-
-    // counsellor roles are unaffected.
-    const scope = await this.access.scopeFor(user);
-    const hideConverted = !stage && scope.roleKey === 'counsellor';
+    // C2 (Naji): the "All" tab must list EVERY application, converted included, so
+    // its rows reconcile with the "All" count card (a counsellor whose admissions
+    // are all enrolled used to see "All (129)" over an empty table). Converted
+    // applications are therefore shown here for every role, exactly as the design's
+    // "All 12 lists 12 rows" expects; the counsellor's enrolled students still have
+    // their own My Enrollments screen, and an explicit stage filter still narrows.
     const where: Prisma.applicationsWhereInput = stage
       ? { AND: [filtered, stage] }
-      : hideConverted
-        ? { AND: [filtered, { OR: [{ is_converted: null }, { is_converted: { not: 1 } }] }] }
-        : filtered;
+      : filtered;
 
     const [rows, total, stageCounts] = await Promise.all([
       this.prisma.applications.findMany({
@@ -2794,6 +2812,27 @@ export class StudentsService {
    * stage actions. Returns the caller's scope so the handler can audit with the
    * fresh role. `adminOnly` restricts the route to Admin / Super Admin outright.
    */
+  /**
+   * C5 — a converted (enrolled) or rejected application is TERMINAL. Editing its
+   * source fields (contact/bio, academic programme, qualifications) would desync
+   * the student record already created at conversion: Naji found an admin editing a
+   * converted application could overwrite its course ("Course #131") and wipe its
+   * intake. These three edits are therefore blocked for EVERYONE — admins included,
+   * which is why assertEditableStage's admin bypass is NOT reached for them. The
+   * adminOnly actions (course-fee, soft-delete) keep their own rules and are not
+   * gated here. The Edit dialog hides on terminal too, so this is defence in depth.
+   */
+  private assertNotTerminal(application: applications): void {
+    const eff = effectiveStage(application);
+    if (eff === 'converted' || eff === 'rejected') {
+      throw new ForbiddenException(
+        `This application is ${
+          eff === 'converted' ? 'enrolled' : 'rejected'
+        } and can no longer be edited.`,
+      );
+    }
+  }
+
   private async assertEditableStage(
     application: applications,
     user: AccessUser,
@@ -2823,6 +2862,7 @@ export class StudentsService {
     user: AccessUser,
   ) {
     const before = await this.getApplication(applicationId);
+    this.assertNotTerminal(before); // C5: no editing a converted/rejected app, admins included
     const scope = await this.assertEditableStage(before, user);
     const actorUserId = Number(user.userId ?? user.id);
 
@@ -2961,6 +3001,7 @@ export class StudentsService {
     user: AccessUser,
   ) {
     const existing = await this.getApplication(applicationId);
+    this.assertNotTerminal(existing); // C5: no editing a converted/rejected app, admins included
     const scope = await this.assertEditableStage(existing, user);
     const actorUserId = Number(user.userId ?? user.id);
 
@@ -3065,6 +3106,7 @@ export class StudentsService {
     user: AccessUser,
   ) {
     const existing = await this.getApplication(applicationId);
+    this.assertNotTerminal(existing); // C5: no editing a converted/rejected app, admins included
     await this.assertEditableStage(existing, user);
     const actorUserId = Number(user.userId ?? user.id);
     const now = new Date();
