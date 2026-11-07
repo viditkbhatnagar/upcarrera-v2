@@ -233,10 +233,14 @@ describe('Applications edit (e2e)', () => {
     expect((await row()).email).toBe(`row@${DOMAIN}`);
   });
 
-  // C5 — editing a TERMINAL application (converted/enrolled or rejected) would
-  // desync the student record created at conversion. It is blocked for EVERYONE,
-  // and `token` here is the ADMIN token, so this proves the admin bypass is closed.
-  describe('terminal applications are read-only, admins included (C5)', () => {
+  // C5 — a TERMINAL application's PROGRAMME/academic fields are read-only for
+  // EVERYONE (admins included): editing them would desync the student record created
+  // at conversion (the corruption Naji saw). `token` here is the ADMIN token, so the
+  // academic tests prove the admin bypass is closed. Contact/bio fields
+  // (name/email/phone) are NOT programme data — they carry no desync risk and the
+  // converted-sync keeps the student record in step — so an admin may still correct an
+  // enrolled student's contact details (Sharon: change a student's email on request).
+  describe('terminal applications: programme locked, contact editable (C5)', () => {
     const mkTerminal = async (flags: { is_converted?: number; is_archived?: boolean }) =>
       (
         await prisma.applications.create({
@@ -272,16 +276,19 @@ describe('Applications edit (e2e)', () => {
     it.each([
       ['converted/enrolled', { is_converted: 1 }],
       ['rejected', { is_archived: true }],
-    ])('refuses PATCH /:id (contact) on a %s application with 403', async (_label, flags) => {
+    ])('ALLOWS PATCH /:id (contact) on a %s application — contact is not programme data', async (_label, flags) => {
       const id = await mkTerminal(flags);
       const res = await request(http)
         .patch(`/api/applications/${id}`)
         .set(authHeader(token))
         .send({ name: `${TAG} Changed` });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
       expect((await prisma.applications.findUniqueOrThrow({ where: { application_id: id } })).name).toBe(
-        `${TAG} Terminal`,
+        `${TAG} Changed`,
       );
+      // the programme is still untouched — only contact/bio changed
+      const r = await prisma.applications.findUniqueOrThrow({ where: { application_id: id } });
+      expect(r).toMatchObject({ university_id: uniA, course_id: courseA });
     });
   });
 });

@@ -20,6 +20,8 @@ describe('Application email-change notice (e2e)', () => {
 
   const COUN = 93501; // counsellor (role 6)
   const CONSULTANT_ROLE = 6;
+  const ADMIN = 93502; // super admin (role 1) — can edit a terminal app's contact
+  const SUPER_ADMIN_ROLE = 1;
   const TAG = 'E2eEmailChg';
   const DOMAIN = 'e2e-emchg.local';
 
@@ -27,7 +29,7 @@ describe('Application email-change notice (e2e)', () => {
     await prisma.applications.deleteMany({
       where: { OR: [{ name: { startsWith: TAG } }, { email: { endsWith: `@${DOMAIN}` } }] },
     });
-    await prisma.users.deleteMany({ where: { id: COUN } });
+    await prisma.users.deleteMany({ where: { id: { in: [COUN, ADMIN] } } });
   };
 
   beforeAll(async () => {
@@ -37,6 +39,7 @@ describe('Application email-change notice (e2e)', () => {
     email = app.get(EmailService);
     await cleanup();
     await prisma.users.create({ data: { id: COUN, name: `${TAG} Counsellor`, role_id: CONSULTANT_ROLE } });
+    await prisma.users.create({ data: { id: ADMIN, name: `${TAG} Admin`, role_id: SUPER_ADMIN_ROLE } });
   });
 
   afterAll(async () => {
@@ -84,6 +87,28 @@ describe('Application email-change notice (e2e)', () => {
     const id = await mkLead(`keep@${DOMAIN}`);
     await service.updateApplication(id, { name: `${TAG} Renamed` } as never, actor);
     expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it("notifies when an ADMIN changes an ENROLLED (converted) student's email (C5 allows contact edits)", async () => {
+    const adminActor = { id: ADMIN, role_id: SUPER_ADMIN_ROLE };
+    const id = (
+      await prisma.applications.create({
+        data: {
+          name: `${TAG} Enrolled`,
+          email: `enrolled-old@${DOMAIN}`,
+          phone: '7012340001',
+          is_converted: 1, // terminal: programme is locked, but contact stays editable
+          created_by: ADMIN,
+          created_at: new Date(),
+        },
+      })
+    ).application_id;
+    await service.updateApplication(id, { email: `enrolled-new@${DOMAIN}` } as never, adminActor);
+    const tos = sendSpy.mock.calls.map((c) => (c[0] as { to: string }).to);
+    expect(tos).toEqual(expect.arrayContaining([`enrolled-new@${DOMAIN}`, `enrolled-old@${DOMAIN}`]));
+    expect((await prisma.applications.findUnique({ where: { application_id: id } }))?.email).toBe(
+      `enrolled-new@${DOMAIN}`,
+    );
   });
 
   it('still commits the edit even if the notice send fails', async () => {

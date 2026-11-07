@@ -2862,7 +2862,14 @@ export class StudentsService {
     user: AccessUser,
   ) {
     const before = await this.getApplication(applicationId);
-    this.assertNotTerminal(before); // C5: no editing a converted/rejected app, admins included
+    // C5 locks a terminal application's PROGRAMME/academic fields — the edit that
+    // desyncs the enrolled record (the corruption Naji saw). Those live in
+    // updateApplicationAcademic / updateApplicationQualifications, which keep their
+    // assertNotTerminal guard. This method only touches contact/bio fields
+    // (name/email/phone/address), which carry no such risk and whose changes the
+    // converted-sync below propagates to the student record — so an admin may correct
+    // an enrolled student's contact details (Sharon: change a student's email on
+    // request). Non-admins remain bound by the stage gate in assertEditableStage.
     const scope = await this.assertEditableStage(before, user);
     const actorUserId = Number(user.userId ?? user.id);
 
