@@ -12,9 +12,11 @@ import {
  * context is needed; the service only reads files.
  */
 
-/** Every variable the nine templates use between them. */
+/** Every variable the templates use between them. */
 const ALL_VARS: Record<string, string> = {
   first_name: 'Asha',
+  name: 'Asha Menon',
+  new_email: 'new.asha@example.com',
   student_name: 'Asha Menon',
   student_phone: '+91 90000 11111',
   email: 'asha@example.com',
@@ -68,6 +70,7 @@ const EXPECTED_TEMPLATES: EmailTemplateKey[] = [
   'application-magic-link',
   'application-rejected',
   'application-submitted',
+  'email-updated',
   'fee-verified',
   'password-reset-otp',
   'payment-confirmed',

@@ -19,7 +19,8 @@ export type EmailTemplateKey =
   | 'application-rejected'
   | 'fee-verified'
   | 'payment-confirmed'
-  | 'payment-rejected';
+  | 'payment-rejected'
+  | 'email-updated';
 
 export interface RenderedEmail {
   subject: string;

@@ -6,6 +6,7 @@ import { CandidateStatusesController } from './candidate-statuses.controller';
 import { StudentsService } from './students.service';
 import { StudentProfileService } from './student-profile.service';
 import { WorkflowCoreModule } from '../workflow/workflow-core.module';
+import { IntegrationsModule } from '../integrations/integrations.module';
 
 /**
  * Students + Applications module.
@@ -14,7 +15,7 @@ import { WorkflowCoreModule } from '../workflow/workflow-core.module';
  * the application routes and the conversion saga now use.
  */
 @Module({
-  imports: [WorkflowCoreModule],
+  imports: [WorkflowCoreModule, IntegrationsModule],
   controllers: [
     StudentsController,
     ApplicationsController,
