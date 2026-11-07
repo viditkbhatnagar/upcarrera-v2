@@ -1416,18 +1416,15 @@ export class StudentsService {
 
     const filtered = await this.applicationListWhere(query, user);
     const stage = this.applicationStageFilter(query.stage);
-    // A counsellor's default list leaves out converted (enrolled) students: they
-    // live under My Enrollments. Only the ROWS/total are narrowed - `filtered`
-    // (what the pipeline counts use) is untouched, so the Converted card keeps its
-    // count, an explicit stage=converted still returns them, and admin / non-
-    // counsellor roles are unaffected.
-    const scope = await this.access.scopeFor(user);
-    const hideConverted = !stage && scope.roleKey === 'counsellor';
+    // C2 (Naji): the "All" tab must list EVERY application, converted included, so
+    // its rows reconcile with the "All" count card (a counsellor whose admissions
+    // are all enrolled used to see "All (129)" over an empty table). Converted
+    // applications are therefore shown here for every role, exactly as the design's
+    // "All 12 lists 12 rows" expects; the counsellor's enrolled students still have
+    // their own My Enrollments screen, and an explicit stage filter still narrows.
     const where: Prisma.applicationsWhereInput = stage
       ? { AND: [filtered, stage] }
-      : hideConverted
-        ? { AND: [filtered, { OR: [{ is_converted: null }, { is_converted: { not: 1 } }] }] }
-        : filtered;
+      : filtered;
 
     const [rows, total, stageCounts] = await Promise.all([
       this.prisma.applications.findMany({
