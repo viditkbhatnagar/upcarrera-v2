@@ -717,6 +717,27 @@ export class StudentsService {
   }
 
   /**
+   * C1/E1 fix — per-record access scope for every route that acts on a student BY
+   * ITS PK. The controller runs this before delegating, so a counsellor can no
+   * longer read or mutate another counsellor's student by guessing an id (before
+   * this, GET /students/:id and its sub-resources were permission-gated but carried
+   * NO record scope — the "ACCEPTED FOLLOW-UP" this pass closes).
+   *
+   * It mirrors listStudents EXACTLY so the list and the detail can never drift: a
+   * counsellor (role 6) sees only their OWN admissions (students.consultant_id = me);
+   * every other staff role sees all, exactly as the list returns them. 404 when the
+   * student does not exist, 403 when it exists but is out of the caller's scope.
+   */
+  async assertStudentAccess(id: number, user: AccessUser): Promise<void> {
+    const student = await this.getStudent(id); // 404 if missing/soft-deleted
+    const userId = user.userId ?? user.id ?? null;
+    const roleId = user.roleId ?? user.role_id ?? null;
+    if (roleId === CONSULTANT_ROLE_ID && student.consultant_id !== userId) {
+      throw new ForbiddenException('Access denied');
+    }
+  }
+
+  /**
    * GET /students/:id — the student row decorated with everything the detail
    * screen renders, resolved via MANUAL bulk joins (the schema has no Prisma
    * relations). A fixed set of bulk queries, never a per-row query (no N+1):
