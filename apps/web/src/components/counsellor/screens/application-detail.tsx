@@ -244,6 +244,9 @@ export function CounsellorApplicationDetail({ appId }: { appId: string }) {
   const phone = app.applicant_phone ?? app.phone;
   const location = [app.district, app.state].filter(Boolean).join(", ");
   const rejected = stage === "rejected";
+  // A12: converted/rejected are terminal — no active pipeline stage, so hide the
+  // magic-link invite card and stop showing a counting "days in stage".
+  const terminal = rejected || stage === "converted";
   const currentIdx = rejected ? -1 : PIPELINE_STAGES.indexOf(stage);
   const showForm = STAGE_META[stage].no >= 3 || rejected;
 
@@ -349,7 +352,7 @@ export function CounsellorApplicationDetail({ appId }: { appId: string }) {
         </TabsList>
 
         <TabsContent value="overview" className="mt-4 space-y-6">
-          <MagicLinkCard appId={app.application_id} stage={stage} />
+          {!terminal && <MagicLinkCard appId={app.application_id} stage={stage} />}
           <Section title="Personal & Contact Information" icon={User}>
             <Field label="Name" value={dash(name)} />
             <Field label="Email ID" value={dash(email)} />
@@ -366,7 +369,7 @@ export function CounsellorApplicationDetail({ appId }: { appId: string }) {
             <Field label="Source" value={dash(app.source)} />
             <Field label="Counsellor" value={dash(app.owner.consultant_name)} />
             <Field label="Created" value={formatDate(app.created_at)} />
-            <Field label="Days in stage" value={String(app.days_in_stage)} />
+            <Field label="Days in stage" value={terminal ? "—" : String(app.days_in_stage)} />
           </Section>
           {app.hold && (
             <Section title="On hold" icon={Pause}>
