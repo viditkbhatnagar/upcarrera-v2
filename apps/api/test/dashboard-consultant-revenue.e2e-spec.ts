@@ -24,7 +24,7 @@ describe('Consultant dashboard revenue (e2e)', () => {
   const P = 'e2e_dashrev_';
   const U_CONSULTANT = `${P}consultant`;
   const U_STUDENT = `${P}student`;
-  const PASSWORD = 'e2e-dashrev-pass';
+  const PASSWORD = 'DashRev@12345';
   const usernames = [U_CONSULTANT, U_STUDENT];
 
   // A far-future year keeps the fixture isolated from seed data and from any
