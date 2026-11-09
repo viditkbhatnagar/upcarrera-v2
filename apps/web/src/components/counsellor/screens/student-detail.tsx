@@ -42,6 +42,22 @@ const STATUS_STYLES: Record<string, string> = {
   Cancelled: "bg-muted text-muted-foreground border-transparent",
 };
 
+// E6: a fee-status chip derived from the finance roll-up (null when no fee on file).
+function feeStatusChip(
+  finance: ApiStudentDetail["finance"],
+): { label: string; cls: string } | null {
+  if (!finance || finance.total <= 0) return null;
+  if (finance.outstanding <= 0) return { label: "Fee Paid", cls: "bg-success-soft text-success border-success/30" };
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const overdue = finance.installments.some(
+    (r) => !r.is_paid && r.due_date != null && new Date(r.due_date) < today,
+  );
+  if (overdue) return { label: "Fee Overdue", cls: "bg-destructive/10 text-destructive border-transparent" };
+  if (finance.paid > 0) return { label: "Fee Partial", cls: "bg-warning-soft text-warning-foreground border-transparent" };
+  return { label: "Fee Unpaid", cls: "bg-muted text-muted-foreground border-transparent" };
+}
+
 function numericIdFromParam(param: string): number | null {
   const digits = param.match(/\d+/g);
   if (!digits || digits.length === 0) return null;
@@ -135,6 +151,12 @@ function StudentContent({ student: s, displayId }: { student: ApiStudentDetail; 
               >
                 {dash(s.admission_status_label)}
               </Badge>
+              {(() => {
+                const fee = feeStatusChip(finance);
+                return fee ? (
+                  <Badge variant="outline" className={cn(fee.cls)}>{fee.label}</Badge>
+                ) : null;
+              })()}
             </div>
             <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span className="font-mono">{displayId}</span>
