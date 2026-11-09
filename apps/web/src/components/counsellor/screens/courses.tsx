@@ -23,6 +23,29 @@ interface Paged<T> {
 
 const CATALOG_LIMIT = 1000;
 
+// K6: compact INR for the fee chip (₹1.2L / ₹45K / ₹2.5Cr).
+function inrFee(n: number): string {
+  if (n >= 10000000) return `₹${(n / 10000000).toFixed(2).replace(/\.00$/, "")}Cr`;
+  if (n >= 100000) return `₹${(n / 100000).toFixed(2).replace(/\.00$/, "")}L`;
+  if (n >= 1000) return `₹${Math.round(n / 1000)}K`;
+  return `₹${n}`;
+}
+
+// K7: budget bands matched against the course fee (courses without a fee never match a band).
+const BUDGET_BANDS: Record<string, [number, number]> = {
+  "Under ₹50K": [0, 50000],
+  "₹50K – ₹1L": [50000, 100000],
+  "₹1L – ₹2L": [100000, 200000],
+  "Above ₹2L": [200000, Infinity],
+};
+const BUDGET_OPTIONS = Object.keys(BUDGET_BANDS);
+function budgetMatch(fee: number | null, band: string): boolean {
+  if (band === "all") return true;
+  const range = BUDGET_BANDS[band];
+  if (!range || fee == null) return false;
+  return fee >= range[0] && fee < range[1];
+}
+
 function FilterField({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="space-y-1.5 block">
@@ -77,6 +100,7 @@ export function CounsellorCourses() {
   const [duration, setDuration] = useState("all");
   const [specialisation, setSpecialisation] = useState("all");
   const [eligibility, setEligibility] = useState("all");
+  const [budget, setBudget] = useState("all");
   const [more, setMore] = useState(false);
 
   const query = useQuery({
@@ -112,15 +136,16 @@ export function CounsellorCourses() {
         (mode === "all" || c.mode === mode) &&
         (duration === "all" || c.duration === duration) &&
         (specialisation === "all" || c.specialisations.includes(specialisation)) &&
-        (eligibility === "all" || c.eligibility === eligibility)
+        (eligibility === "all" || c.eligibility === eligibility) &&
+        budgetMatch(c.fee, budget)
       );
     });
-  }, [courses, search, university, group, level, mode, duration, specialisation, eligibility]);
+  }, [courses, search, university, group, level, mode, duration, specialisation, eligibility, budget]);
 
   const activeCount =
-    [university, group, level, mode, duration, specialisation, eligibility].filter((v) => v !== "all").length +
+    [university, group, level, mode, duration, specialisation, eligibility, budget].filter((v) => v !== "all").length +
     (search.trim() ? 1 : 0);
-  const moreActive = [specialisation, eligibility].filter((v) => v !== "all").length;
+  const moreActive = [specialisation, eligibility, budget].filter((v) => v !== "all").length;
 
   const clearAll = () => {
     setSearch("");
@@ -131,6 +156,7 @@ export function CounsellorCourses() {
     setDuration("all");
     setSpecialisation("all");
     setEligibility("all");
+    setBudget("all");
   };
 
   const { sorted, sort } = useSort(filtered, {
@@ -138,6 +164,7 @@ export function CounsellorCourses() {
     duration: (c) => monthsOf(c.duration),
     mode: (c) => c.mode,
     eligibility: (c) => c.eligibility,
+    fee: (c) => c.fee ?? -1,
     universities: (c) => c.universities,
   });
 
@@ -186,6 +213,9 @@ export function CounsellorCourses() {
             <FilterField label="Eligibility">
               <Dropdown value={eligibility} onChange={setEligibility} options={opts.eligibilities} all="All Eligibility" label="Eligibility" className="w-full" />
             </FilterField>
+            <FilterField label="Budget (course fee)">
+              <Dropdown value={budget} onChange={setBudget} options={BUDGET_OPTIONS} all="Any budget" label="Budget" className="w-full" />
+            </FilterField>
           </div>
         )}
 
@@ -223,6 +253,7 @@ export function CounsellorCourses() {
                       <SortHead k="duration" s={sort}>Duration</SortHead>
                       <SortHead k="mode" s={sort}>Mode</SortHead>
                       <SortHead k="eligibility" s={sort}>Eligibility</SortHead>
+                      <SortHead k="fee" s={sort} className="text-right">Fee</SortHead>
                       <SortHead k="universities" s={sort} className="text-right">Universities</SortHead>
                       <TableHead className="text-right">Action</TableHead>
                     </TableRow>
@@ -246,6 +277,7 @@ export function CounsellorCourses() {
                           <Badge variant="outline" className={cn("border", modeStyle(c.mode))}>{c.mode}</Badge>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">{c.eligibility}</TableCell>
+                        <TableCell className="text-right text-sm tabular-nums">{c.fee != null ? inrFee(c.fee) : NONE}</TableCell>
                         <TableCell className="text-right text-sm">{c.universities}</TableCell>
                         <TableCell className="text-right">
                           <Button asChild size="sm" variant="outline">
@@ -274,6 +306,13 @@ function CourseCard({ course: c }: { course: CourseView }) {
           <Badge className="bg-white/20 backdrop-blur text-white border-white/30 hover:bg-white/30">{c.level}</Badge>
           <Badge className={cn("border", modeStyle(c.mode))}>{c.mode}</Badge>
         </div>
+        {c.fee != null && (
+          <div className="absolute top-3 right-3">
+            <Badge className="bg-white/25 backdrop-blur text-white border-white/30 font-semibold" title="Course fee">
+              {inrFee(c.fee)}
+            </Badge>
+          </div>
+        )}
       </div>
       <div className="p-5">
         <h3 className="font-semibold text-base leading-tight">{c.name}</h3>
