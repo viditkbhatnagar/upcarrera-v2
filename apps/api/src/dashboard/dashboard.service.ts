@@ -696,7 +696,14 @@ export class DashboardService {
             deleted_at: null,
             enrollment_date: { gte: yearStart, lt: yearEnd },
           },
-          select: { student_id: true, course_id: true, enrollment_date: true },
+          // `id` is the students-table row id (invoice.student_id references it);
+          // `student_id` is the users id (points/admissions keying). We need both.
+          select: {
+            id: true,
+            student_id: true,
+            course_id: true,
+            enrollment_date: true,
+          },
         }),
         // Current points target whose window contains today (legacy view query).
         this.prisma.consultant_target.findFirst({
@@ -744,8 +751,10 @@ export class DashboardService {
     }
 
     const targetPointsChart = await this.targetPointsByMonth(year, consultantId);
+    // invoice.student_id references students.id (the row id), NOT students.student_id
+    // (the users id) — keying on student_id matched nothing and zeroed the chart.
     const revenueChart = await this.consultantRevenueByMonth(
-      [...new Set(profilesThisYear.map((p) => p.student_id))],
+      [...new Set(profilesThisYear.map((p) => p.id))],
       year,
     );
 
@@ -918,12 +927,15 @@ export class DashboardService {
    * 12-element monthly revenue (SUM invoice.payable_amount) for the given
    * students, bucketed by invoice month. invoice.date is the billing date;
    * when absent we fall back to created_at. One findMany + in-memory bucketing.
+   *
+   * `studentRowIds` are students.id values (the students-table row ids) — that is
+   * the key invoice.student_id points at. Passing users ids here matches nothing.
    */
   private async consultantRevenueByMonth(
-    studentUserIds: number[],
+    studentRowIds: number[],
     year: number,
   ): Promise<number[]> {
-    const ids = [...new Set(studentUserIds)].filter((n) => n != null);
+    const ids = [...new Set(studentRowIds)].filter((n) => n != null);
     const chart = new Array<number>(12).fill(0);
     if (ids.length === 0) return chart;
 
