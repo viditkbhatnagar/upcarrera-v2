@@ -6,6 +6,7 @@ import {
   Calendar,
   CheckCircle2,
   Flame,
+  Minus,
   Target,
   TrendingUp,
   Trophy,
@@ -98,6 +99,16 @@ export function CounsellorPerformance() {
   const ytd = (m?.trends.admissions ?? []).reduce((a, b) => a + b, 0);
   const remaining = Math.max(0, (m?.target_point ?? 0) - (m?.achieved_points ?? 0));
 
+  // P9: an expected-pace status (On Track / Behind) rather than a bare "0% of target".
+  const today = new Date();
+  const monthPace = (today.getDate() / new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate()) * 100;
+  const targetStatus =
+    pct >= 100
+      ? { label: "Target met", cls: "bg-success-soft text-success" }
+      : pct >= monthPace * 0.9
+        ? { label: "On Track", cls: "bg-success-soft text-success" }
+        : { label: "Behind", cls: "bg-warning-soft text-warning-foreground" };
+
   const rows = useMemo<MonthRow[]>(() => {
     const t = m?.trends;
     if (!t) return [];
@@ -154,7 +165,11 @@ export function CounsellorPerformance() {
     [counts],
   );
   const funnelMax = Math.max(1, ...funnel.map((f) => f.value));
-  const totalApps = apps.data?.total ?? 0;
+  // P3: derive the denominator from the stage counts (every application across all
+  // stages) so the conversion % is robust regardless of the list's page total.
+  const totalApps = counts
+    ? Object.values(counts).reduce((a, b) => a + (b ?? 0), 0)
+    : (apps.data?.total ?? 0);
   const converted = counts?.converted ?? 0;
 
   const dataKey = series === "points" ? "achieved" : series === "enrollments" ? "admissions" : "revenue";
@@ -173,9 +188,9 @@ export function CounsellorPerformance() {
             {monthName}
           </Badge>
           {m && m.target_point > 0 && (
-            <Badge className={cn("gap-1.5 border-0", pct >= 100 ? "bg-success-soft text-success" : "bg-warning-soft text-warning-foreground")}>
+            <Badge className={cn("gap-1.5 border-0", targetStatus.cls)}>
               <Flame className="h-3.5 w-3.5" />
-              {pct >= 100 ? "Target met" : `${pct}% of target`}
+              {targetStatus.label} · {pct}%
             </Badge>
           )}
         </div>
@@ -230,8 +245,10 @@ export function CounsellorPerformance() {
                 <YAxis stroke="var(--muted-foreground)" fontSize={12} allowDecimals={false} tickFormatter={series === "revenue" ? (v: number) => inr(v) : undefined} />
                 <Tooltip contentStyle={tooltipStyle} formatter={series === "revenue" ? (v: number) => inr(v) : undefined} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                {series === "points" && <Bar dataKey="target" name="Target" fill="var(--muted)" radius={[6, 6, 0, 0]} barSize={20} />}
                 <Area type="monotone" dataKey={dataKey} name={seriesName} stroke="var(--primary)" strokeWidth={2.5} fill="url(#achGrad)" />
+                {series === "points" && (
+                  <Line type="monotone" dataKey="target" name="Target" stroke="var(--warning)" strokeWidth={2} strokeDasharray="6 4" dot={false} />
+                )}
               </ComposedChart>
             </ResponsiveContainer>
           )}
@@ -249,7 +266,14 @@ export function CounsellorPerformance() {
               <div key={f.stage}>
                 <div className="flex items-center justify-between text-xs mb-1">
                   <span className="font-medium">{f.name}</span>
-                  <span className="text-muted-foreground">{apps.isLoading ? "…" : nf(f.value)}</span>
+                  <span className="text-muted-foreground tabular-nums">
+                    {apps.isLoading ? "…" : nf(f.value)}
+                    {!apps.isLoading && totalApps > 0 && f.value > 0 && (
+                      <span className="ml-1.5 text-[10px] text-muted-foreground/70">
+                        {Math.round((f.value / totalApps) * 100)}%
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <div className="h-7 rounded-md bg-muted overflow-hidden">
                   <div
@@ -290,7 +314,15 @@ export function CounsellorPerformance() {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="month" stroke="var(--muted-foreground)" fontSize={12} />
                 <YAxis yAxisId="left" stroke="var(--muted-foreground)" fontSize={12} allowDecimals={false} />
-                <YAxis yAxisId="right" orientation="right" stroke="var(--muted-foreground)" fontSize={12} unit="%" />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  stroke="var(--muted-foreground)"
+                  fontSize={12}
+                  unit="%"
+                  allowDecimals={false}
+                  domain={[0, (max: number) => Math.max(100, Math.ceil((max || 0) / 25) * 25)]}
+                />
                 <Tooltip contentStyle={tooltipStyle} />
                 <Line yAxisId="left" type="monotone" dataKey="admissions" name="Enrollments" stroke="var(--primary)" strokeWidth={2.5} dot={{ r: 4 }} />
                 <Line yAxisId="right" type="monotone" dataKey="ach" name="Achievement %" stroke="var(--success)" strokeWidth={2.5} dot={{ r: 4 }} connectNulls />
@@ -374,10 +406,18 @@ export function CounsellorPerformance() {
 }
 
 function Delta({ value, suffix }: { value: number; suffix?: string }) {
-  const up = value >= 0;
+  // P10: a change that rounds to 0.0% is neutral, not a green rise.
+  const flat = Math.abs(value) < 0.05;
+  const up = value > 0;
+  const Icon = flat ? Minus : up ? ArrowUpRight : ArrowDownRight;
   return (
-    <div className={cn("mt-2 inline-flex items-center gap-1 text-xs font-medium", up ? "text-success" : "text-destructive")}>
-      {up ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+    <div
+      className={cn(
+        "mt-2 inline-flex items-center gap-1 text-xs font-medium",
+        flat ? "text-muted-foreground" : up ? "text-success" : "text-destructive",
+      )}
+    >
+      <Icon className="h-3 w-3" />
       {Math.abs(value).toFixed(1)}%{suffix ? ` ${suffix}` : ""}
     </div>
   );
