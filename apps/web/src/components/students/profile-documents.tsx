@@ -106,7 +106,9 @@ export function DocumentsTab({ studentId }: { studentId: number }) {
                 Download
               </button>
             ) : (
-              <span className="text-xs text-muted-foreground">No file attached</span>
+              <span className="rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
+                Not uploaded
+              </span>
             )}
           </li>
         ))}
