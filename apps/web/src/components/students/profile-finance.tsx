@@ -7,9 +7,50 @@
 // the student's specialisation. This tab shows all of it, and says which figure
 // the Total is based on.
 
-import { CheckCircle2, Clock, CreditCard, GraduationCap, Receipt, Wallet } from "lucide-react";
+import { CheckCircle2, Clock, CreditCard, Download, GraduationCap, Receipt, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCsv } from "@/components/applications/export-csv";
 import type { ApiFinance, ApiInstallment } from "./profile-types";
+
+// E8: a running balance for a fee schedule — the total drawn down by each
+// installment, floored at 0 (installments can exceed an invoice-based total).
+function runningBalances(total: number, rows: ApiInstallment[]): number[] {
+  let bal = total;
+  return rows.map((r) => {
+    bal -= Number(r.amount) || 0;
+    return Math.max(0, bal);
+  });
+}
+
+// E8: Statement of Account — summary + the installment schedule with balances,
+// as a spreadsheet-friendly CSV (plain numbers, no currency glyph).
+function downloadSOA(finance: ApiFinance): void {
+  const esc = (v: string | number): string => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const balances = runningBalances(finance.total, finance.installments);
+  const body = finance.installments.map((r, i) => [
+    r.installment_details?.trim() || "Installment",
+    Number(r.amount) || 0,
+    r.due_date ? String(r.due_date).slice(0, 10) : "",
+    r.paid_date ? String(r.paid_date).slice(0, 10) : "",
+    [r.payment_mode, r.payment_to].filter((v) => v && v.trim()).join(" / "),
+    r.status?.trim() || (r.is_paid ? "Paid" : "Pending"),
+    balances[i],
+  ]);
+  const rows: (string | number)[][] = [
+    ["Statement of Account"],
+    ["Total Fee", finance.total],
+    ["Paid", finance.paid],
+    ["Outstanding", finance.outstanding],
+    [],
+    ["Installment", "Amount", "Due", "Paid On", "Mode", "Status", "Balance"],
+    ...body,
+  ];
+  const csv = rows.map((r) => r.map(esc).join(",")).join("\n");
+  downloadCsv(`statement-of-account-${new Date().toISOString().slice(0, 10)}.csv`, csv);
+}
 import {
   EmptyInline,
   EmptyTab,
@@ -59,10 +100,19 @@ export function FinanceTab({ finance }: { finance: ApiFinance | null }) {
       {finance.course_fee.amount != null && <CourseFeeCard finance={finance} />}
 
       <SectionCard title="Fee Installments" icon={Receipt}>
+        <div className="mb-3 flex justify-end">
+          <button
+            type="button"
+            onClick={() => downloadSOA(finance)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted"
+          >
+            <Download className="h-3.5 w-3.5" /> Download SOA
+          </button>
+        </div>
         {finance.installments.length === 0 ? (
           <EmptyInline label="No installments recorded." />
         ) : (
-          <InstallmentsTable rows={finance.installments} />
+          <InstallmentsTable rows={finance.installments} total={finance.total} />
         )}
       </SectionCard>
 
@@ -112,10 +162,11 @@ function CourseFeeCard({ finance }: { finance: ApiFinance }) {
   );
 }
 
-function InstallmentsTable({ rows }: { rows: ApiInstallment[] }) {
+function InstallmentsTable({ rows, total }: { rows: ApiInstallment[]; total: number }) {
+  const balances = runningBalances(total, rows);
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[560px] text-sm">
+      <table className="w-full min-w-[640px] text-sm">
         <thead>
           <tr className="border-b border-border text-left text-xs uppercase text-muted-foreground">
             <th className="py-2 font-semibold">Installment</th>
@@ -124,10 +175,11 @@ function InstallmentsTable({ rows }: { rows: ApiInstallment[] }) {
             <th className="py-2 font-semibold">Paid on</th>
             <th className="py-2 font-semibold">Mode</th>
             <th className="py-2 font-semibold">Status</th>
+            <th className="py-2 font-semibold text-right">Balance</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {rows.map((r, i) => (
             <tr key={r.student_payment_id} className="border-b border-border/60 last:border-0">
               <td className="py-2.5 font-medium text-foreground">
                 {r.installment_details?.trim() || "Installment"}
@@ -141,6 +193,7 @@ function InstallmentsTable({ rows }: { rows: ApiInstallment[] }) {
               <td className="py-2.5">
                 <StatusBadge paid={r.is_paid} label={r.status?.trim() || (r.is_paid ? "Paid" : "Pending")} />
               </td>
+              <td className="py-2.5 text-right tabular-nums text-muted-foreground">{formatINR(balances[i])}</td>
             </tr>
           ))}
         </tbody>
