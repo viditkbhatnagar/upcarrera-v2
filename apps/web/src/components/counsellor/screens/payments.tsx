@@ -31,7 +31,7 @@ import {
   type PaymentsResponse,
 } from "./payments-model";
 
-const PAGE_SIZE = 8;
+const PAGE_SIZE = 10; // E4: one consistent table page size across the counsellor screens
 const ALL = "All";
 
 type AmountRange = { min: string; max: string };

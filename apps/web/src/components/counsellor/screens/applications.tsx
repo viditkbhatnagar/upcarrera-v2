@@ -11,6 +11,7 @@ import {
   useLeadSourceOptions,
   useUniversityOptions,
 } from "@/components/applications/catalogs";
+import { formatPhone } from "@/components/counsellors/phone";
 import { AddLeadDialog } from "@/components/applications/lead-dialog";
 import { EditApplicationDialog } from "@/components/applications/edit-application-dialog";
 import { downloadCsv, EXPORT_ROW_CAP, toCsv } from "@/components/applications/export-csv";
@@ -435,7 +436,7 @@ function ApplicationRow({ index, app, onEdit }: { index: number; app: ListRowVie
       <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{app.intake}</TableCell>
       <TableCell>
         <p className="text-xs font-medium">{app.email}</p>
-        <p className="text-[11px] text-muted-foreground">{app.phone || EMPTY}</p>
+        <p className="text-[11px] text-muted-foreground">{formatPhone(app.phone, null, EMPTY)}</p>
       </TableCell>
       <TableCell className="text-sm text-muted-foreground">{app.source}</TableCell>
       <TableCell>

@@ -10,6 +10,7 @@ import { STAGE_META } from "@/components/applications/stage-model";
 import { mapRow } from "@/components/applications/list-model";
 import type { Stage } from "@/lib/api/applications";
 import { cn } from "@/lib/utils";
+import { SortHead, useSort } from "@/components/counsellor/shared/sortable-head";
 import { PIPELINE_TAB_ROWS, useApplicationsByStage } from "./use-dashboard-data";
 
 const TABS: readonly { value: Stage; label: string }[] = [
@@ -66,9 +67,21 @@ export function RecentTables({ counts }: RecentTablesProps) {
   );
 }
 
+// D4: under the "Enrolled" tab the stage chip should read "Enrolled", not the raw
+// pipeline label "Converted".
+const chipLabel = (stage: Stage, label: string) => (stage === "converted" ? "Enrolled" : label);
+
 function StageTable({ stage, total }: { stage: Stage; total: number | undefined }) {
   const query = useApplicationsByStage(stage);
   const rows = (query.data?.items ?? []).map(mapRow);
+  const { sorted, sort } = useSort(rows, {
+    id: (r) => r.id,
+    date: (r) => r.date,
+    student: (r) => r.name,
+    university: (r) => r.university,
+    course: (r) => r.course,
+    intake: (r) => r.intake,
+  });
 
   return (
     <div className="overflow-x-auto">
@@ -76,12 +89,12 @@ function StageTable({ stage, total }: { stage: Stage; total: number | undefined 
         <TableHeader>
           <TableRow>
             <TableHead>#</TableHead>
-            <TableHead>Application ID</TableHead>
-            <TableHead>Date</TableHead>
-            <TableHead>Student</TableHead>
-            <TableHead>University</TableHead>
-            <TableHead>Course</TableHead>
-            <TableHead>Intake</TableHead>
+            <SortHead k="id" s={sort}>Application ID</SortHead>
+            <SortHead k="date" s={sort}>Date</SortHead>
+            <SortHead k="student" s={sort}>Student</SortHead>
+            <SortHead k="university" s={sort}>University</SortHead>
+            <SortHead k="course" s={sort}>Course</SortHead>
+            <SortHead k="intake" s={sort}>Intake</SortHead>
             <TableHead>Stage</TableHead>
             <TableHead className="text-right">Action</TableHead>
           </TableRow>
@@ -100,7 +113,7 @@ function StageTable({ stage, total }: { stage: Stage; total: number | undefined 
               <TableCell colSpan={9} className="text-center text-muted-foreground py-6">No applications in this stage</TableCell>
             </TableRow>
           ) : (
-            rows.map((r, i) => (
+            sorted.map((r, i) => (
               <TableRow key={r.rowId}>
                 <TableCell className="text-muted-foreground">{i + 1}</TableCell>
                 <TableCell className="font-mono text-xs">{r.id}</TableCell>
@@ -111,7 +124,7 @@ function StageTable({ stage, total }: { stage: Stage; total: number | undefined 
                 <TableCell className="text-muted-foreground whitespace-nowrap">{r.intake}</TableCell>
                 <TableCell>
                   <Badge variant="outline" className={cn("font-medium border-transparent", STAGE_META[r.stage].badge)}>
-                    {r.stageLabel}
+                    {chipLabel(r.stage, r.stageLabel)}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-right">

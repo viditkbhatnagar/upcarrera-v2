@@ -55,7 +55,9 @@ export function CounsellorDashboard() {
           value={nf(m?.target_point)}
           icon={Target}
           tone="primary"
-          progress={m ? 100 : undefined}
+          // D6: this card shows the target itself (the goal), not progress toward
+          // it — a permanently-full bar was misleading. Progress lives on the
+          // "Target Achieved" card beside it.
           sub={`Goal for ${monthName}`}
           loading={metrics.isLoading}
         />
