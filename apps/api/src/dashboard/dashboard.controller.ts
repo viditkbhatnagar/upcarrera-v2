@@ -43,4 +43,10 @@ export class DashboardController {
     const year = query.year ?? new Date().getFullYear();
     return this.dashboard.getConsultantMetrics(userId, year);
   }
+
+  @Get('leaderboard')
+  @ResponseMessage('Counsellor leaderboard')
+  getLeaderboard(@CurrentUser('id') userId: number) {
+    return this.dashboard.getLeaderboard(userId);
+  }
 }

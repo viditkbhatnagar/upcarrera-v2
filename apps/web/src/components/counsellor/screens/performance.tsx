@@ -32,6 +32,7 @@ import { PIPELINE_STAGES, STAGE_META } from "@/components/applications/stage-mod
 import type { Stage } from "@/lib/api/applications";
 import { KpiCard } from "@/components/counsellor/dashboard/kpi-card";
 import { CoursePerformance } from "@/components/counsellor/dashboard/course-performance";
+import { LeaderboardAndBadges } from "@/components/counsellor/screens/performance-leaderboard";
 import {
   useApplicationsSummary,
   useStudentsSummary,
@@ -85,7 +86,8 @@ interface MonthRow {
  *                                12-month trends (YTD chart, timeline and history table)
  *   GET /applications         -> per-stage counts (application pipeline)
  *   GET /students             -> course mix
- * Leaderboard, badges and week/year splits have no backing endpoint and are omitted.
+ *   GET /dashboard/leaderboard-> this-month counsellor ranking + earned badges
+ * Badge criteria are objective (target met / top-3 / YTD milestones) and tunable.
  */
 export function CounsellorPerformance() {
   const metrics = useConsultantMetrics();
@@ -211,6 +213,8 @@ export function CounsellorPerformance() {
         <KpiCard label="Current Month Enrollments" value={nf(m?.admissions_count)} icon={Trophy} tone="success" sub="Enrolled this month" loading={metrics.isLoading} />
         <KpiCard label="Enrollments - YTD" value={nf(ytd)} icon={Award} tone="primary" sub="Year to date" loading={metrics.isLoading} />
       </div>
+
+      <LeaderboardAndBadges pct={pct} ytd={ytd} />
 
       <Card className="p-5 shadow-[var(--shadow-soft)] border-border/70">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">

@@ -766,6 +766,93 @@ export class DashboardService {
   }
 
   // ===========================================================================
+  // GET /dashboard/leaderboard — this-month counsellor ranking (role 6)
+  // ===========================================================================
+
+  /**
+   * Counsellor leaderboard for the current calendar month, ranked by achieved
+   * points (the same per-consultant metric the consultant dashboard uses:
+   * SUM of specialisations.point for each student enrolled this month),
+   * admissions count as the tiebreaker.
+   *
+   * Only counsellors who enrolled at least one student this month appear (a
+   * consultant with no activity has nothing to rank). The caller's own row is
+   * flagged `is_self`; if they have no activity this month they are returned
+   * separately in `self` with rank null, so the UI can always show "your
+   * standing" even when they are not on the board yet.
+   *
+   * Ranking is business-tunable (Naji): metric + whether to surface peers. The
+   * metric here mirrors the existing achievement model; no new scoring invented.
+   */
+  async getLeaderboard(currentUserId: number) {
+    const now = new Date();
+    const monthStart = this.monthStart(now.getFullYear(), now.getMonth());
+    const monthEnd = this.nextMonthStart(now.getFullYear(), now.getMonth());
+
+    const students = await this.prisma.students.findMany({
+      where: {
+        deleted_at: null,
+        enrollment_date: { gte: monthStart, lt: monthEnd },
+      },
+      select: { consultant_id: true, course_id: true },
+    });
+
+    const pointByCourse = await this.pointByCourseMap(
+      students
+        .map((s) => s.course_id)
+        .filter((c): c is number => c != null),
+    );
+
+    // Aggregate per consultant (ignore the legacy consultant_id = 0 bucket).
+    const agg = new Map<number, { admissions: number; points: number }>();
+    for (const s of students) {
+      if (s.consultant_id == null || s.consultant_id === 0) continue;
+      const row = agg.get(s.consultant_id) ?? { admissions: 0, points: 0 };
+      row.admissions += 1;
+      if (s.course_id != null) row.points += pointByCourse.get(s.course_id) ?? 0;
+      agg.set(s.consultant_id, row);
+    }
+
+    // Resolve names, keeping only rows that map to a real counsellor (role 6).
+    const consultantIds = [...agg.keys()];
+    const consultants = consultantIds.length
+      ? await this.prisma.users.findMany({
+          where: {
+            id: { in: consultantIds },
+            role_id: DashboardService.ROLE_CONSULTANT,
+            deleted_at: null,
+          },
+          select: { id: true, name: true, employee_code: true },
+        })
+      : [];
+    const metaById = new Map(consultants.map((u) => [u.id, u]));
+
+    const ranked = [...agg.entries()]
+      .filter(([id]) => metaById.has(id))
+      .map(([id, v]) => ({
+        consultant_id: id,
+        name: metaById.get(id)?.name ?? null,
+        employee_code: metaById.get(id)?.employee_code ?? null,
+        admissions: v.admissions,
+        points: v.points,
+      }))
+      .sort((a, b) => b.points - a.points || b.admissions - a.admissions)
+      .map((row, i) => ({ ...row, rank: i + 1, is_self: row.consultant_id === currentUserId }));
+
+    const selfRow = ranked.find((r) => r.is_self);
+    const self = selfRow
+      ? { rank: selfRow.rank, admissions: selfRow.admissions, points: selfRow.points }
+      : { rank: null as number | null, admissions: 0, points: 0 };
+
+    return {
+      month: this.monthLabels()[now.getMonth()],
+      year: now.getFullYear(),
+      rows: ranked,
+      self,
+    };
+  }
+
+  // ===========================================================================
   // Shared aggregation helpers
   // ===========================================================================
 
