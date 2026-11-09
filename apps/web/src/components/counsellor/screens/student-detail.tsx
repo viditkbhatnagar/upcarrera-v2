@@ -69,7 +69,9 @@ export function CounsellorStudentDetail({ idParam }: { idParam: string }) {
     enabled: numericId != null,
   });
 
-  const displayId = data ? dash(data.enrollment_id ?? `STU-${data.student_id}`) : idParam;
+  // E5: `??` only falls back on null/undefined, so a legacy empty-string enrollment_id
+  // rendered "—". Treat blank as missing and fall back to the STU number.
+  const displayId = data ? (data.enrollment_id?.trim() || `STU-${data.student_id}`) : idParam;
 
   return (
     <>
@@ -199,7 +201,22 @@ function StudentContent({ student: s, displayId }: { student: ApiStudentDetail; 
             <Field label="Mode" value={dash(s.mode)} />
             <Field label="ABC ID" value={dash(s.abc_id)} />
             <Field label="Enrollment ID" value={dash(s.enrollment_id)} />
-            <Field label="Application ID" value={dash(s.application_id ?? s.application?.display_id)} />
+            <Field
+              label="Application ID"
+              value={
+                s.application ? (
+                  <Link
+                    to="/students/applications/$appId"
+                    params={{ appId: String(s.application.application_id) }}
+                    className="text-primary hover:underline"
+                  >
+                    {s.application_id?.trim() || s.application.display_id}
+                  </Link>
+                ) : (
+                  dash(s.application_id?.trim() || null)
+                )
+              }
+            />
             <Field label="Status" value={dash(s.admission_status_label)} />
             <Field
               label="Enrolled"
