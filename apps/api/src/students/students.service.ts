@@ -1241,7 +1241,11 @@ export class StudentsService {
         stage_no: stageNo(effectiveStage(row)),
         stage_source: row.stage ? 'workflow' : 'legacy',
         on_hold: row.hold_at != null,
-        days_in_stage: daysInStage(row),
+        // A12: a converted/rejected application is terminal — it is no longer
+        // sitting in a pipeline stage, so "days in stage" must not keep counting.
+        days_in_stage: ['converted', 'rejected'].includes(effectiveStage(row))
+          ? 0
+          : daysInStage(row),
       };
     });
   }
@@ -2737,6 +2741,13 @@ export class StudentsService {
       const created = await tx.applications.create({
         data: {
           ...rest,
+          // A14: a counsellor cannot assign a lead to anyone else — their new
+          // leads are always owned by themselves, whatever pipeline_user the body
+          // carried. (The Add Lead form also hides the field for counsellors; this
+          // is the server-side guarantee behind it.)
+          ...(creatorScope.roleId === CONSULTANT_ROLE_ID
+            ? { pipeline_user: actorUserId }
+            : {}),
           ...(dob !== undefined ? { dob: new Date(dob) } : {}),
           ...(enrollment_date !== undefined
             ? { enrollment_date: new Date(enrollment_date) }

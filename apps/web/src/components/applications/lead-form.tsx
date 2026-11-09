@@ -31,6 +31,7 @@ import {
 import { INDIAN_MOBILE_ERROR, isValidEmail, normalizeIndianMobile } from "./duplicate-check";
 import { needsReference, STUDENT_REFERENCE_SOURCE } from "./lead-references";
 import { ReferenceField } from "./reference-fields";
+import { canFilterByOwner, useAccess } from "./use-access";
 
 /* ---------------- Form model ---------------- */
 
@@ -257,6 +258,12 @@ function withSeeded(options: CatalogOption[], value: string | undefined, label: 
 
 export function LeadFields({ form, errors, update, catalogs, seed }: FieldsProps) {
   const { universities, courses, specialisations, intakes, counsellors, sources } = catalogs;
+  // A14: a single-owner counsellor can't reassign — hide "Assigned Counsellor"
+  // (it stays defaulted to self; the server also forces pipeline_user = self).
+  // Only hidden once we positively know the caller is a single-owner counsellor,
+  // so admins/managers don't flicker while access loads.
+  const access = useAccess();
+  const hideAssignCounsellor = access.data != null && !canFilterByOwner(access.data);
   // The seeded course belongs to the seeded university (and the seeded
   // specialisation to the seeded course): keep them selectable only while
   // their parent is unchanged, so a stale one cannot be re-picked.
@@ -307,7 +314,7 @@ export function LeadFields({ form, errors, update, catalogs, seed }: FieldsProps
           <Input
             id="lead-phone"
             inputMode="tel"
-            placeholder="98765 43210"
+            placeholder="+91 98765 43210"
             value={form.phone}
             onChange={(e) => update("phone", e.target.value)}
             className={cn(errors.phone && "border-red-400 focus-visible:ring-red-300")}
@@ -404,21 +411,23 @@ export function LeadFields({ form, errors, update, catalogs, seed }: FieldsProps
             error={referenceError}
           />
         )}
-        <CatalogSelect
-          id="lead-counsellor"
-          label="Assigned Counsellor"
-          value={form.counsellor}
-          onChange={(v) => update("counsellor", v)}
-          options={withSeeded(
-            counsellors.assignable,
-            seed?.counsellor,
-            labelOf(counsellors.all, seed?.counsellor) ?? `User #${seed?.counsellor}`,
-          )}
-          loading={counsellors.isLoading}
-          failed={counsellors.isError}
-          placeholder="Select counsellor"
-          emptyText="No counsellors set up"
-        />
+        {!hideAssignCounsellor && (
+          <CatalogSelect
+            id="lead-counsellor"
+            label="Assigned Counsellor"
+            value={form.counsellor}
+            onChange={(v) => update("counsellor", v)}
+            options={withSeeded(
+              counsellors.assignable,
+              seed?.counsellor,
+              labelOf(counsellors.all, seed?.counsellor) ?? `User #${seed?.counsellor}`,
+            )}
+            loading={counsellors.isLoading}
+            failed={counsellors.isError}
+            placeholder="Select counsellor"
+            emptyText="No counsellors set up"
+          />
+        )}
       </div>
     </div>
   );
