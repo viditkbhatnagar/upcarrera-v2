@@ -6,15 +6,17 @@ import { bootApp, loginAs, authHeader, purgeUsersByUsername } from './app.factor
 import { PrismaService } from '../src/prisma/prisma.service';
 
 /**
- * Consultant dashboard — revenue trend (e2e). Regression guard for the
- * "Revenue ₹0" bug.
+ * Consultant dashboard — revenue trend (e2e).
  *
- * invoice.student_id references students.id (the students-table row id), NOT
- * students.student_id (the users id). getConsultantMetrics used to key the
- * invoice query on the users id, which matched nothing and zeroed the chart.
- * This test deliberately gives the fixture a row id that differs from the user
- * id, so if the query ever keys on the wrong one again the revenue falls to 0
- * and this fails.
+ * Pins the invoice.student_id id-space so it can't be re-keyed by mistake.
+ * The convention across this codebase is invoice.student_id = the student's
+ * USERS id (= students.student_id): the conversion flow writes it that way
+ * (LeadsService) and the finance tab reads it that way (StudentProfileService).
+ *
+ * The fixture gives the students row an id DISTINCT from its users id and keys
+ * the invoice on the users id. The revenue chart must find it. If the query is
+ * ever re-keyed on students.id (the row id), the invoice stops matching and the
+ * chart falls to 0 — this test then fails.
  */
 describe('Consultant dashboard revenue (e2e)', () => {
   let app: INestApplication;
@@ -34,7 +36,8 @@ describe('Consultant dashboard revenue (e2e)', () => {
   const AMOUNT = 50000;
 
   let consultantId: number;
-  let studentRowId: number;
+  let studentUserId: number; // users id — invoice.student_id points here
+  let studentRowId: number; // students-table row id — must NOT be the key
 
   async function cleanup(): Promise<void> {
     const users = await prisma.users.findMany({
@@ -45,11 +48,12 @@ describe('Consultant dashboard revenue (e2e)', () => {
     if (ids.length) {
       const rows = await prisma.students.findMany({
         where: { consultant_id: { in: ids } },
-        select: { id: true },
+        select: { id: true, student_id: true },
       });
-      const rowIds = rows.map((r) => r.id);
-      if (rowIds.length) {
-        await prisma.invoice.deleteMany({ where: { student_id: { in: rowIds } } });
+      // Delete invoices keyed on either id space so reruns stay clean.
+      const invoiceKeys = [...new Set([...ids, ...rows.map((r) => r.id), ...rows.map((r) => r.student_id)])];
+      if (invoiceKeys.length) {
+        await prisma.invoice.deleteMany({ where: { student_id: { in: invoiceKeys } } });
       }
       await prisma.students.deleteMany({ where: { consultant_id: { in: ids } } });
     }
@@ -78,24 +82,25 @@ describe('Consultant dashboard revenue (e2e)', () => {
     const student = await prisma.users.create({
       data: { name: 'E2E DashRev Student', username: U_STUDENT, role_id: 4, created_at: now },
     });
+    studentUserId = student.id;
 
     const row = await prisma.students.create({
       data: {
-        student_id: student.id, // the users id — must NOT be what invoice keys on
+        student_id: studentUserId,
         consultant_id: consultantId,
         address: '-',
         enrollment_date: new Date(Date.UTC(YEAR, MONTH0, 15)),
       },
     });
-    studentRowId = row.id; // the students-table row id — invoice.student_id points here
+    studentRowId = row.id;
 
-    // Guard the premise of the test: the two ids must actually differ, otherwise
-    // the bug and the fix would be indistinguishable.
-    expect(studentRowId).not.toBe(student.id);
+    // Premise: the two id spaces must differ, otherwise the test can't tell a
+    // correct key (users id) from the wrong one (row id).
+    expect(studentRowId).not.toBe(studentUserId);
 
     await prisma.invoice.create({
       data: {
-        student_id: studentRowId,
+        student_id: studentUserId, // the users id — the codebase convention
         payable_amount: AMOUNT,
         date: new Date(Date.UTC(YEAR, MONTH0, 15)),
         created_at: now,
@@ -108,7 +113,7 @@ describe('Consultant dashboard revenue (e2e)', () => {
     await app.close();
   });
 
-  it('reports the invoice revenue for the consultant, keyed on students.id', async () => {
+  it('reports the invoice revenue for the consultant, keyed on the users id', async () => {
     const token = await loginAs(http, U_CONSULTANT, PASSWORD);
     const res = await request(http)
       .get('/api/dashboard/consultant')
