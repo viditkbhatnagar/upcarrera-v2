@@ -202,11 +202,15 @@ export function CounsellorCourses() {
       ) : filtered.length === 0 ? (
         <StatePanel icon={<BookOpen className="h-7 w-7 text-muted-foreground/60" />} title="No courses match your filters" />
       ) : view === "grid" ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-          {filtered.map((c) => (
-            <CourseCard key={c.id} course={c} />
-          ))}
-        </div>
+        <Paginated items={filtered} pageSize={12}>
+          {(rows) => (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+              {rows.map((c) => (
+                <CourseCard key={c.id} course={c} />
+              ))}
+            </div>
+          )}
+        </Paginated>
       ) : (
         <Card className="shadow-[var(--shadow-soft)] border-border/70 overflow-hidden">
           <div className="overflow-x-auto">
@@ -277,9 +281,20 @@ function CourseCard({ course: c }: { course: CourseView }) {
           <Building2 className="h-3 w-3 shrink-0" />
           {c.universities > 1 ? `${c.universities} universities` : c.university}
         </p>
-        <p className="text-xs text-muted-foreground mt-1.5 line-clamp-2">
-          {c.specialisations.length > 0 ? c.specialisations.join(", ") : "No specialisations listed"}
-        </p>
+        {c.specialisations.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {c.specialisations.slice(0, 3).map((s) => (
+              <Badge key={s} variant="outline" className="text-[10px] font-normal">{s}</Badge>
+            ))}
+            {c.specialisations.length > 3 && (
+              <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground">
+                +{c.specialisations.length - 3}
+              </Badge>
+            )}
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground mt-1.5">No specialisations listed</p>
+        )}
         <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
           <div className="flex items-center gap-2 text-muted-foreground">
             <Clock className="h-3.5 w-3.5" /> {c.duration}
@@ -288,7 +303,7 @@ function CourseCard({ course: c }: { course: CourseView }) {
             <Layers className="h-3.5 w-3.5 shrink-0" /> <span className="truncate">{c.group}</span>
           </div>
           <div className="col-span-2 flex items-center gap-2 text-muted-foreground min-w-0">
-            <GraduationCap className="h-3.5 w-3.5 shrink-0" /> <span className="leading-tight">{c.eligibility}</span>
+            <GraduationCap className="h-3.5 w-3.5 shrink-0" /> <span className="leading-tight line-clamp-2">{c.eligibility}</span>
           </div>
         </div>
         <div className="mt-4 pt-4 border-t border-border flex items-center justify-between">
