@@ -49,4 +49,10 @@ export class DashboardController {
   getLeaderboard(@CurrentUser('id') userId: number) {
     return this.dashboard.getLeaderboard(userId);
   }
+
+  @Get('consultant/course-conversion')
+  @ResponseMessage('Course-wise conversion')
+  getCourseConversion(@CurrentUser('id') userId: number) {
+    return this.dashboard.getCourseConversion(userId);
+  }
 }

@@ -38,6 +38,7 @@ import {
   useStudentsSummary,
 } from "@/components/counsellor/dashboard/use-dashboard-data";
 import { useConsultantMetrics } from "@/components/counsellor/use-consultant-metrics";
+import { useCourseConversion } from "@/components/counsellor/use-course-conversion";
 import { SortHead, useSort } from "@/components/counsellor/shared/sortable-head";
 
 const nf = (n: number | null | undefined) => (n ?? 0).toLocaleString("en-IN");
@@ -299,6 +300,8 @@ export function CounsellorPerformance() {
         <CoursePerformance students={students.data?.items} total={students.data?.total ?? 0} loading={students.isLoading} />
       </div>
 
+      <CourseConversionCard />
+
       <Card className="p-5 shadow-[var(--shadow-soft)] border-border/70">
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -424,5 +427,49 @@ function Delta({ value, suffix }: { value: number; suffix?: string }) {
       <Icon className="h-3 w-3" />
       {Math.abs(value).toFixed(1)}%{suffix ? ` ${suffix}` : ""}
     </div>
+  );
+}
+
+/** P6: lead → enrolled conversion per course, from GET /dashboard/consultant/course-conversion. */
+function CourseConversionCard() {
+  const q = useCourseConversion();
+  const rows = q.data?.rows ?? [];
+  return (
+    <Card className="p-5 shadow-[var(--shadow-soft)] border-border/70">
+      <div className="mb-4 flex items-center gap-2">
+        <Trophy className="h-4 w-4 text-primary" />
+        <div>
+          <h2 className="text-base font-semibold">Course-wise Conversion</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">Lead → enrolled rate by course (your applications)</p>
+        </div>
+      </div>
+      {q.isLoading ? (
+        <p className="py-10 text-center text-sm text-muted-foreground">Loading…</p>
+      ) : q.isError ? (
+        <p className="py-10 text-center text-sm text-destructive">Couldn't load course conversion.</p>
+      ) : rows.length === 0 ? (
+        <p className="py-10 text-center text-sm text-muted-foreground">No applications recorded yet.</p>
+      ) : (
+        <ul className="space-y-3">
+          {rows.map((r) => (
+            <li key={r.course_id}>
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="min-w-0 truncate font-medium">{r.course}</span>
+                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                  {nf(r.converted)}/{nf(r.applications)} ·{" "}
+                  <span className="font-semibold text-foreground">{r.conversion_pct}%</span>
+                </span>
+              </div>
+              <div className="mt-1 h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[image:var(--gradient-primary)]"
+                  style={{ width: `${Math.min(100, r.conversion_pct)}%` }}
+                />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
