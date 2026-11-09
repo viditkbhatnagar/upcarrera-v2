@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { User, LogOut, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,9 @@ const ROLE_LABEL = "Admission Counsellor";
 
 export function CounsellorTopbar() {
   const user = getUser();
+  // Controlled so the account menu closes when "Profile" navigates (QA S4) —
+  // an uncontrolled Popover stays open over the destination route.
+  const [accountOpen, setAccountOpen] = useState(false);
   const displayName = user?.name ?? user?.username ?? "Counsellor";
   const firstName = displayName.trim().split(/\s+/)[0];
   const monthYear = new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric" });
@@ -38,7 +42,7 @@ export function CounsellorTopbar() {
           <GlobalSearch />
           <ThemeToggle />
           <NotificationsMenu />
-          <Popover>
+          <Popover open={accountOpen} onOpenChange={setAccountOpen}>
             <PopoverTrigger asChild>
               <button type="button" className="flex items-center gap-2 cursor-pointer" aria-label="Account menu">
                 <UserAvatar picture={user?.profile_picture} name={displayName} className="h-9 w-9" fallbackClassName="bg-primary-soft text-primary-soft-foreground" />
@@ -66,7 +70,7 @@ export function CounsellorTopbar() {
               )}
               <div className="px-4 py-3 border-t grid grid-cols-2 gap-2">
                 <Button asChild variant="outline" size="sm" className="text-xs gap-2">
-                  <Link to="/settings">
+                  <Link to="/settings" onClick={() => setAccountOpen(false)}>
                     <User className="h-3.5 w-3.5" />
                     Profile
                   </Link>
