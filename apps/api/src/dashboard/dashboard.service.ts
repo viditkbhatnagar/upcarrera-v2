@@ -892,6 +892,63 @@ export class DashboardService {
   }
 
   // ===========================================================================
+  // GET /dashboard/consultant/course-conversion — lead→enrolled % per course (P6)
+  // ===========================================================================
+
+  /**
+   * Course-wise conversion for the consultant: for each course they raised leads
+   * for, the total applications, how many converted (is_converted = 1 or stage =
+   * 'converted'), and the conversion %. Scope mirrors the list's display-counsellor
+   * rule (pipeline_user = me, else created_by = me). Sorted by volume, top N.
+   */
+  async getCourseConversion(consultantId: number, limit = 8) {
+    const apps = await this.prisma.applications.findMany({
+      where: {
+        deleted_at: null,
+        OR: [
+          { pipeline_user: consultantId },
+          { pipeline_user: null, created_by: consultantId },
+        ],
+      },
+      select: { course_id: true, is_converted: true, stage: true },
+    });
+
+    const agg = new Map<number, { applications: number; converted: number }>();
+    for (const a of apps) {
+      if (a.course_id == null) continue;
+      const row = agg.get(a.course_id) ?? { applications: 0, converted: 0 };
+      row.applications += 1;
+      if (a.is_converted === 1 || a.stage === 'converted') row.converted += 1;
+      agg.set(a.course_id, row);
+    }
+
+    const courseIds = [...agg.keys()];
+    const courses = courseIds.length
+      ? await this.prisma.course.findMany({
+          where: { id: { in: courseIds } },
+          select: { id: true, title: true, short_name: true },
+        })
+      : [];
+    const titleById = new Map(
+      courses.map((c) => [c.id, c.title?.trim() || c.short_name?.trim() || `Course ${c.id}`]),
+    );
+
+    const rows = [...agg.entries()]
+      .map(([id, v]) => ({
+        course_id: id,
+        course: titleById.get(id) ?? `Course ${id}`,
+        applications: v.applications,
+        converted: v.converted,
+        conversion_pct:
+          v.applications > 0 ? Math.round((v.converted / v.applications) * 100) : 0,
+      }))
+      .sort((a, b) => b.applications - a.applications)
+      .slice(0, limit);
+
+    return { rows };
+  }
+
+  // ===========================================================================
   // Shared aggregation helpers
   // ===========================================================================
 
