@@ -44,6 +44,17 @@ export function CounsellorDashboard() {
   const ytdEnrollments = (m?.trends.admissions ?? []).reduce((a, b) => a + b, 0);
   const monthName = new Date().toLocaleDateString("en-IN", { month: "long" });
 
+  // D7: month-over-month % change for a 12-element trend series. Returns undefined
+  // when there is no prior month or it was zero (a "+100%" off zero is noise).
+  const momDelta = (series: number[] | undefined): number | undefined => {
+    if (!series) return undefined;
+    const i = new Date().getMonth();
+    if (i === 0) return undefined;
+    const prev = series[i - 1] ?? 0;
+    if (prev === 0) return undefined;
+    return Math.round((((series[i] ?? 0) - prev) / prev) * 100);
+  };
+
   const goApps = () => navigate({ to: "/students/applications" });
   const goEnr = () => navigate({ to: "/students/students" });
 
@@ -67,6 +78,7 @@ export function CounsellorDashboard() {
           icon={TrendingUp}
           tone="success"
           progress={pct}
+          delta={momDelta(m?.trends.achieved_points)}
           sub={m && m.target_point > 0 ? `${nf(remaining)} points to go` : "No target set"}
           loading={metrics.isLoading}
         />
@@ -84,6 +96,7 @@ export function CounsellorDashboard() {
           value={nf(m?.admissions_count)}
           icon={Users}
           tone="success"
+          delta={momDelta(m?.trends.admissions)}
           sub="Enrolled this month"
           loading={metrics.isLoading}
         />

@@ -748,6 +748,11 @@ export class DashboardService {
       [...new Set(profilesThisYear.map((p) => p.student_id))],
       year,
     );
+    // D3/D7: applications the consultant raised each month (lead funnel top).
+    const applicationsChart = await this.consultantApplicationsByMonth(
+      consultantId,
+      year,
+    );
 
     return {
       year,
@@ -760,9 +765,43 @@ export class DashboardService {
         achieved_points: achievedPointsChart,
         target_points: targetPointsChart,
         admissions: admissionsChart,
+        applications: applicationsChart,
         revenue: revenueChart,
       },
     };
+  }
+
+  /**
+   * 12-element monthly application count for the consultant, bucketed by
+   * applications.created_at. Scope mirrors the list's display-counsellor rule:
+   * pipeline_user = me, else (pipeline_user null AND created_by = me). Drives the
+   * dashboard Applications-vs-Enrollments chart + the lead→enrolled conversion
+   * badge (D3) and the application-count trend chip (D7).
+   */
+  private async consultantApplicationsByMonth(
+    consultantId: number,
+    year: number,
+  ): Promise<number[]> {
+    const chart = new Array<number>(12).fill(0);
+    const yearStart = new Date(year, 0, 1);
+    const yearEnd = new Date(year + 1, 0, 1);
+
+    const apps = await this.prisma.applications.findMany({
+      where: {
+        deleted_at: null,
+        created_at: { gte: yearStart, lt: yearEnd },
+        OR: [
+          { pipeline_user: consultantId },
+          { pipeline_user: null, created_by: consultantId },
+        ],
+      },
+      select: { created_at: true },
+    });
+    for (const a of apps) {
+      if (!a.created_at) continue;
+      chart[new Date(a.created_at).getMonth()] += 1;
+    }
+    return chart;
   }
 
   // ===========================================================================
