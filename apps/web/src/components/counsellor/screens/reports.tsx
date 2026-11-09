@@ -208,12 +208,22 @@ export function CounsellorReports() {
 
   const filterDefs = useMemo(() => {
     const uniq = (k: string) => [...new Set(allRows.map((r) => r[k]).filter((v) => v && v !== EMPTY))].sort();
-    return [
+    const defs = [
       { key: "status", label: ds === "enrollments" ? "Status" : "Stage", all: ds === "enrollments" ? "All Statuses" : "All Stages" },
       { key: "university", label: "University", all: "All Universities" },
       { key: "course", label: "Course", all: "All Courses" },
       { key: "intake", label: "Intake", all: "All Intakes" },
-    ].map((d) => ({ ...d, options: uniq(d.key) }));
+      // RP2: enrollment reports also filter by specialisation, lead source and
+      // payment status (fields only the enrollment rows carry).
+      ...(ds === "enrollments"
+        ? [
+            { key: "specialisation", label: "Specialisation", all: "All Specialisations" },
+            { key: "source", label: "Lead Source", all: "All Sources" },
+            { key: "feeStatus", label: "Payment Status", all: "All Payments" },
+          ]
+        : []),
+    ];
+    return defs.map((d) => ({ ...d, options: uniq(d.key) }));
   }, [allRows, ds]);
 
   const filtered = useMemo(() => {
