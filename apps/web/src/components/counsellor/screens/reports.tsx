@@ -28,7 +28,13 @@ const ENROLLMENT_STATUS_CLASS: Record<string, string> = {
   "Passed Out": "bg-primary-soft text-primary-soft-foreground border-transparent",
   Dropout: "bg-destructive/10 text-destructive border-transparent",
   Cancelled: "bg-muted text-muted-foreground border-transparent",
+  // RP3: payment-status chip values.
+  Paid: "bg-success-soft text-success border-success/30",
+  Partial: "bg-warning-soft text-warning-foreground border-transparent",
 };
+
+// RP3: compact INR for the fee report columns.
+const money = (n: number): string => `₹${n.toLocaleString("en-IN")}`;
 const STAGE_LABEL_CLASS: Record<string, string> = Object.fromEntries(
   Object.values(STAGE_META).map((m) => [m.label, m.badge]),
 );
@@ -61,6 +67,10 @@ interface ApiStudentRow {
   specialisation_title: string | null;
   session_title: string | null;
   source: string | null;
+  // Verified fee roll-up from /students (withFeePaid): null when none recorded.
+  fee_paid: number | null;
+  fee_expected: number | null;
+  fee_status: "paid" | "partial" | null;
 }
 
 type Dataset = "enrollments" | "applications";
@@ -87,6 +97,10 @@ const COLS: Record<Dataset, Col[]> = {
     { key: "intake", label: "Intake" },
     { key: "source", label: "Source" },
     { key: "date", label: "Enrolled" },
+    { key: "feePaid", label: "Fee Paid" },
+    { key: "feeExpected", label: "Total Fee" },
+    { key: "outstanding", label: "Outstanding" },
+    { key: "feeStatus", label: "Payment Status", status: true },
     { key: "status", label: "Status", status: true },
   ],
   applications: [
@@ -104,7 +118,7 @@ const COLS: Record<Dataset, Col[]> = {
 };
 
 const DEFAULT_COLS: Record<Dataset, string[]> = {
-  enrollments: ["sid", "name", "phone", "email", "university", "course", "intake", "date", "status"],
+  enrollments: ["sid", "name", "phone", "email", "university", "course", "intake", "date", "feePaid", "feeStatus", "status"],
   applications: ["sid", "date", "name", "phone", "email", "university", "course", "status"],
 };
 
@@ -157,6 +171,13 @@ export function CounsellorReports() {
         intake: text(s.session_title),
         source: text(s.source),
         date: isoDay(s.enrollment_date ?? s.created_at),
+        feePaid: s.fee_paid != null ? money(s.fee_paid) : EMPTY,
+        feeExpected: s.fee_expected != null ? money(s.fee_expected) : EMPTY,
+        outstanding:
+          s.fee_expected != null && s.fee_paid != null
+            ? money(Math.max(0, s.fee_expected - s.fee_paid))
+            : EMPTY,
+        feeStatus: s.fee_status === "paid" ? "Paid" : s.fee_status === "partial" ? "Partial" : EMPTY,
         status: s.admission_status_label?.trim() || "Unknown",
       })),
     [students.data],
