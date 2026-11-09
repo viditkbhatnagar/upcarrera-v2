@@ -696,14 +696,7 @@ export class DashboardService {
             deleted_at: null,
             enrollment_date: { gte: yearStart, lt: yearEnd },
           },
-          // `id` is the students-table row id (invoice.student_id references it);
-          // `student_id` is the users id (points/admissions keying). We need both.
-          select: {
-            id: true,
-            student_id: true,
-            course_id: true,
-            enrollment_date: true,
-          },
+          select: { student_id: true, course_id: true, enrollment_date: true },
         }),
         // Current points target whose window contains today (legacy view query).
         this.prisma.consultant_target.findFirst({
@@ -751,10 +744,8 @@ export class DashboardService {
     }
 
     const targetPointsChart = await this.targetPointsByMonth(year, consultantId);
-    // invoice.student_id references students.id (the row id), NOT students.student_id
-    // (the users id) — keying on student_id matched nothing and zeroed the chart.
     const revenueChart = await this.consultantRevenueByMonth(
-      [...new Set(profilesThisYear.map((p) => p.id))],
+      [...new Set(profilesThisYear.map((p) => p.student_id))],
       year,
     );
 
@@ -928,14 +919,21 @@ export class DashboardService {
    * students, bucketed by invoice month. invoice.date is the billing date;
    * when absent we fall back to created_at. One findMany + in-memory bucketing.
    *
-   * `studentRowIds` are students.id values (the students-table row ids) — that is
-   * the key invoice.student_id points at. Passing users ids here matches nothing.
+   * `studentUserIds` are students.student_id values — i.e. users ids. That is the
+   * invoice.student_id convention across this codebase: the conversion flow writes
+   * invoice.student_id = <the new student's users id> (LeadsService) and the finance
+   * tab reads invoice.student_id = student.student_id (StudentProfileService). Do
+   * NOT re-key this on students.id: the only rows that match students.id are legacy
+   * 2024 invoices under consultant_id = 0, which never attribute to a real
+   * counsellor — matching them shows nothing today and would miss every new invoice.
+   * A ₹0 chart here means no current-year invoice is attributed to the consultant's
+   * students yet (a data state), not a wrong key.
    */
   private async consultantRevenueByMonth(
-    studentRowIds: number[],
+    studentUserIds: number[],
     year: number,
   ): Promise<number[]> {
-    const ids = [...new Set(studentRowIds)].filter((n) => n != null);
+    const ids = [...new Set(studentUserIds)].filter((n) => n != null);
     const chart = new Array<number>(12).fill(0);
     if (ids.length === 0) return chart;
 
