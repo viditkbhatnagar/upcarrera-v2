@@ -17,6 +17,8 @@ export interface ApiCourseRow {
   university_id: number | string | null;
   university_name?: string | null;
   mapped_universities_count?: number | null;
+  /** course.total_amount — the course-level total fee (0/null when not set). */
+  total_amount?: number | string | null;
   status: number | string | null;
 }
 
@@ -32,6 +34,8 @@ export interface CourseView {
   specialisations: string[];
   university: string;
   universities: number;
+  /** K6: course-level total fee in INR, or null when not set/zero. */
+  fee: number | null;
   /** false only when the course is explicitly inactive (status 0). */
   active: boolean;
 }
@@ -166,8 +170,16 @@ export function mapCourse(r: ApiCourseRow): CourseView {
     specialisations: specs,
     university: clean(r.university_name),
     universities: Number(r.mapped_universities_count ?? 0),
+    fee: feeOf(r.total_amount),
     active: status !== 0,
   };
+}
+
+/** K6: coerce course.total_amount to a positive number, else null (no fee to show). */
+function feeOf(value: number | string | null | undefined): number | null {
+  if (value == null) return null;
+  const n = typeof value === "number" ? value : Number(String(value).replace(/[^\d.]/g, ""));
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /** Duration in months for sorting ("2 Years" -> 24, "3 Semesters" -> 18); 0 when unparseable. */
