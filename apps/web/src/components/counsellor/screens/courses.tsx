@@ -214,7 +214,7 @@ export function CounsellorCourses() {
       ) : (
         <Card className="shadow-[var(--shadow-soft)] border-border/70 overflow-hidden">
           <div className="overflow-x-auto">
-            <Paginated items={sorted} pageSize={8}>
+            <Paginated items={sorted} pageSize={10}>
               {(rows) => (
                 <Table>
                   <TableHeader>

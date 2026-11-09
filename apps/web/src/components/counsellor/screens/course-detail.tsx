@@ -115,6 +115,11 @@ export function CounsellorCourseDetail({ idParam }: { idParam: string }) {
   }
 
   const offering = universities.data ?? [];
+  // K10: trust the loaded offering list for the count and the single name — the
+  // legacy course.university FK is often "—"/null even when a university offers it.
+  const uniCount = offering.length > 0 ? offering.length : c.universities;
+  const uniLabel =
+    uniCount > 1 ? `${uniCount} universities` : (offering[0]?.university_title ?? c.university);
 
   return (
     <>
@@ -129,7 +134,7 @@ export function CounsellorCourseDetail({ idParam }: { idParam: string }) {
           <h1 className="text-2xl font-bold break-words">{c.name}</h1>
           <p className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-full bg-primary-soft px-2.5 py-1 text-sm font-medium text-primary-soft-foreground">
             <Building2 className="h-4 w-4 shrink-0" />
-            {c.universities > 1 ? `${c.universities} universities` : c.university}
+            {uniLabel}
           </p>
           <p className="text-sm text-muted-foreground mt-2">
             {c.specialisations.length > 0 ? c.specialisations.join(", ") : "No specialisations listed"}

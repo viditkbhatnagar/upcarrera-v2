@@ -16,6 +16,32 @@ import { dayRange, type DateRange } from "@/lib/date-range";
 import { DateRangePicker } from "@/components/counsellor/shared/date-range-picker";
 import { Paginated } from "@/components/counsellor/shared/paginated";
 import { SortHead, useSort } from "@/components/counsellor/shared/sortable-head";
+import { formatPhone } from "@/components/counsellors/phone";
+import { cn } from "@/lib/utils";
+
+// RP5: colour the status/stage chip. Enrollment statuses have their own palette;
+// application stages reuse the pipeline STAGE_META badge (keyed by its label).
+const ENROLLMENT_STATUS_CLASS: Record<string, string> = {
+  Pending: "bg-warning-soft text-warning-foreground border-transparent",
+  "In Progress": "bg-info-soft text-info border-transparent",
+  Enrolled: "bg-success-soft text-success border-success/30",
+  "Passed Out": "bg-primary-soft text-primary-soft-foreground border-transparent",
+  Dropout: "bg-destructive/10 text-destructive border-transparent",
+  Cancelled: "bg-muted text-muted-foreground border-transparent",
+};
+const STAGE_LABEL_CLASS: Record<string, string> = Object.fromEntries(
+  Object.values(STAGE_META).map((m) => [m.label, m.badge]),
+);
+function statusClass(label: string): string {
+  return (
+    ENROLLMENT_STATUS_CLASS[label] ??
+    STAGE_LABEL_CLASS[label] ??
+    "bg-muted text-muted-foreground border-transparent"
+  );
+}
+
+// RP6: a leading "-" slips into some legacy emails; drop it for display only.
+const cleanEmail = (v: string | null | undefined): string => (v ?? "").replace(/^-+/, "").trim();
 
 // One row per student / application. Both sources are the SAME record-scoped
 // endpoints the counsellor's My Enrollments / Applications use, so the server
@@ -123,8 +149,8 @@ export function CounsellorReports() {
         _id: String(s.id),
         sid: s.enrollment_id?.trim() || `STU-${s.student_id ?? s.id}`,
         name: text(s.name),
-        phone: text(s.phone),
-        email: text(s.email),
+        phone: formatPhone(s.phone, null, EMPTY),
+        email: cleanEmail(s.email) || EMPTY,
         university: text(s.university_title),
         course: text(s.course_title),
         specialisation: text(s.specialisation_title),
@@ -143,8 +169,8 @@ export function CounsellorReports() {
         sid: a.custom_application_id?.trim() || a.enrollment_id?.trim() || `APP-${a.application_id}`,
         date: isoDay(a.created_at),
         name: text(a.applicant_name),
-        phone: text(a.applicant_phone),
-        email: text(a.applicant_email),
+        phone: formatPhone(a.applicant_phone, null, EMPTY),
+        email: cleanEmail(a.applicant_email) || EMPTY,
         university: text(a.university_title),
         course: text(a.course_title),
         intake: text(a.intake_name ?? a.session_title),
@@ -172,11 +198,13 @@ export function CounsellorReports() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const range = dayRange(dates);
-    return allRows.filter((r) => {
+    const rows = allRows.filter((r) => {
       if (q && ![r.name, r.email, r.sid, r.phone].some((v) => v.toLowerCase().includes(q))) return false;
       if (!inRange(r.date, range)) return false;
       return filterDefs.every((d) => !filters[d.key] || filters[d.key] === "all" || r[d.key] === filters[d.key]);
     });
+    // RP6: default order is most-recent first (until a column sort is chosen).
+    return rows.sort((a, b) => b.date.localeCompare(a.date));
   }, [allRows, search, dates, filters, filterDefs]);
 
   const getters = useMemo(
@@ -386,7 +414,12 @@ export function CounsellorReports() {
 
 function renderCell(c: Col, r: Row, copy: (v: string) => void) {
   const v = r[c.key] || EMPTY;
-  if (c.status) return <Badge variant="outline" className="font-medium">{v}</Badge>;
+  if (c.status)
+    return (
+      <Badge variant="outline" className={cn("font-medium", v !== EMPTY && statusClass(v))}>
+        {v}
+      </Badge>
+    );
   if (c.key === "date") {
     return v === EMPTY ? v : new Date(`${v}T12:00:00`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
   }

@@ -82,7 +82,7 @@ interface EnrollmentRow {
 type KpiTone = "primary" | "success" | "warning" | "info" | "destructive";
 
 const FETCH_LIMIT = 2000;
-const PAGE_SIZE = 8;
+const PAGE_SIZE = 10; // E4: one consistent table page size across the counsellor screens
 const EMPTY = "—";
 
 // Real admission_status labels (StudentsService ADMISSION_STATUS_LABELS).
