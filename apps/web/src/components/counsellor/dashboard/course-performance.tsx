@@ -35,7 +35,7 @@ function groupByCourse(students: readonly StudentRow[]): CourseRow[] {
     const prev = map.get(key);
     map.set(key, prev ? { ...prev, admissions: prev.admissions + 1 } : { course: shortName(label), label, university, admissions: 1 });
   }
-  return [...map.values()].sort((a, b) => b.admissions - a.admissions).slice(0, MAX_COURSES);
+  return [...map.values()].sort((a, b) => b.admissions - a.admissions);
 }
 
 interface CoursePerformanceProps {
@@ -45,8 +45,12 @@ interface CoursePerformanceProps {
 }
 
 export function CoursePerformance({ students, total, loading }: CoursePerformanceProps) {
-  const data = useMemo(() => groupByCourse(students ?? []), [students]);
-  const sum = data.reduce((a, b) => a + b.admissions, 0);
+  // D2: group ALL sampled students, chart the top N, but take the percentage
+  // denominator from every group so each bar's share is of the real total, not of
+  // the top-N subset.
+  const grouped = useMemo(() => groupByCourse(students ?? []), [students]);
+  const data = grouped.slice(0, MAX_COURSES);
+  const sum = grouped.reduce((a, b) => a + b.admissions, 0);
   const sampled = total > COURSE_SAMPLE_LIMIT;
 
   return (
@@ -89,7 +93,7 @@ export function CoursePerformance({ students, total, loading }: CoursePerformanc
             </ResponsiveContainer>
           </div>
           <div className="mt-4 space-y-2">
-            {data.slice(0, 3).map((c, i) => (
+            {data.map((c, i) => (
               <div key={`${c.label}-${c.university}`} className="flex items-center gap-3">
                 <span className="h-2.5 w-2.5 rounded-full" style={{ background: COLORS[i] }} />
                 <span className="flex-1 min-w-0">
