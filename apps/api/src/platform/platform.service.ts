@@ -633,7 +633,11 @@ export class PlatformService {
    * Authenticated user updates their OWN profile. Ports User::update. The id is
    * always the JWT subject (never a body/param), so a caller can only edit their
    * own row. Only the self-editable fields are accepted (the DTO whitelists
-   * name/code/phone/email/profile_picture).
+   * name/code/phone/profile_picture).
+   *
+   * `email` is deliberately NOT updatable here: it is the login identifier, so a
+   * self-service change is an account-integrity/takeover risk (QA S1). Email is
+   * changed by admins via user management, not self-service.
    */
   async updateMe(id: number, dto: UpdateMeDto) {
     const user = await this.prisma.users.findFirst({
@@ -650,7 +654,6 @@ export class PlatformService {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
         ...(dto.code !== undefined ? { code: dto.code } : {}),
         ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
-        ...(dto.email !== undefined ? { email: dto.email } : {}),
         ...(dto.profile_picture !== undefined
           ? { profile_picture: dto.profile_picture }
           : {}),

@@ -7,6 +7,7 @@ import { getUser, getToken, setSession } from "@/lib/session";
 import { useAccess } from "@/components/applications/use-access";
 import { useAvatarUrl } from "@/hooks/use-avatar-url";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { initialsFrom } from "@/components/ui/user-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -26,10 +27,20 @@ interface Me {
 }
 
 const MIN_PASSWORD = 8;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
-const initialsOf = (name: string) =>
-  name.split(/\s+/).filter(Boolean).map((p) => p[0]).slice(0, 2).join("").toUpperCase() || "U";
+// Display label for a role_key; falls back to a title-cased key.
+const ROLE_LABEL: Record<string, string> = {
+  counsellor: "Admission Counsellor",
+  admin: "Administrator",
+  super_admin: "Super Admin",
+  education_manager: "Education Manager",
+  telecaller: "Telecaller",
+  student: "Student",
+};
+const roleLabel = (key: string | null | undefined): string => {
+  if (!key) return "—";
+  return ROLE_LABEL[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+};
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -92,7 +103,6 @@ function ProfileSection({ me }: { me: Me | undefined }) {
   const qc = useQueryClient();
   const cached = getUser();
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [photo, setPhoto] = useState<string | null>(cached?.profile_picture ?? null);
@@ -101,19 +111,17 @@ function ProfileSection({ me }: { me: Me | undefined }) {
 
   useEffect(() => {
     setName(me?.name ?? "");
-    setEmail(me?.email ?? "");
     setPhone(me?.phone ?? "");
-  }, [me?.id, me?.name, me?.email, me?.phone]);
+  }, [me?.id, me?.name, me?.phone]);
 
   const save = useMutation({
     mutationFn: () =>
       apiPatch("/users/me", {
         name: name.trim(),
-        email: email.trim() || undefined,
         phone: phone.trim() || undefined,
       }),
     onSuccess: () => {
-      patchSessionUser({ name: name.trim(), email: email.trim() || null, phone: phone.trim() || null });
+      patchSessionUser({ name: name.trim(), phone: phone.trim() || null });
       void qc.invalidateQueries({ queryKey: ["auth", "me"] });
       toast.success("Profile updated");
     },
@@ -136,7 +144,6 @@ function ProfileSection({ me }: { me: Me | undefined }) {
 
   const onSave = () => {
     if (name.trim() === "") return toast.error("Name can't be empty.");
-    if (email.trim() !== "" && !EMAIL_RE.test(email.trim())) return toast.error("Enter a valid email address.");
     save.mutate();
   };
 
@@ -163,7 +170,7 @@ function ProfileSection({ me }: { me: Me | undefined }) {
             <Avatar className="h-24 w-24 ring-4 ring-primary-soft">
               {avatarUrl && <AvatarImage src={avatarUrl} alt={display} className="object-cover" />}
               <AvatarFallback className="bg-[image:var(--gradient-primary)] text-primary-foreground text-2xl font-bold">
-                {initialsOf(display)}
+                {initialsFrom(display)}
               </AvatarFallback>
             </Avatar>
             <button
@@ -201,7 +208,8 @@ function ProfileSection({ me }: { me: Me | undefined }) {
           </div>
           <div className="space-y-2">
             <Label htmlFor="cs-email">Email</Label>
-            <Input id="cs-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@upcarrera.com" />
+            <Input id="cs-email" type="email" value={me?.email ?? ""} disabled readOnly className="bg-muted" />
+            <p className="text-[11px] text-muted-foreground">Your email is your login ID — contact an admin to change it.</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="cs-phone">Phone</Label>
@@ -336,7 +344,7 @@ function SystemSection({ me }: { me: Me | undefined }) {
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Role &amp; Access</h3>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <ReadOnly label="Role" value={a?.role_key ? a.role_key.replace(/_/g, " ") : "—"} />
+        <ReadOnly label="Role" value={roleLabel(a?.role_key)} />
         <ReadOnly label="Record access" value={a ? (SCOPE_LABEL[a.scope] ?? String(a.scope)) : "—"} />
         <ReadOnly label="User ID" value={me?.username ?? "—"} />
         <ReadOnly label="Email" value={me?.email ?? "—"} />
@@ -349,7 +357,8 @@ function ReadOnly({ label, value }: { label: string; value: string }) {
   return (
     <div className="space-y-2">
       <Label>{label}</Label>
-      <Input value={value} disabled readOnly className="bg-muted capitalize" />
+      {/* No `capitalize`: it mangled emails ("Fazia@Upcarrera.Com") and usernames. */}
+      <Input value={value} disabled readOnly className="bg-muted" />
     </div>
   );
 }
