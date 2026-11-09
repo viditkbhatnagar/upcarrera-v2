@@ -13,6 +13,7 @@ export interface ConsultantMetrics {
     achieved_points: number[];
     target_points: number[];
     admissions: number[];
+    applications: number[];
     revenue: number[];
   };
 }
